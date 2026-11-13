@@ -70,6 +70,8 @@ add_library(fastrace_analyzer STATIC
   src/ArxmlParser.cpp
   src/DetectionEngine.cpp
   src/ProtocolParser.cpp
+  src/BlfIngestReader.cpp
+  src/DuckDbCli.cpp
   detectors/PduDetector.cpp
   detectors/SomeIpSdDetector.cpp
   detectors/DoipDetector.cpp
@@ -84,11 +86,10 @@ target_link_libraries(fastrace_analyzer PUBLIC libdeflate_static spdlog::spdlog 
 add_executable(cpp_parser
   src/main.cpp
 )
-
-# Libraries
-# find_package(libpqxx REQUIRED)
-# target_link_libraries(cpp_parser PRIVATE libpqxx::pqxx)
 target_link_libraries(cpp_parser PRIVATE fastrace_analyzer)
 
-# CLI11 (assuming it's available or we provide it in include/)
-# For now, just setup the structure.
+add_executable(fastrace_ingest src/ingest_main.cpp)
+target_link_libraries(fastrace_ingest PRIVATE fastrace_analyzer)
+
+add_executable(fastrace_query src/query_main.cpp)
+target_link_libraries(fastrace_query PRIVATE fastrace_analyzer)

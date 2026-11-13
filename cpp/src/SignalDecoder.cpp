@@ -41,6 +41,30 @@ uint64_t extractSignalRaw(const uint8_t* data, size_t dataLen, uint32_t startBit
     return rawValue;
 }
 
+void indexEthernetPdus(TraceMessage& tm)
+{
+    tm.pdus.clear();
+    const auto* udpPayload = reinterpret_cast<const char*>(tm.data.data());
+    const size_t udpPayloadLen = tm.data.size();
+    size_t pOffset = 0;
+    while (pOffset + 8 <= udpPayloadLen) {
+        uint32_t pduId = (static_cast<uint32_t>(static_cast<uint8_t>(udpPayload[pOffset])) << 24)
+            | (static_cast<uint32_t>(static_cast<uint8_t>(udpPayload[pOffset + 1])) << 16)
+            | (static_cast<uint32_t>(static_cast<uint8_t>(udpPayload[pOffset + 2])) << 8)
+            | (static_cast<uint32_t>(static_cast<uint8_t>(udpPayload[pOffset + 3])));
+        uint32_t pduLen = (static_cast<uint32_t>(static_cast<uint8_t>(udpPayload[pOffset + 4])) << 24)
+            | (static_cast<uint32_t>(static_cast<uint8_t>(udpPayload[pOffset + 5])) << 16)
+            | (static_cast<uint32_t>(static_cast<uint8_t>(udpPayload[pOffset + 6])) << 8)
+            | (static_cast<uint32_t>(static_cast<uint8_t>(udpPayload[pOffset + 7])));
+        pOffset += 8;
+        if (pOffset + pduLen > udpPayloadLen) {
+            break;
+        }
+        tm.pdus[pduId] = PduIndex { static_cast<uint16_t>(pOffset), static_cast<uint16_t>(pduLen) };
+        pOffset += pduLen;
+    }
+}
+
 std::vector<DecodedSignal> decodeAllSignals(const ArDatabase& db, const TraceMessage& msg)
 {
     std::vector<DecodedSignal> result;
