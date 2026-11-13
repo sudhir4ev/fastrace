@@ -18,3 +18,18 @@ out/
 *.log
 .env*
 .qtcreator
+
+# Nodejs
+node_modules/
+
+# miscellaneous
+.DS_Store
+
+# Graphify output
+graphify-out
+
+# Source files
+.source
+
+# Local staging / tools (duckdb CLI download, CSV handoff, smoke DBs)
+.tmp/

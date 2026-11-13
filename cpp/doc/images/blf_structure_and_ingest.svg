@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 1020" role="img" aria-labelledby="title desc">
+  <title id="title">BLF data shape and batch ingest flow</title>
+  <desc id="desc">A BLF file is a LOGG header followed by sized LOBJ records. Message bytes live inside zlib LOG_CONTAINER objects. Ingest inflates one container at a time, buffers decoded rows, flushes every N rows to DuckDB messages, then peels protocol tables from those rows.</desc>
+  <style>
+    .bg { fill: #f7f8fa; }
+    .box { fill: #ffffff; stroke: #2c3340; stroke-width: 1.5; }
+    .hdr { fill: #e8eef6; stroke: #2c3340; stroke-width: 1.5; }
+    .cont { fill: #f7f0e6; stroke: #2c3340; stroke-width: 1.5; }
+    .inner { fill: #e8f2ea; stroke: #2c3340; stroke-width: 1.25; }
+    .split { fill: #f6e4e4; stroke: #2c3340; stroke-width: 1.25; }
+    .buf { fill: #eef3f8; stroke: #2c3340; stroke-width: 1.5; }
+    .db { fill: #e8f2ea; stroke: #2c3340; stroke-width: 1.5; }
+    .shape { fill: #f3eef8; stroke: #2c3340; stroke-width: 1.5; }
+    .title { font: 700 18px ui-sans-serif, system-ui, sans-serif; fill: #1a1f27; }
+    .h { font: 600 13px ui-sans-serif, system-ui, sans-serif; fill: #1a1f27; }
+    .p { font: 12px ui-sans-serif, system-ui, sans-serif; fill: #1a1f27; }
+    .tiny { font: 11px ui-sans-serif, system-ui, sans-serif; fill: #445066; }
+    .phase { font: 700 12px ui-sans-serif, system-ui, sans-serif; fill: #5a6578; letter-spacing: 0.04em; }
+    .mono { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #1a1f27; }
+    .arrow { stroke: #2c3340; stroke-width: 1.75; fill: none; marker-end: url(#arrowhead); }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#2c3340"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1100" height="1020"/>
+
+  <text class="title" x="32" y="36">BLF data shape and batch ingest flow</text>
+  <text class="tiny" x="32" y="56">Read stride = one LOG_CONTAINER. Write stride = N decoded rows. Headers and payload come from the same inflate.</text>
+
+  <text class="phase" x="32" y="88">1. FILE ON DISK (SEQUENTIAL, NOT ROW-ADDRESSABLE)</text>
+
+  <rect class="hdr" x="32" y="104" width="120" height="168" rx="6"/>
+  <text class="h" x="44" y="128">File header</text>
+  <text class="mono" x="44" y="150">"LOGG"</text>
+  <text class="tiny" x="44" y="170">headerSize</text>
+  <text class="tiny" x="44" y="186">versions</text>
+  <text class="tiny" x="44" y="202">obj count</text>
+  <text class="tiny" x="44" y="218">start / end</text>
+  <text class="tiny" x="44" y="248">fixed prefix</text>
+
+  <rect class="cont" x="168" y="104" width="430" height="168" rx="6"/>
+  <text class="h" x="180" y="128">LOBJ  -  LOG_CONTAINER (type 10)  -  container i</text>
+  <text class="tiny" x="180" y="148">objectSize is the stride to the next top-level object</text>
+  <rect class="box" x="180" y="160" width="70" height="36" rx="4"/>
+  <text class="mono" x="192" y="182">LOBJ</text>
+  <rect class="box" x="256" y="160" width="90" height="36" rx="4"/>
+  <text class="tiny" x="266" y="182">base hdr</text>
+  <rect class="box" x="352" y="160" width="90" height="36" rx="4"/>
+  <text class="tiny" x="364" y="182">obj hdr</text>
+  <rect class="box" x="448" y="160" width="134" height="36" rx="4"/>
+  <text class="tiny" x="468" y="182">zlib bytes</text>
+  <text class="tiny" x="180" y="220">base: signature, headerSize, headerVersion,</text>
+  <text class="tiny" x="180" y="236">objectSize, objectType</text>
+  <text class="tiny" x="180" y="252">obj hdr: flags, timestamp (ticks)</text>
+
+  <rect class="cont" x="614" y="104" width="454" height="168" rx="6"/>
+  <text class="h" x="626" y="128">LOBJ  -  LOG_CONTAINER  -  container i+1</text>
+  <text class="tiny" x="626" y="148">same outer shape; next object starts at objectSize</text>
+  <rect class="box" x="626" y="160" width="70" height="36" rx="4"/>
+  <text class="mono" x="638" y="182">LOBJ</text>
+  <rect class="box" x="702" y="160" width="90" height="36" rx="4"/>
+  <text class="tiny" x="714" y="182">base hdr</text>
+  <rect class="box" x="798" y="160" width="90" height="36" rx="4"/>
+  <text class="tiny" x="810" y="182">obj hdr</text>
+  <rect class="box" x="894" y="160" width="154" height="36" rx="4"/>
+  <text class="tiny" x="922" y="182">zlib bytes</text>
+  <text class="tiny" x="626" y="220">Top-level non-containers are skipped.</text>
+  <text class="tiny" x="626" y="236">Messages are not plain rows on disk;</text>
+  <text class="tiny" x="626" y="252">they live inside the zlib payload.</text>
+
+  <text class="phase" x="32" y="304">2. AFTER ONE INFLATE (INNER LOBJ STREAM; SPLITS CROSS THE BOUNDARY)</text>
+
+  <rect class="inner" x="32" y="320" width="150" height="72" rx="6"/>
+  <text class="h" x="44" y="348">CAN / CAN FD</text>
+  <text class="tiny" x="44" y="368">channel, id, data</text>
+  <text class="tiny" x="44" y="384">types 1, 86, 100...</text>
+
+  <rect class="inner" x="198" y="320" width="170" height="72" rx="6"/>
+  <text class="h" x="210" y="348">Ethernet frame</text>
+  <text class="tiny" x="210" y="368">types 120 / 121</text>
+  <text class="tiny" x="210" y="384">payload follows hdr</text>
+
+  <rect class="split" x="384" y="320" width="200" height="72" rx="6"/>
+  <text class="h" x="396" y="348">Tail fragment</text>
+  <text class="tiny" x="396" y="368">incomplete LOBJ at end</text>
+  <text class="tiny" x="396" y="384">of container i</text>
+
+  <path class="arrow" d="M592 356 H640"/>
+
+  <rect class="split" x="648" y="320" width="200" height="72" rx="6"/>
+  <text class="h" x="660" y="348">Head fragment</text>
+  <text class="tiny" x="660" y="368">remainder at start of</text>
+  <text class="tiny" x="660" y="384">container i+1</text>
+
+  <rect class="inner" x="864" y="320" width="204" height="72" rx="6"/>
+  <text class="h" x="876" y="348">Stitched message</text>
+  <text class="tiny" x="876" y="368">tail(i) + head(i+1)</text>
+  <text class="tiny" x="876" y="384">one TraceMessage</text>
+
+  <text class="tiny" x="32" y="416">Sample scale: ~11.5k containers, ~4.0M messages, often a few hundred messages per container. No seek to message N without prior inflate.</text>
+
+  <text class="phase" x="32" y="448">3. IN-MEMORY / STORE SHAPES</text>
+
+  <rect class="shape" x="32" y="464" width="250" height="100" rx="6"/>
+  <text class="h" x="44" y="488">TraceMessage</text>
+  <text class="tiny" x="44" y="508">timestamp_us, object_type, channel</text>
+  <text class="tiny" x="44" y="524">arb_id / dst_ip:port, dlc</text>
+  <text class="tiny" x="44" y="540">data[] = full payload</text>
+
+  <rect class="shape" x="298" y="464" width="250" height="100" rx="6"/>
+  <text class="h" x="310" y="488">messages row</text>
+  <text class="tiny" x="310" y="508">msg_id + TraceMessage fields</text>
+  <text class="tiny" x="310" y="524">payload_len, payload BLOB</text>
+  <text class="tiny" x="310" y="540">DuckDB Appender target</text>
+
+  <rect class="shape" x="564" y="464" width="250" height="100" rx="6"/>
+  <text class="h" x="576" y="488">ProtocolMessage</text>
+  <text class="tiny" x="576" y="508">peeled SOME/IP, SD, DoIP, PDU</text>
+  <text class="tiny" x="576" y="524">from ProtocolParser</text>
+  <text class="tiny" x="576" y="540">joined by msg_id</text>
+
+  <rect class="shape" x="830" y="464" width="238" height="100" rx="6"/>
+  <text class="h" x="842" y="488">protocol_* rows</text>
+  <text class="tiny" x="842" y="508">protocol_pdu / someip /</text>
+  <text class="tiny" x="842" y="524">someip_sd / doip</text>
+  <text class="tiny" x="842" y="540">no BLF after Stage A</text>
+
+  <text class="phase" x="32" y="596">4. ONE INGEST RUN (SEQUENTIAL; NO SECOND BLF DECOMPRESS)</text>
+
+  <rect class="box" x="32" y="612" width="500" height="220" rx="8"/>
+  <text class="h" x="48" y="636">Stage A - BLF to messages</text>
+  <text class="tiny" x="48" y="656">for each LOG_CONTAINER, in file order</text>
+
+  <rect class="cont" x="48" y="672" width="140" height="56" rx="6"/>
+  <text class="p" x="60" y="696">1. inflate</text>
+  <text class="tiny" x="60" y="714">one container</text>
+
+  <path class="arrow" d="M196 700 H214"/>
+
+  <rect class="inner" x="222" y="672" width="140" height="56" rx="6"/>
+  <text class="p" x="234" y="696">2. decode</text>
+  <text class="tiny" x="234" y="714">+ stitch split</text>
+
+  <path class="arrow" d="M370 700 H388"/>
+
+  <rect class="buf" x="396" y="672" width="116" height="56" rx="6"/>
+  <text class="p" x="408" y="696">3. pending</text>
+  <text class="tiny" x="408" y="714">row buffer</text>
+
+  <text class="tiny" x="48" y="756">Row already has headers + full payload BLOB.</text>
+  <text class="tiny" x="48" y="774">When pending &gt;= N (default 10000): DuckDB flush.</text>
+  <text class="tiny" x="48" y="792">N does not move the BLF cursor.</text>
+  <text class="tiny" x="48" y="810">Flush remainder at EOF.</text>
+
+  <path class="arrow" d="M532 700 H568"/>
+
+  <rect class="db" x="576" y="672" width="200" height="100" rx="8"/>
+  <text class="h" x="592" y="700">messages</text>
+  <text class="tiny" x="592" y="720">append every N rows</text>
+  <text class="tiny" x="592" y="738">overwrite target .duckdb</text>
+  <text class="tiny" x="592" y="756">optional arxml_* here</text>
+
+  <rect class="db" x="792" y="672" width="276" height="100" rx="8"/>
+  <text class="h" x="808" y="700">Stage B - peel, same process</text>
+  <text class="tiny" x="808" y="720">unless --messages-only</text>
+  <text class="tiny" x="808" y="738">msg_id windows of N, ascending</text>
+  <text class="tiny" x="808" y="756">ProtocolParser on stored payload</text>
+
+  <path class="arrow" d="M930 780 V808"/>
+
+  <rect class="db" x="792" y="816" width="276" height="72" rx="8"/>
+  <text class="h" x="808" y="840">protocol_* tables</text>
+  <text class="tiny" x="808" y="860">append every N peeled rows</text>
+  <text class="tiny" x="808" y="876">DuckDB only - no BLF reopen</text>
+
+  <rect class="box" x="32" y="852" width="744" height="72" rx="8"/>
+  <text class="h" x="48" y="876">Batch knobs</text>
+  <text class="tiny" x="48" y="896">Stage A read = 1 LOG_CONTAINER. Stage A/B write = --batch-rows. Stage B read = N msg_ids from DuckDB.</text>
+  <text class="tiny" x="48" y="912">Anti-pattern: buildIndex+decodeChunk for full ingest, or metadata-only BLF pass then second decompress.</text>
+
+  <text class="tiny" x="32" y="958">Query path is separate: SQL against the finished store (no BLF). Parallel decode||insert is a later experiment; v1 is sequential.</text>
+  <text class="tiny" x="32" y="978">See blf_batch_ingest_architecture.md for the written architecture.</text>
+</svg>

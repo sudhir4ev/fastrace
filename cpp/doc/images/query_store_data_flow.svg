@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 640" role="img" aria-labelledby="title desc">
+  <title id="title">Ingest and query data flow</title>
+  <desc id="desc">Stepwise flow from BLF containers through TraceMessage and protocol rows into DuckDB, then anomaly SQL producing Detection records.</desc>
+  <style>
+    .bg { fill: #f7f8fa; }
+    .box { fill: #ffffff; stroke: #2c3340; stroke-width: 1.5; }
+    .box-soft { fill: #eef3f8; stroke: #2c3340; stroke-width: 1.5; }
+    .box-green { fill: #e8f2ea; stroke: #2c3340; stroke-width: 1.5; }
+    .box-amber { fill: #f7f0e6; stroke: #2c3340; stroke-width: 1.5; }
+    .title { font: 700 18px ui-sans-serif, system-ui, sans-serif; fill: #1a1f27; }
+    .h { font: 600 13px ui-sans-serif, system-ui, sans-serif; fill: #1a1f27; }
+    .p { font: 12px ui-sans-serif, system-ui, sans-serif; fill: #445066; }
+    .tiny { font: 11px ui-sans-serif, system-ui, sans-serif; fill: #5a6578; }
+    .phase { font: 700 12px ui-sans-serif, system-ui, sans-serif; fill: #5a6578; letter-spacing: 0.04em; }
+    .arrow { stroke: #2c3340; stroke-width: 1.75; fill: none; marker-end: url(#arrowhead); }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#2c3340"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="980" height="640"/>
+  <text class="title" x="32" y="36">Data flow: BLF → DuckDB → anomaly detections</text>
+  <text class="tiny" x="32" y="56">Ingest is one-shot. After that, anomaly rules are queries against stored rows.</text>
+
+  <!-- Phase labels -->
+  <text class="phase" x="40" y="92">PHASE A — PARSE</text>
+  <text class="phase" x="40" y="300">PHASE B — MATERIALIZE</text>
+  <text class="phase" x="40" y="470">PHASE C — DETECT (REPEATABLE)</text>
+
+  <!-- Phase A -->
+  <rect class="box" x="40" y="108" width="200" height="140" rx="8"/>
+  <text class="h" x="56" y="136">BLF on disk</text>
+  <text class="p" x="56" y="160">FileHeader</text>
+  <text class="p" x="56" y="178">LOBJ LOG_CONTAINER</text>
+  <text class="p" x="56" y="196">LOBJ LOG_CONTAINER</text>
+  <text class="p" x="56" y="214">&amp;</text>
+  <text class="tiny" x="56" y="236">sequential sized records</text>
+
+  <rect class="box-soft" x="290" y="108" width="220" height="140" rx="8"/>
+  <text class="h" x="306" y="136">Decompress + walk</text>
+  <text class="p" x="306" y="160">MappedFile + WorkQueue</text>
+  <text class="p" x="306" y="178">processInnerObjects</text>
+  <text class="p" x="306" y="196">stitch split LOBJs</text>
+  <text class="tiny" x="306" y="222">same core path as Analyzer</text>
+
+  <rect class="box" x="560" y="108" width="180" height="140" rx="8"/>
+  <text class="h" x="576" y="136">TraceMessage</text>
+  <text class="p" x="576" y="160">timestampUs</text>
+  <text class="p" x="576" y="178">arbId / dstIp:port</text>
+  <text class="p" x="576" y="196">data[] + pdus</text>
+  <text class="tiny" x="576" y="222">unified CAN/Eth record</text>
+
+  <rect class="box" x="790" y="108" width="150" height="140" rx="8"/>
+  <text class="h" x="806" y="136">ProtocolMessage</text>
+  <text class="p" x="806" y="160">SomeIp / SD</text>
+  <text class="p" x="806" y="178">DoIp</text>
+  <text class="p" x="806" y="196">Pdu</text>
+  <text class="tiny" x="806" y="222">ProtocolParser</text>
+
+  <path class="arrow" d="M240,178 H290"/>
+  <path class="arrow" d="M510,178 H560"/>
+  <path class="arrow" d="M740,178 H790"/>
+
+  <!-- Phase B -->
+  <rect class="box-green" x="40" y="318" width="900" height="110" rx="8"/>
+  <text class="h" x="56" y="346">DuckDB tables (written once)</text>
+
+  <rect class="box" x="56" y="362" width="200" height="50" rx="6"/>
+  <text class="h" x="70" y="392">messages</text>
+
+  <rect class="box" x="276" y="362" width="200" height="50" rx="6"/>
+  <text class="h" x="290" y="392">protocol_someip / sd</text>
+
+  <rect class="box" x="496" y="362" width="200" height="50" rx="6"/>
+  <text class="h" x="510" y="392">protocol_doip / pdu</text>
+
+  <rect class="box" x="716" y="362" width="200" height="50" rx="6"/>
+  <text class="h" x="730" y="392">signals (optional)</text>
+
+  <path class="arrow" d="M650,248 V318"/>
+  <path class="arrow" d="M865,248 V318"/>
+
+  <!-- Phase C -->
+  <rect class="box-amber" x="40" y="490" width="280" height="110" rx="8"/>
+  <text class="h" x="56" y="518">Anomaly SQL / scripts</text>
+  <text class="p" x="56" y="542">unknown PDU id</text>
+  <text class="p" x="56" y="560">DoIP version mismatch</text>
+  <text class="p" x="56" y="578">rate / gap / flag outliers</text>
+
+  <rect class="box" x="370" y="490" width="240" height="110" rx="8"/>
+  <text class="h" x="386" y="518">Detection rows</text>
+  <text class="p" x="386" y="542">timestampUs</text>
+  <text class="p" x="386" y="560">severity, message</text>
+  <text class="p" x="386" y="578">messageIndex / context</text>
+
+  <rect class="box" x="660" y="490" width="280" height="110" rx="8"/>
+  <text class="h" x="676" y="518">UI / export</text>
+  <text class="p" x="676" y="542">DetectionsWidget</text>
+  <text class="p" x="676" y="560">re-run rules without</text>
+  <text class="p" x="676" y="578">re-reading the BLF</text>
+
+  <path class="arrow" d="M320,545 H370"/>
+  <path class="arrow" d="M610,545 H660"/>
+  <path class="arrow" d="M490,428 V490"/>
+</svg>

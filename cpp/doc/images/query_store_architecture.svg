@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 520" role="img" aria-labelledby="title desc">
+  <title id="title">Query store architecture</title>
+  <desc id="desc">BLF remains the payload source of truth; a one-time ingest builds DuckDB tables used for anomaly queries and the UI.</desc>
+  <style>
+    .bg { fill: #f7f8fa; }
+    .panel { fill: #ffffff; stroke: #2c3340; stroke-width: 1.5; }
+    .panel-accent { fill: #eef3f8; stroke: #2c3340; stroke-width: 1.5; }
+    .store { fill: #e8f2ea; stroke: #2c3340; stroke-width: 1.5; }
+    .title { font: 700 18px ui-sans-serif, system-ui, sans-serif; fill: #1a1f27; }
+    .label { font: 600 13px ui-sans-serif, system-ui, sans-serif; fill: #1a1f27; }
+    .sub { font: 12px ui-sans-serif, system-ui, sans-serif; fill: #445066; }
+    .tiny { font: 11px ui-sans-serif, system-ui, sans-serif; fill: #5a6578; }
+    .arrow { stroke: #2c3340; stroke-width: 1.75; fill: none; marker-end: url(#arrowhead); }
+    .note { font: 11px ui-sans-serif, system-ui, sans-serif; fill: #5a6578; }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#2c3340"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="920" height="520"/>
+  <text class="title" x="32" y="36">Fastrace query-store architecture</text>
+  <text class="note" x="32" y="56">One-time BLF ingest into DuckDB for fast anomaly queries; BLF kept for raw payload deep-dive.</text>
+
+  <!-- Sources -->
+  <rect class="panel" x="40" y="90" width="180" height="100" rx="8"/>
+  <text class="label" x="56" y="118">BLF file</text>
+  <text class="sub" x="56" y="140">mmap source of truth</text>
+  <text class="tiny" x="56" y="160">LOG_CONTAINER → LOBJ</text>
+  <text class="tiny" x="56" y="176">CAN / Ethernet payloads</text>
+
+  <rect class="panel" x="40" y="220" width="180" height="90" rx="8"/>
+  <text class="label" x="56" y="248">Signal DB</text>
+  <text class="sub" x="56" y="270">ARXML / DBC</text>
+  <text class="tiny" x="56" y="290">bit maps, PDU / CAN IDs</text>
+
+  <!-- Ingest -->
+  <rect class="panel-accent" x="280" y="130" width="200" height="140" rx="8"/>
+  <text class="label" x="296" y="158">Ingest pipeline</text>
+  <text class="sub" x="296" y="182">1. decompress containers</text>
+  <text class="sub" x="296" y="202">2. emit TraceMessage</text>
+  <text class="sub" x="296" y="222">3. ProtocolParser peel</text>
+  <text class="sub" x="296" y="242">4. optional signal extract</text>
+  <text class="tiny" x="296" y="262">runs once per open/import</text>
+
+  <!-- Store -->
+  <rect class="store" x="540" y="90" width="340" height="220" rx="8"/>
+  <text class="label" x="556" y="118">DuckDB (trace.duckdb)</text>
+  <text class="sub" x="556" y="140">columnar, embedded, file-backed</text>
+
+  <rect class="panel" x="560" y="158" width="140" height="56" rx="6"/>
+  <text class="label" x="572" y="180">messages</text>
+  <text class="tiny" x="572" y="198">ts, ids, offsets</text>
+
+  <rect class="panel" x="720" y="158" width="140" height="56" rx="6"/>
+  <text class="label" x="732" y="180">protocol_*</text>
+  <text class="tiny" x="732" y="198">SOME/IP, DoIP, PDU</text>
+
+  <rect class="panel" x="560" y="230" width="140" height="56" rx="6"/>
+  <text class="label" x="572" y="252">signals</text>
+  <text class="tiny" x="572" y="270">optional series</text>
+
+  <rect class="panel" x="720" y="230" width="140" height="56" rx="6"/>
+  <text class="label" x="732" y="252">detections</text>
+  <text class="tiny" x="732" y="270">query results</text>
+
+  <!-- Consumers -->
+  <rect class="panel" x="280" y="360" width="200" height="100" rx="8"/>
+  <text class="label" x="296" y="388">Anomaly queries</text>
+  <text class="sub" x="296" y="410">SQL / scripts</text>
+  <text class="tiny" x="296" y="430">gaps, rates, unknown IDs</text>
+  <text class="tiny" x="296" y="446">version / flag checks</text>
+
+  <rect class="panel" x="540" y="360" width="160" height="100" rx="8"/>
+  <text class="label" x="556" y="388">fastrace UI</text>
+  <text class="sub" x="556" y="410">DetectionsWidget</text>
+  <text class="tiny" x="556" y="430">timeline / details</text>
+  <text class="tiny" x="556" y="446">click → BLF offset</text>
+
+  <rect class="panel" x="740" y="360" width="140" height="100" rx="8"/>
+  <text class="label" x="756" y="388">CLI / notebooks</text>
+  <text class="sub" x="756" y="410">ad-hoc SQL</text>
+  <text class="tiny" x="756" y="430">rule iteration</text>
+
+  <!-- Arrows -->
+  <path class="arrow" d="M220,140 H280"/>
+  <path class="arrow" d="M220,265 H300 V270"/>
+  <path class="arrow" d="M480,200 H540"/>
+  <path class="arrow" d="M710,310 V360"/>
+  <path class="arrow" d="M620,310 V360"/>
+  <path class="arrow" d="M380,270 V360"/>
+  <path class="arrow" d="M480,410 H540"/>
+  <path class="arrow" d="M130,190 V470 H556"/>
+  <text class="tiny" x="150" y="488">deep-dive: file_offset / container_idx → remmap BLF payload</text>
+</svg>

@@ -11,10 +11,59 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 
 #include "Analyzer.h"
+
+namespace {
+
+std::string payloadHex(const std::vector<uint8_t>& data, size_t maxBytes = 32)
+{
+    const size_t n = (std::min)(data.size(), maxBytes);
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (size_t i = 0; i < n; ++i) {
+        if (i > 0) {
+            oss << ' ';
+        }
+        oss << std::setw(2) << static_cast<unsigned>(data[i]);
+    }
+    if (data.size() > maxBytes) {
+        oss << " ...";
+    }
+    return oss.str();
+}
+
+void dumpMessages(fastrace::Analyzer& analyzer, const std::string& filename, size_t limit)
+{
+    const size_t total = analyzer.buildIndex(filename);
+    spdlog::info("Indexed {} messages in {} chunks; dumping first {}", total, analyzer.getChunkIndex().size(),
+        limit);
+
+    std::cout << "#idx\tts_us\tobjectType\tchannel\tarbId\textended\tdlc\tdstIp\tdstPort\tlen\tpayload_hex\n";
+
+    size_t printed = 0;
+    for (size_t ci = 0; ci < analyzer.getChunkIndex().size() && printed < limit; ++ci) {
+        auto msgs = analyzer.decodeChunk(ci);
+        for (const auto& m : msgs) {
+            if (printed >= limit) {
+                break;
+            }
+            std::cout << printed << '\t' << m.timestampUs << '\t' << m.objectType << '\t' << m.channel << '\t'
+                      << "0x" << std::hex << m.arbId << std::dec << '\t' << (m.extendedId ? 1 : 0) << '\t'
+                      << static_cast<unsigned>(m.dlc) << '\t' << m.dstIp << '\t' << m.dstPort << '\t'
+                      << m.data.size() << '\t' << payloadHex(m.data) << '\n';
+            ++printed;
+        }
+    }
+    spdlog::info("Dumped {} message(s)", printed);
+}
+
+} // namespace
 
 void benchmarkRawRead(const std::string& filename)
 {
@@ -100,7 +149,7 @@ int main(int argc, char* argv[])
 {
     if (argc < 2) {
         spdlog::error("Usage: {} <filename> [--no-decompress] [--benchmark] "
-                      "[--dump-objects] [--debug]",
+                      "[--dump-objects] [--dump-messages [N]] [--debug]",
             argv[0]);
         return 1;
     }
@@ -110,6 +159,8 @@ int main(int argc, char* argv[])
     std::string filename = argv[1];
     fastrace::Analyzer analyzer;
     bool runBenchmark = false;
+    bool dumpMessagesFlag = false;
+    size_t dumpMessageLimit = 20;
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -119,9 +170,24 @@ int main(int argc, char* argv[])
             runBenchmark = true;
         } else if ("--dump-objects" == arg) {
             analyzer.dumpObjContents = true;
+        } else if ("--dump-messages" == arg) {
+            dumpMessagesFlag = true;
+            if (i + 1 < argc) {
+                char* end = nullptr;
+                const unsigned long parsed = std::strtoul(argv[i + 1], &end, 10);
+                if (end != argv[i + 1] && *end == '\0' && parsed > 0) {
+                    dumpMessageLimit = parsed;
+                    ++i;
+                }
+            }
         } else if ("--debug" == arg) {
             spdlog::set_level(spdlog::level::debug);
         }
+    }
+
+    if (dumpMessagesFlag) {
+        dumpMessages(analyzer, filename, dumpMessageLimit);
+        return 0;
     }
 
     if (analyzer.skipDecompress) {
