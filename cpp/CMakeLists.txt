@@ -93,3 +93,13 @@ target_link_libraries(fastrace_ingest PRIVATE fastrace_analyzer)
 
 add_executable(fastrace_query src/query_main.cpp)
 target_link_libraries(fastrace_query PRIVATE fastrace_analyzer)
+
+# Experimental perf comparison: in-process prebuilt libduckdb (duckdb.h + libduckdb) with Appender.
+set(FASTRACE_LIBDUCKDB_DIR "" CACHE PATH "Directory containing prebuilt duckdb.h and libduckdb")
+if(FASTRACE_LIBDUCKDB_DIR)
+  find_library(FASTRACE_LIBDUCKDB duckdb PATHS ${FASTRACE_LIBDUCKDB_DIR} NO_DEFAULT_PATH REQUIRED)
+  add_executable(fastrace_ingest_lib src/ingest_lib_main.cpp)
+  target_include_directories(fastrace_ingest_lib PRIVATE ${FASTRACE_LIBDUCKDB_DIR})
+  target_link_libraries(fastrace_ingest_lib PRIVATE fastrace_analyzer ${FASTRACE_LIBDUCKDB})
+  set_target_properties(fastrace_ingest_lib PROPERTIES BUILD_RPATH ${FASTRACE_LIBDUCKDB_DIR})
+endif()
