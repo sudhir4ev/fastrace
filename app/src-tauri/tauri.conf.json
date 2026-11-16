@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "fastrace",
+  "version": "0.1.0",
+  "identifier": "com.fastrace.app",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev --prefix ui",
+    "beforeBuildCommand": "npm run build --prefix ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "fastrace",
+        "width": 1200,
+        "height": 800
+      }
+    ]
+  }
+}
