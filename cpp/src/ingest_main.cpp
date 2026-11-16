@@ -23,7 +23,7 @@ struct Options {
     std::string out;
     std::string arxml;
     std::string duckdb;
-    size_t batchRows = 10000;
+    size_t batchRows = 1000000;
     bool messagesOnly = false;
     bool yes = false;
     bool keepStage = false;

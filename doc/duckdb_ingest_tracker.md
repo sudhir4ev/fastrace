@@ -198,6 +198,22 @@ fastrace_ingest \
 | duckdb COPY | **12,613** | **43.6%** |
 | ingest wall | 28,191 | 97.5% |
 
+### Iteration 1b′ — Larger `--batch-rows` on MFK5 (2026-11-16)
+
+**Goal:** Measure 500k and 1M flush sizes on top of 1b; set CLI default to winner.
+
+**Outcome:** Both beat 100k. **1M wins** (marginal over 500k). Default `--batch-rows` → **1,000,000**.
+
+| Config | Flushes | Wall | COPY | CSV | Rate | DB |
+|--------|---------|------|------|-----|------|-----|
+| 1b @ 100k | 41 | 28.9 s | 12.6 s (44%) | 7.2 s | ~142k/s | 234 MB |
+| **1b′ @ 500k** | 9 | **21.5 s** | 5.3 s (25%) | 7.1 s | ~192k/s | 211 MB |
+| **1b′ @ 1M** | 5 | **20.4 s** | 3.9 s (19%) | 7.2 s | ~202k/s | 210 MB |
+
+vs 1a (37.8 s): 1M is **−46% wall**. COPY no longer dominant; **CSV write ~35%** is the new largest share → Parquet (1d) is the next leverage. Long-lived session (1c) has less headroom on MFK5 (only 5 process opens left).
+
+Row counts unchanged (4,002,854 / 14,962,953). Artifacts: `.tmp/mfk5_1b_500k.duck.db`, `.tmp/mfk5_1b_1m.duck.db`.
+
 ---
 
 ## Backlog (perf → target 10–15 min wall)
@@ -207,9 +223,9 @@ Target: cut ~22.5 min → **10–15 min** on the same BLF. Bottleneck is **COPY 
 | Priority | Idea | Expected impact |
 |----------|------|-----------------|
 | P0 | ~~One duckdb invocation per batch (all `COPY`s in one SQL)~~ | **Done (1b)** — MFK5 COPY −40% |
-| P0 | Larger `--batch-rows` (500k–1M) with batched COPY | Fewer flushes — **next (1b′)** |
-| P1 | Long-lived duckdb session (stdin, per-batch chunks) | Single DB open — only if 1b′ still leaves churn |
-| P1 | Parquet staging instead of CSV | Faster load than text parse |
+| P0 | ~~Larger `--batch-rows` (500k–1M)~~ | **Done (1b′)** — default 1M; MFK5 wall −46% vs 1a |
+| P1 | Long-lived duckdb session (stdin, per-batch chunks) | Small MFK5 upside (5 opens); reconsider after HCP2 or skip to 1d |
+| P1 | Parquet staging instead of CSV | **Next (1d)** — CSV now ~35% of wall |
 | P2 | Pipeline peel ∥ COPY | Out of this phase |
 | P2 | `SET threads=N` once per session | Out of this phase |
 | Later | Optional signal whitelist (4–5 names) | Charts without full signals tax; measure separately |
@@ -229,7 +245,7 @@ Target: cut ~22.5 min → **10–15 min** on the same BLF. Bottleneck is **COPY 
 | 2026-11-13 | 0 | Option B schema + full re-ingest (HCP2) | 5.7 GB DB, ~22.5 min wall; COPY 66% |
 | 2026-11-14 | 1a | MFK5 Option B baseline (no opts) | 233 MB, ~37.8 s; COPY 56% |
 | 2026-11-16 | 1b | Batched multi-COPY @ 100k (MFK5) | 234 MB, ~28.9 s (−23%); COPY −40% |
-| _next_ | 1b′ | MFK5 batch-rows 500k / 1M; set default | _TBD_ |
-| _next_ | 1c? | Long-lived stdin session (if needed) | _TBD_ |
+| 2026-11-16 | 1b′ | batch-rows 500k / 1M; default→1M | 1M: **20.4 s** (−46% vs 1a); CSV now largest |
+| _next_ | 1c? | Long-lived stdin (optional) | likely skip → 1d first |
 | _next_ | 1d | Parquet-only staging | _TBD_ |
 | _next_ | HCP2 | Final bench (when called) | _TBD_ |
