@@ -214,6 +214,34 @@ vs 1a (37.8 s): 1M is **−46% wall**. COPY no longer dominant; **CSV write ~35%
 
 Row counts unchanged (4,002,854 / 14,962,953). Artifacts: `.tmp/mfk5_1b_500k.duck.db`, `.tmp/mfk5_1b_1m.duck.db`.
 
+### Iteration 1d — Parquet / binary staging attempt (2026-11-16) — **reverted**
+
+**Goal:** Replace CSV staging with Parquet (or binary) to cut the ~7 s CSV write + text parse.
+
+**Constraint:** No C++ Parquet/Arrow writer in-tree; Homebrew Arrow is a large dep (llvm/grpc/…). Kept external `duckdb` CLI only (D1).
+
+**Attempt A — SQLite stage → duckdb `COPY TO` Parquet → `COPY FROM` Parquet**
+
+| Phase | ms |
+|-------|-----|
+| SQLite stage write | 8,303 |
+| duckdb Parquet load | 9,300 |
+| **Wall** | **26.9 s** |
+
+**Attempt B — SQLite stage → duckdb `ATTACH` + `INSERT SELECT`** (Parquet emit only with `--keep-stage`)
+
+| Phase | ms |
+|-------|-----|
+| SQLite stage write | 8,608 |
+| duckdb ATTACH/INSERT | 8,685 |
+| **Wall** | **26.5 s** |
+
+Row counts matched 1b′. Both **regress vs 1b′ @ 1M (20.4 s)**: SQLite write ≥ CSV write, and ATTACH/INSERT ≫ CSV `COPY`.
+
+**Decision:** Revert staging to CSV (1b′ path remains). True Parquet-from-C++ needs a dedicated writer (Arrow / header-only Parquet lib) before retrying 1d. Optional Parquet emit via duckdb alone does not beat CSV on MFK5.
+
+Artifact (forensics): `.tmp/mfk5_1d.duck.db` from attempt B.
+
 ---
 
 ## Backlog (perf → target 10–15 min wall)
@@ -224,8 +252,8 @@ Target: cut ~22.5 min → **10–15 min** on the same BLF. Bottleneck is **COPY 
 |----------|------|-----------------|
 | P0 | ~~One duckdb invocation per batch (all `COPY`s in one SQL)~~ | **Done (1b)** — MFK5 COPY −40% |
 | P0 | ~~Larger `--batch-rows` (500k–1M)~~ | **Done (1b′)** — default 1M; MFK5 wall −46% vs 1a |
-| P1 | Long-lived duckdb session (stdin, per-batch chunks) | Small MFK5 upside (5 opens); reconsider after HCP2 or skip to 1d |
-| P1 | Parquet staging instead of CSV | **Next (1d)** — CSV now ~35% of wall |
+| P1 | Long-lived duckdb session (stdin, per-batch chunks) | Small MFK5 upside (5 opens); try on HCP2 if process churn shows |
+| P1 | Parquet staging instead of CSV | **Tried (1d) — reverted**; needs native C++ Parquet writer to beat CSV |
 | P2 | Pipeline peel ∥ COPY | Out of this phase |
 | P2 | `SET threads=N` once per session | Out of this phase |
 | Later | Optional signal whitelist (4–5 names) | Charts without full signals tax; measure separately |
@@ -246,6 +274,7 @@ Target: cut ~22.5 min → **10–15 min** on the same BLF. Bottleneck is **COPY 
 | 2026-11-14 | 1a | MFK5 Option B baseline (no opts) | 233 MB, ~37.8 s; COPY 56% |
 | 2026-11-16 | 1b | Batched multi-COPY @ 100k (MFK5) | 234 MB, ~28.9 s (−23%); COPY −40% |
 | 2026-11-16 | 1b′ | batch-rows 500k / 1M; default→1M | 1M: **20.4 s** (−46% vs 1a); CSV now largest |
-| _next_ | 1c? | Long-lived stdin (optional) | likely skip → 1d first |
-| _next_ | 1d | Parquet-only staging | _TBD_ |
+| 2026-11-16 | 1d | SQLite/Parquet staging (no C++ writer) | **reverted** — 26.5–26.9 s vs 20.4 s CSV |
+| _next_ | 1c? | Long-lived stdin (optional) | candidate next / HCP2 |
+| _next_ | 1d′ | Native C++ Parquet writer | blocked on Arrow/lib choice |
 | _next_ | HCP2 | Final bench (when called) | _TBD_ |
