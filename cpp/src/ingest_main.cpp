@@ -322,9 +322,10 @@ int main(int argc, char** argv)
             spdlog::warn("ARXML parse produced empty database: {}", opt.arxml);
         } else {
             writeArxmlCsvs(arDb, stageDir);
-            if (!cli.run(opt.out, copyCsvSql("arxml_pdu", stageDir / "arxml_pdu.csv"), &err)
-                || !cli.run(opt.out, copyCsvSql("arxml_can", stageDir / "arxml_can.csv"), &err)
-                || !cli.run(opt.out, copyCsvSql("arxml_ecu", stageDir / "arxml_ecu.csv"), &err)) {
+            const std::string arxmlCopySql = copyCsvSql("arxml_pdu", stageDir / "arxml_pdu.csv") + "\n"
+                + copyCsvSql("arxml_can", stageDir / "arxml_can.csv") + "\n"
+                + copyCsvSql("arxml_ecu", stageDir / "arxml_ecu.csv");
+            if (!cli.run(opt.out, arxmlCopySql, &err)) {
                 spdlog::error("arxml COPY: {}", err);
                 return 1;
             }
@@ -426,24 +427,22 @@ int main(int argc, char** argv)
         csvUs += std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - c0).count();
 
         const auto k0 = Clock::now();
-        if (!cli.run(opt.out, copyCsvSql("messages", msgCsv), &err)) {
-            spdlog::error("COPY messages: {}", err);
-            return false;
+        // One duckdb invocation per batch: all COPYs in a single SQL script.
+        std::string batchCopySql = copyCsvSql("messages", msgCsv);
+        if (wrotePdu) {
+            batchCopySql += "\n" + copyCsvSql("protocol_pdu", pduCsv);
         }
-        if (wrotePdu && !cli.run(opt.out, copyCsvSql("protocol_pdu", pduCsv), &err)) {
-            spdlog::error("COPY protocol_pdu: {}", err);
-            return false;
+        if (wroteSomeip) {
+            batchCopySql += "\n" + copyCsvSql("protocol_someip", someipCsv);
         }
-        if (wroteSomeip && !cli.run(opt.out, copyCsvSql("protocol_someip", someipCsv), &err)) {
-            spdlog::error("COPY protocol_someip: {}", err);
-            return false;
+        if (wroteSd) {
+            batchCopySql += "\n" + copyCsvSql("protocol_someip_sd", sdCsv);
         }
-        if (wroteSd && !cli.run(opt.out, copyCsvSql("protocol_someip_sd", sdCsv), &err)) {
-            spdlog::error("COPY protocol_someip_sd: {}", err);
-            return false;
+        if (wroteDoip) {
+            batchCopySql += "\n" + copyCsvSql("protocol_doip", doipCsv);
         }
-        if (wroteDoip && !cli.run(opt.out, copyCsvSql("protocol_doip", doipCsv), &err)) {
-            spdlog::error("COPY protocol_doip: {}", err);
+        if (!cli.run(opt.out, batchCopySql, &err)) {
+            spdlog::error("COPY batch: {}", err);
             return false;
         }
         copyUs += std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - k0).count();
