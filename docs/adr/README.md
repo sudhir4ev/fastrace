@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Decisions for the greenfield Tauri-based fastrace monorepo. They were agreed while migrating from the current repo (Qt UI + C++ POC ingest). Copy this directory to `docs/adr/` in the new repo.
+Decisions for the Tauri-based fastrace monorepo. Agreed while migrating from the Qt UI + C++ POC ingest; see `archive/qt-cpp-legacy` for the pre-migration state.
 
 Background that the ADRs rely on:
 
