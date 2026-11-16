@@ -15,7 +15,24 @@ cmake -S . -B build && cmake --build build
 
 # Rust crates
 cargo test --manifest-path crates/Cargo.toml
-
-# Tauri app (dev)
-cargo tauri dev --manifest-path app/src-tauri/Cargo.toml
 ```
+
+## Run the Tauri app (dev)
+
+```bash
+# one-time: install the Tauri CLI
+cargo install tauri-cli --version "^2" --locked
+
+# one-time: install frontend dependencies (node_modules is gitignored)
+npm install --prefix app/ui
+
+# then (cargo tauri dev has no --manifest-path flag; it resolves
+# tauri.conf.json from the current directory)
+cd app/src-tauri
+cargo tauri dev
+```
+
+This builds the Rust shell and automatically starts the `app/ui` Vite dev server
+(`beforeDevCommand` in `app/src-tauri/tauri.conf.json`), then opens the app window.
+First run compiles everything and takes a few minutes. The UI is currently just a
+placeholder - no real Prepare pipeline or Detector Query UI yet (see `docs/adr/`).
