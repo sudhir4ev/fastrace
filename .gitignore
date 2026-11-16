@@ -33,3 +33,14 @@ graphify-out
 
 # Local staging / tools (duckdb CLI download, CSV handoff, smoke DBs)
 .tmp/
+
+# native/ (CMake)
+native/build/
+
+# crates/ and app/src-tauri (Cargo)
+crates/target/
+app/src-tauri/target/
+
+# app/ui (Vite/npm)
+app/ui/node_modules/
+app/ui/dist/

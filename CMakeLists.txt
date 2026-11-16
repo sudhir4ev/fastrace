@@ -5,6 +5,5 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 enable_testing()
 
-add_subdirectory(cpp)
-add_subdirectory(ui)
+add_subdirectory(native)
 
