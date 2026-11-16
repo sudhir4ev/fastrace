@@ -264,6 +264,48 @@ Remaining ~3.9 s of ingest wall not in the table is reader iteration + per-messa
 
 Artifact: `.tmp/mfk5_lib.duck.db`.
 
+### Iteration 1f — MFK5 merged mid-size scale check (2026-11-16)
+
+**Goal:** Before HCP2, confirm 1b′ / 1e scale on a ~3× MFK5 input (lossless concat of drives 074+075+076).
+
+**Input:** `.source/in/MFK5_VAP_X50_drive_074_076_merged.blf` (~900 MiB) + same E3 ARXML.
+
+**Outcome:** Row counts identical across both paths. Wall scales ~2.9× vs single-`074` (≈ message ratio). Lib still **−34%** vs CLI.
+
+| Path | Wall | Messages / protocol | DB | Rate |
+|------|------|---------------------|-----|------|
+| **1e lib Appender** | **38.8 s** | 11,576,298 / 43,297,608 | 590 MB | ~301k/s |
+| **1b′ CLI @ 1M** | **59.2 s** | same | 600 MB | ~198k/s |
+
+Artifacts: `.tmp/mfk5_merged_lib.duck.db`, `.tmp/mfk5_merged_1b1m.duck.db`.
+
+### Iteration 1g — MFK5 074–078 benchmark, before vs after (2026-11-16)
+
+**Goal:** HCP2 BLF no longer available. Lock a mid-size benchmark file and measure the pre-optimization baseline against current paths on the same input.
+
+**Input (benchmark file going forward):** `.source/in/MFK5_VAP_X50_drive_074_078_merged.blf` (1.46 GiB, 19,309,675 BLF objects) — lossless LOGG-body concat of `074_076_merged` + `077` + `078`. Same E3 ARXML.
+
+**Builds:**
+
+- Before (1a): commit `f4881f3` (RelWithDebInfo); `--batch-rows 100000`.
+- After: HEAD `fastrace_ingest` (1b′, `--batch-rows 1000000`) and `fastrace_ingest_lib` (1e).
+
+**Outcome:** All three produce identical row counts and identical on-demand detection output.
+
+| Path | Wall | vs 1a | Rate | DB |
+|------|------|-------|------|-----|
+| 1a baseline (`f4881f3`) @100k | 183.8 s | — | ~106k/s | 1,168 MB |
+| 1b′ CLI @1M (HEAD) | 97.0 s | −47% | ~200k/s | 1,040 MB |
+| **1e lib Appender (HEAD)** | **66.0 s** | **−64%** | ~294k/s | 1,037 MB |
+
+Rows (all paths): messages 19,309,746; `protocol_pdu` 53,803,561; `protocol_someip` 18,069,992; `protocol_someip_sd` 313,812; `protocol_doip` 1,232.
+
+In 1e, BLF inflate+decode (~24 s, 37%) is now the largest phase — further gains need the parallel reader (see [`adr/0002`](adr/0002-cpp-sidecar-writes-trace-store.md)).
+
+Artifacts: `.tmp/mfk5_bench_1a.duck.db`, `.tmp/mfk5_bench_1b1m.duck.db`, `.tmp/mfk5_bench_lib.duck.db`.
+
+Architecture decisions for the Tauri greenfield migration: [`adr/`](adr/).
+
 ---
 
 ## Backlog (perf → target 10–15 min wall)
@@ -298,6 +340,9 @@ Target: cut ~22.5 min → **10–15 min** on the same BLF. Bottleneck is **COPY 
 | 2026-11-16 | 1b′ | batch-rows 500k / 1M; default→1M | 1M: **20.4 s** (−46% vs 1a); CSV now largest |
 | 2026-11-16 | 1d | SQLite/Parquet staging (no C++ writer) | **reverted** — 26.5–26.9 s vs 20.4 s CSV |
 | 2026-11-16 | 1e | Prebuilt libduckdb + Appender (experimental binary) | **13.4 s** (−34% vs 1b′, −64% vs 1a) |
-| _next_ | 1c? | Long-lived stdin (optional) | candidate next / HCP2 |
+| 2026-11-16 | 1f | MFK5 074+075+076 merged (~900 MiB) scale check | lib **38.8 s** / CLI 59.2 s; ~2.9× vs 074 |
+| 2026-11-16 | 1g | MFK5 074–078 merged (1.46 GiB) before vs after | 183.8 s → 97.0 s → **66.0 s**; identical rows + detections |
+| _blocked_ | HCP2 | Final bench | HCP2 BLF unavailable; 1g file is the benchmark |
+| _next_ | 1c? | Long-lived stdin (optional) | only if staying CLI-only |
 | _next_ | 1d′ | Native C++ Parquet writer | blocked on Arrow/lib choice |
-| _next_ | HCP2 | Final bench (when called) | _TBD_ |
+| _next_ | ADR | Tauri greenfield migration | see [`adr/`](adr/) |
