@@ -8,18 +8,14 @@ Domain and product terms as used in Fastrace. Product-pipeline vocabulary is aut
 
 | Term | Meaning |
 |------|---------|
-| **Trace** | Source capture file (typically BLF). Input to Parse only; Detect after Ingest uses the Trace Store. |
-| **Parse** | C++ Sidecar turns Trace bytes into structured records (protocol peel included). Does not write DuckDB. |
-| **Parse Artifact** | On-disk handoff from Parse (Parquet / Arrow IPC), e.g. `<stem>.parse.parquet`. Staging, not the Trace Store. |
-| **Ingest** | Load Parse Artifact (+ optional Signal Database) into the Trace Store. No BLF/protocol decoding. |
-| **Trace Store** | Local DuckDB file for anomaly SQL after Prepare. Beside the Trace; owned by the Shell (Rust). |
-| **Prepare Trace Store** | One user action: Parse → Ingest (fail-fast; no half store). |
-| **Sidecar** | C++ CLI `fastrace_parse`. |
-| **Shell** | Tauri `/app` UI: Prepare, Detector Query, results. |
-| **Detector Query** | User-authored SQL against the Trace Store; v1 returns raw columns. |
-| **Detection** | Product-shaped anomaly finding (time, severity, message, message index, …). Not forced as v1 SQL shape. |
-| **Signal Database** | ARXML (later DBC) describing the vehicle network. Optional; materialised into Trace Store when provided. |
-| **Peel** | Extract typed protocol headers/fields from a frame into columns/structs (SOME/IP, SD, DoIP, PDU) so SQL need not re-parse payloads. |
+| **Trace** | Source capture file (BLF). Read only by the C++ sidecar, only during Prepare or on-demand signal decode. |
+| **Prepare** | One user action: the C++ sidecar reads the Trace (+ optional ARXML), peels protocols, and writes the Trace Store directly via the DuckDB Appender. Fail-fast. |
+| **Trace Store** | Local DuckDB file for Detector Query SQL after Prepare. Beside the Trace; written by the sidecar, read by the Shell. |
+| **Sidecar** | C++ CLI `fastrace_parse` (`native/cli`), subcommands `prepare` and `decode-signals`. |
+| **Shell** | Tauri `app/` UI: Prepare, Detector Query, results. |
+| **Detector Query** | User-authored SQL against the Trace Store, run by `crates/query`; returns raw columns/rows. |
+| **Signal Database** | ARXML (later DBC) describing the vehicle network. Optional; its dictionary is materialized into the Trace Store at Prepare; signal values decode on demand when plotted. |
+| **Peel** | Extract typed protocol headers/fields from a frame into columns (SOME/IP, SD, DoIP, PDU) so SQL need not re-parse payloads. |
 
 ---
 

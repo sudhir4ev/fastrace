@@ -2,52 +2,34 @@
 
 Desktop analysis of automotive network traces (CAN / Ethernet), with query-based anomaly detection over a local analytical store.
 
+Canonical decisions live in `docs/adr/`. This file is product vocabulary only; if it ever disagrees with an ADR, the ADR wins - fix this file.
+
 ## Language
 
 **Trace**:
-A source capture file (e.g. BLF) used as input to Parse. After Ingest, anomaly detection uses the Trace Store, not the Trace file.
-_Avoid_: Log (ambiguous), recording; implying Detect must re-open the BLF
+A source capture file (BLF). Read only by the C++ sidecar (`native/`), only during Prepare or on-demand signal decode.
+_Avoid_: Log (ambiguous), recording.
 
 **Trace Store**:
-The local DuckDB file beside a Trace holding everything required for anomaly detection and Detector Query iteration after Ingest — no further BLF reads for that purpose. Owned and written by the Shell (Rust).
-_Avoid_: Database (alone), cache, index; C++-written DuckDB; “must keep BLF open for detect”
+`<stem>.duckdb` beside the Trace. Holds everything Detector Queries need after Prepare. Written by the C++ sidecar via the DuckDB Appender (`docs/adr/0002`); the Rust app only opens it read-only.
+_Avoid_: Rust-written DuckDB; a separate Parse Artifact file (superseded, see `docs/adr/0002`).
 
-**Parse**:
-C++ Sidecar extraction of Trace content into structured records (including protocol peel C++ already performs) for the Shell. Rust does not parse.
-_Avoid_: Ingest; any Rust-side BLF/protocol decoding
-
-**Ingest**:
-Loading already-parsed records (and optional Signal Database defs) into the Trace Store (DuckDB) only — no BLF/protocol interpretation. Shell / Rust domain. After Ingest succeeds, Detector Queries must not need the BLF or ARXML files.
-_Avoid_: Parse; “Rust parsing”
-
-**Parse Artifact**:
-Columnar on-disk handoff from Parse (Parquet / Arrow IPC for v1), typically `<trace_stem>.parse.parquet` beside the Trace. Kept until the user manually deletes it via the Shell (not auto-deleted on successful Ingest). Streaming handoff is a later option.
-_Avoid_: Trace Store (the artifact is staging, not the analytical DB); silent auto-delete in v1
-
-**Detection**:
-A product-shaped anomaly finding (time, severity, query id, message, message index, …). Not required as the v1 SQL result schema — v1 shows raw query result columns; proper Detection rendering comes later.
-_Avoid_: Assuming every SQL result is already a Detection row in v1
+**Prepare**:
+The one user action: the C++ sidecar (`fastrace_parse prepare`) reads the Trace (+ optional ARXML), peels protocol fields, and writes the Trace Store directly - no intermediate Parquet/Arrow handoff file. Fail-fast: a non-zero exit deletes the partial store.
+_Avoid_: Separate "Parse" and "Ingest" steps or a "Parse Artifact" (both were the pre-ADR-0002 plan; the sidecar now writes DuckDB in one pass).
 
 **Detector Query**:
-A raw SQL unit the user composes/edits against the Trace Store. v1 displays the result set as returned (columns/rows), without forcing a Detection DTO.
-_Avoid_: Detector (C++ class); visual rule builder; mandatory Detection-shaped SELECT in v1
+User-editable SQL run against the Trace Store by `crates/query`. Results are raw returned columns/rows. All anomaly-detection logic is SQL, never C++ or Rust (`docs/adr/0003`).
+_Avoid_: Detector (C++ class); a streaming detection engine.
 
 **Signal Database**:
-An AUTOSAR ARXML (or later DBC) description of the vehicle network — PDUs, signals, ECUs — used to interpret IDs/addresses. Optional input; when present, relevant tables are materialised into the Trace Store so Detector Queries can join without re-reading the file.
-_Avoid_: “the database” alone (ambiguous with Trace Store); payload
-
-**Pipeline Run**:
-One manual execution. v1 stages: (1) Prepare Trace Store, (2) raw Detector SQL composition, (3) Run Detector Query → raw result grid. Progress/errors surface in the Shell UI/logs in v1 (DuckDB `pipeline_*` tables deferred). No click-to-message navigate in v1.
-_Avoid_: Job, task, automatic background run; assuming Detection-shaped results or peek navigation in v1
-
-**Prepare Trace Store**:
-The single user action that runs Sidecar Parse (→ Parse Artifact) then Rust Ingest into the Trace Store, optionally materialising Signal Database tables when an ARXML is provided. v1 always re-runs when clicked (no fingerprint skip yet). Fail-fast: on error, no successful half-written Trace Store.
-_Avoid_: Separate required “Parse” and “Ingest” clicks in v1 (advanced split later); silent reuse of stale stores in v1
+An AUTOSAR ARXML (or later DBC) description of the vehicle network - PDUs, signals, ECUs - used to interpret IDs/addresses. Optional Prepare input; its dictionary is materialized into `arxml_*` tables. Actual signal values are decoded on demand when the user plots a signal, not at Prepare time (`docs/adr/0005`).
+_Avoid_: "the database" alone (ambiguous with Trace Store); assuming all signals are decoded at Prepare.
 
 **Sidecar**:
-The local C++ CLI `fastrace_parse` that parses raw Trace bytes into a Parse Artifact. It does not write the Trace Store and does not run Detector Queries.
-_Avoid_: Ingest engine, DuckDB owner, “backend that does everything”; overloading `cpp_parser` as the long-term product name
+`fastrace_parse`, the bundled C++ executable (`native/cli`). Runs `prepare` and `decode-signals`. Writes the Trace Store directly; does not run Detector Queries.
+_Avoid_: Ingest engine as a separate Rust concept; overloading `cpp_parser` as the product name (retired with the Qt UI).
 
 **Shell**:
-The Tauri app under `/app` (React + TypeScript) — sole product UI; owns Ingest into DuckDB, Detector Query execution, and rendering. Qt `/ui` is removed in the same cut as streaming DetectionEngine / C++ detectors.
-_Avoid_: fastrace_ui / Qt UI as product surface; dual anomaly paths
+The Tauri app under `app/` (Rust `src-tauri` + React/TypeScript `ui`) - sole product UI. Owns Detector Query execution via `crates/query` and spawns the sidecar via `crates/sidecar`. Qt `/ui` and the streaming `DetectionEngine`/C++ detectors are retired (`archive/qt-cpp-legacy`).
+_Avoid_: fastrace_ui / Qt UI as product surface; dual anomaly paths.
