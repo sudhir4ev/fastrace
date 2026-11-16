@@ -242,6 +242,28 @@ Row counts matched 1b′. Both **regress vs 1b′ @ 1M (20.4 s)**: SQLite write 
 
 Artifact (forensics): `.tmp/mfk5_1d.duck.db` from attempt B.
 
+### Iteration 1e — In-process prebuilt libduckdb + Appender (2026-11-16) — experimental
+
+**Goal:** Perf test only. Remove the CSV handoff and the CLI process entirely by linking prebuilt `libduckdb` (v1.1.3, same as CLI; no compile) and streaming rows through the DuckDB C Appender as the BLF is read. Reopens D1 for measurement only; not a new project baseline (UI moving to Tauri; Rust pipeline under consideration).
+
+**Change:** New experimental binary `fastrace_ingest_lib` (`cpp/src/ingest_lib_main.cpp`), built only when `-DFASTRACE_LIBDUCKDB_DIR=<dir with duckdb.h + libduckdb>` is set. Existing `fastrace_ingest` (CSV/CLI) untouched. Library fetched to `.tmp/libduckdb/` from the DuckDB v1.1.3 release (`libduckdb-osx-universal.zip`).
+
+**Outcome:** **13.4 s** wall vs 20.4 s (1b′) — **−34% vs 1b′, −64% vs 1a**. Row counts and on-demand detection counts identical to 1a. DB 213 MB.
+
+| Phase | ms | % wall |
+|-------|-----|--------|
+| open + DDL | 20 | 0.1% |
+| ARXML materialize | 199 | 1.5% |
+| BLF inflate+decode | 4,723 | 35.2% |
+| protocol peel | 468 | 3.5% |
+| appender append | 4,039 | 30.1% |
+| appender final flush | 63 | 0.5% |
+| ingest wall | 13,201 | 98.4% |
+
+Remaining ~3.9 s of ingest wall not in the table is reader iteration + per-message `TraceMessage` copy (same work as the CSV path). CSV write (7.2 s) + COPY (3.9 s) in 1b′ are replaced by ~4.1 s of appender time.
+
+Artifact: `.tmp/mfk5_lib.duck.db`.
+
 ---
 
 ## Backlog (perf → target 10–15 min wall)
@@ -275,6 +297,7 @@ Target: cut ~22.5 min → **10–15 min** on the same BLF. Bottleneck is **COPY 
 | 2026-11-16 | 1b | Batched multi-COPY @ 100k (MFK5) | 234 MB, ~28.9 s (−23%); COPY −40% |
 | 2026-11-16 | 1b′ | batch-rows 500k / 1M; default→1M | 1M: **20.4 s** (−46% vs 1a); CSV now largest |
 | 2026-11-16 | 1d | SQLite/Parquet staging (no C++ writer) | **reverted** — 26.5–26.9 s vs 20.4 s CSV |
+| 2026-11-16 | 1e | Prebuilt libduckdb + Appender (experimental binary) | **13.4 s** (−34% vs 1b′, −64% vs 1a) |
 | _next_ | 1c? | Long-lived stdin (optional) | candidate next / HCP2 |
 | _next_ | 1d′ | Native C++ Parquet writer | blocked on Arrow/lib choice |
 | _next_ | HCP2 | Final bench (when called) | _TBD_ |
