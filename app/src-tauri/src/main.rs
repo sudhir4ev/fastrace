@@ -141,11 +141,51 @@ fn get_trace_summary(blf_path: String) -> Result<TraceSummary, String> {
     })
 }
 
+#[tauri::command]
+fn list_message_groups(blf_path: String) -> Result<Vec<query::MessageGroup>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::list_message_groups(&conn)
+}
+
+#[tauri::command]
+fn list_messages(
+    blf_path: String,
+    group_key: String,
+    cursor: Option<i64>,
+    limit: i64,
+) -> Result<query::MessagePage, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::list_messages(&conn, &group_key, cursor, limit)
+}
+
+#[tauri::command]
+fn get_message_detail(blf_path: String, msg_id: i64) -> Result<query::MessageRow, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::get_message_detail(&conn, msg_id)
+}
+
+#[tauri::command]
+fn list_ecus(blf_path: String) -> Result<Vec<String>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::list_ecus(&conn)
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(PrepareGuard(Mutex::new(false)))
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![prepare_trace, get_trace_summary])
+        .invoke_handler(tauri::generate_handler![
+            prepare_trace,
+            get_trace_summary,
+            list_message_groups,
+            list_messages,
+            get_message_detail,
+            list_ecus
+        ])
         .run(tauri::generate_context!())
         .expect("error while running fastrace");
 }
