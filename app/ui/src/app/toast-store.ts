@@ -11,10 +11,16 @@ interface ToastState {
   dismiss: (id: number) => void;
 }
 
+const AUTO_DISMISS_MS = 5000;
+
 let nextId = 1;
 
-export const useToastStore = create<ToastState>((set) => ({
+export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
-  pushError: (message) => set((state) => ({ toasts: [...state.toasts, { id: nextId++, message }] })),
+  pushError: (message) => {
+    const id = nextId++;
+    set((state) => ({ toasts: [...state.toasts, { id, message }] }));
+    setTimeout(() => get().dismiss(id), AUTO_DISMISS_MS);
+  },
   dismiss: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 }));

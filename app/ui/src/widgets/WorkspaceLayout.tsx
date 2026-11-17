@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useFileSizes } from "@/shared/api/hooks";
-import { formatBytes } from "@/shared/ui/lib/utils";
+import { formatBytes, formatDuration } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 import AnalyzerPanel from "./AnalyzerPanel";
 import MessageDetails from "./MessageDetails";
@@ -38,7 +38,7 @@ function StatusBar({
   return (
     <div className="flex h-[26px] shrink-0 items-center gap-4 bg-foreground px-3 text-[10px] text-background">
       <span>Total messages: {prepareTotals ? prepareTotals.messages : "-"}</span>
-      <span>Ingestion time: {prepareTotals ? `${prepareTotals.elapsed_ms} ms` : "-"}</span>
+      <span>Ingestion time: {prepareTotals ? formatDuration(prepareTotals.elapsed_ms) : "-"}</span>
       <span>BLF size: {fileSizes.data ? formatBytes(fileSizes.data.blfBytes) : "-"}</span>
       <span>Ingested size: {fileSizes.data ? formatBytes(fileSizes.data.duckdbBytes) : "-"}</span>
     </div>
