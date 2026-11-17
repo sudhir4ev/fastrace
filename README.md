@@ -2,7 +2,7 @@
 
 Desktop app to analyze automotive network traces (CAN and Ethernet) via SQL-based anomaly detection over a local Trace Store. Tauri (Rust + React/TypeScript) with a C++ sidecar for trace parsing.
 
-- Architecture decisions: `docs/adr/` - start with `0001-monorepo-layout-and-boundaries.md` and `architecture.md`.
+- Architecture decisions: `docs/adr/` - start with `0001-monorepo-layout-and-boundaries.md`; see `architecture.md`'s module/boundary table for what each `native/`/`crates/` package owns and how to test it standalone.
 - Agent/contributor instructions: `AGENTS.md`.
 - Product vocabulary: `CONTEXT.md`, `GLOSSARY.md`.
 - Pre-migration Qt/C++ implementation: `archive/qt-cpp-legacy` branch (not on `master`).

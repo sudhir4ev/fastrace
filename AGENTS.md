@@ -26,6 +26,7 @@ This file provides guidance to Claude when working with code in this repository.
 * **Organization:** Keep code modular with strong separation of responsibility across the `native/{blf,protocol,signaldb,store,cli}` and `crates/{trace-store,query,sidecar}` boundaries defined in `docs/adr/0001-monorepo-layout-and-boundaries.md`.
 
 ## Do
+* **Always:** Give every module (`native/{blf,protocol,signaldb,store,cli}`, `crates/{trace-store,query,sidecar}`) its own test entry point (`ctest` target or `cargo test`), a `README.md` with the exact commands to build and run its tests, and verify it passes in isolation - a developer must be able to validate one module without building the rest of the monorepo.
 * **Always:** Run `clang-format` on modified C++ files; `cargo fmt` on modified Rust files.
 * **Always:** Update the relevant `CMakeLists.txt` or `Cargo.toml` when adding or removing source files.
 * **Always:** Bump `schema_version` in `schema/schema.sql` when changing the Trace Store DDL, and update both the C++ embed step and the Rust open-time check in the same change (`docs/adr/0001` boundary rule 1).

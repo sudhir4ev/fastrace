@@ -59,6 +59,23 @@ Signal presence before decoding comes from joining `arxml_signal` to message and
 
 ## Component boundaries
 
+Each module's own `README.md` documents the exact command to test it in isolation
+(the "Always" rule in `AGENTS.md`'s `## Do` section) - this table is the index,
+not the detail:
+
+| Module | Responsibility | Depends on | Must never depend on | Test entry point |
+|--------|---------------|-----------|----------------------|-------------------|
+| `native/blf` | BLF container inflate, split-object stitch, `TraceMessage` decode | libdeflate, spdlog | Rust, Tauri, DuckDB | (no dedicated test target yet) |
+| `native/protocol` | Protocol peel: PDU/SOME-IP/SOME-IP-SD/DoIP | `native/blf` | Rust, Tauri, DuckDB | (no dedicated test target yet) |
+| `native/signaldb` | ARXML parse, on-demand signal decode | pugixml, spdlog | Rust, Tauri, DuckDB | (no dedicated test target yet) |
+| `native/store` | DuckDB schema embed, Appender writer, ARXML/protocol row mapping | `native/blf`, `native/protocol`, `native/signaldb`, prebuilt libduckdb | Rust, Tauri | `ctest --test-dir build -R 'fastrace_store\|fastrace_fixture'` (`native/store/README.md`) |
+| `native/cli` | `fastrace_parse prepare`/`decode-signals` entrypoint, progress protocol | all of the above | Rust, Tauri | `ctest --test-dir build -R fastrace_store_fixture_prepare` |
+| `crates/trace-store` | Opens `.duckdb` read-only, checks `schema_version` (stub until the Rust-side DuckDB wave) | - | BLF/ARXML parsing, Tauri | `cargo test -p trace-store` |
+| `crates/query` | Runs Detector Query SQL (stub until that wave) | `trace-store` | BLF/ARXML parsing, Tauri | `cargo test -p query` |
+| `crates/sidecar` | Spawns `fastrace_parse`, parses its progress/error protocol | `serde_json` only | BLF/ARXML parsing, DuckDB, Tauri | `cargo test --manifest-path crates/sidecar/Cargo.toml` (`crates/sidecar/README.md`) |
+| `app/src-tauri` | Thin `#[tauri::command]` adapters over `crates/*` | `crates/*`, `tauri` | business logic, BLF/ARXML/DuckDB directly | `cargo build --manifest-path app/src-tauri/Cargo.toml` (manual `cargo tauri dev`; no automated test yet) |
+| `app/ui` | React/TS frontend | `app/src-tauri` (IPC) | - | (no dedicated test target yet) |
+
 ```
 app/ui (React) <--> app/src-tauri (commands) <--> crates/{trace-store, query, sidecar}
                                                           |

@@ -1,6 +1,6 @@
 # Benchmarks
 
-Evidence behind the ADRs. Full iteration history is in the old repo's `doc/duckdb_ingest_tracker.md`.
+Evidence behind the ADRs. Full iteration history is in `duckdb_ingest_tracker.md` (carried over from the pre-migration repo's `doc/duckdb_ingest_tracker.md`).
 
 Machine: macOS, Apple Silicon. Builds: RelWithDebInfo. DuckDB 1.1.3 (CLI and libduckdb).
 

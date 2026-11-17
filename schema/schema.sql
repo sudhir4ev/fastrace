@@ -1,5 +1,6 @@
 -- Trace Store DDL for fastrace_ingest (external duckdb CLI).
 -- Payloads stay in the BLF (source of truth). Signals/detections are on-demand.
+-- schema_version: 1
 
 CREATE TABLE messages (
   msg_id       BIGINT PRIMARY KEY,

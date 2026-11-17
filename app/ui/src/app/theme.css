@@ -1,0 +1,76 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Lato:wght@400;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* ---- Copied from automotive-trace-analysis/project/tokens.css ---- */
+  --slate-0: #FFFFFF;
+  --slate-50: #F7F9FB;
+  --slate-100: #EEF2F6;
+  --slate-200: #D7DEE7;
+  --slate-400: #94A3B4;
+  --slate-500: #697587;
+  --slate-900: #141A22;
+
+  --indigo-50: #EEF0FE;
+  --indigo-500: #4F5BE0;
+  --indigo-600: #3F49C7;
+
+  --red-500: #E23B40;
+
+  --bg-app: var(--slate-50);
+  --bg-surface: var(--slate-0);
+  --fg-primary: var(--slate-900);
+  --fg-secondary: var(--slate-500);
+  --fg-inverse: #FFFFFF;
+
+  --border-default: var(--slate-100);
+  --border-strong: var(--slate-200);
+  --border-focus: var(--indigo-500);
+
+  --accent: var(--indigo-600);
+  --accent-hover: var(--indigo-500);
+  --accent-soft: var(--indigo-50);
+
+  --font-display: 'DM Sans', system-ui, sans-serif;
+  --font-body: 'Lato', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --radius-md: 7px;
+
+  /* ---- shadcn semantic aliases ----
+     This project's --accent (brand/primary action color, the "purple" the
+     user asked to match) maps to shadcn's --primary. shadcn's OWN --accent
+     (hover/subtle-highlight background) is a different concept with the
+     same name - it is aliased to --accent-bg below to avoid a collision. */
+  --background: var(--bg-app);
+  --foreground: var(--fg-primary);
+  --card: var(--bg-surface);
+  --card-foreground: var(--fg-primary);
+  --popover: var(--bg-surface);
+  --popover-foreground: var(--fg-primary);
+  --primary: var(--accent);
+  --primary-foreground: var(--fg-inverse);
+  --primary-hover: var(--accent-hover);
+  --secondary: var(--slate-100);
+  --secondary-foreground: var(--fg-primary);
+  --muted: var(--slate-100);
+  --muted-foreground: var(--fg-secondary);
+  --accent-bg: var(--accent-soft);
+  --accent-bg-foreground: var(--fg-primary);
+  --destructive: var(--red-500);
+  --destructive-foreground: var(--fg-inverse);
+  --border: var(--border-default);
+  --input: var(--border-strong);
+  --ring: var(--border-focus);
+  --radius: var(--radius-md);
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground font-sans;
+    margin: 0;
+  }
+}
