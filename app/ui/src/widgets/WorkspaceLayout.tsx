@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
-import { useFileSizes } from "@/shared/api/hooks";
-import { formatBytes, formatDuration } from "@/shared/ui/lib/utils";
+import { useFileSizes, useIsDecodingSignals } from "@/shared/api/hooks";
+import { formatBytes } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
+import ActivityLog from "./ActivityLog";
 import AnalyzerPanel from "./AnalyzerPanel";
+import DecodeOverlay from "./DecodeOverlay";
 import MessageDetails from "./MessageDetails";
 import MessageList from "./MessageList";
 import TimelinePanel from "./TimelinePanel";
@@ -38,14 +40,17 @@ function StatusBar({
   return (
     <div className="flex h-[26px] shrink-0 items-center gap-4 bg-foreground px-3 text-[10px] text-background">
       <span>Total messages: {prepareTotals ? prepareTotals.messages : "-"}</span>
-      <span>Ingestion time: {prepareTotals ? formatDuration(prepareTotals.elapsed_ms) : "-"}</span>
       <span>BLF size: {fileSizes.data ? formatBytes(fileSizes.data.blfBytes) : "-"}</span>
       <span>Ingested size: {fileSizes.data ? formatBytes(fileSizes.data.duckdbBytes) : "-"}</span>
+      <span className="ml-auto">
+        <ActivityLog blfPath={blfPath} />
+      </span>
     </div>
   );
 }
 
 export default function WorkspaceLayout({ blfPath, prepareTotals, onOpenTrace }: WorkspaceLayoutProps) {
+  const isDecoding = useIsDecodingSignals(blfPath);
   return (
     <div className="flex h-screen flex-col">
       <TopBar traceName={blfPath.split(/[\\/]/).pop() ?? blfPath} onOpenTrace={onOpenTrace} />
@@ -88,6 +93,7 @@ export default function WorkspaceLayout({ blfPath, prepareTotals, onOpenTrace }:
       </div>
       <StatusBar blfPath={blfPath} prepareTotals={prepareTotals} />
       <Toaster />
+      <DecodeOverlay active={isDecoding} />
     </div>
   );
 }

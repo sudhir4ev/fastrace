@@ -11,6 +11,10 @@ struct ArSignal {
     uint32_t startBit = 0;
     uint32_t bitLength = 0;
     bool isBigEndian = false;
+    // Linear scaling from ARXML COMPU-RATIONAL-COEFFS: physValue = rawValue * factor + offset.
+    // Defaults (no COMPU-METHOD, or a non-linear/rational method) leave raw and physical equal.
+    double factor = 1.0;
+    double offset = 0.0;
 };
 
 enum class ArBusType { CAN, ETHERNET };

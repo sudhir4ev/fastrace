@@ -1,6 +1,6 @@
 -- Trace Store DDL for fastrace_ingest (external duckdb CLI).
 -- Payloads stay in the BLF (source of truth). Signals/detections are on-demand.
--- schema_version: 1
+-- schema_version: 2
 
 CREATE TABLE messages (
   msg_id       BIGINT PRIMARY KEY,
@@ -70,4 +70,26 @@ CREATE TABLE arxml_can (
   name VARCHAR,
   extended BOOLEAN,
   dlc INTEGER
+);
+
+CREATE TABLE arxml_signal (
+  signal_id   BIGINT PRIMARY KEY,
+  name        VARCHAR,
+  parent_kind VARCHAR,   -- 'can' or 'pdu'
+  parent_id   BIGINT,    -- can_id or pdu_id depending on parent_kind
+  start_bit   INTEGER,
+  bit_length  INTEGER,
+  big_endian  BOOLEAN,
+  factor      DOUBLE,    -- from ARXML COMPU-RATIONAL-COEFFS; 1.0 if no COMPU-METHOD or non-linear
+  "offset"    DOUBLE     -- from ARXML COMPU-RATIONAL-COEFFS; 0.0 if no COMPU-METHOD or non-linear;
+                         -- quoted: OFFSET is a reserved keyword in DuckDB's SQL dialect
+);
+
+-- Decoded signal samples, populated on demand by fastrace_parse decode-signals (docs/adr/0005).
+CREATE TABLE signals (
+  signal_id    BIGINT,
+  msg_id       BIGINT,
+  timestamp_us BIGINT,
+  raw_value    UBIGINT,
+  phys_value   DOUBLE     -- raw_value * factor + "offset"
 );

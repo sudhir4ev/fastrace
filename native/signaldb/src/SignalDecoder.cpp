@@ -82,6 +82,7 @@ std::vector<DecodedSignal> decodeAllSignals(const ArDatabase& db, const TraceMes
                         ds.bitLength = sig.bitLength;
                         ds.startBit = sig.startBit;
                         ds.isBigEndian = sig.isBigEndian;
+                        ds.parentPduId = arMsg.pduId;
                         ds.rawValue = extractSignalRaw(msg.data.data() + pduOffset, msg.data.size() - pduOffset,
                             sig.startBit, sig.bitLength, sig.isBigEndian);
                         result.push_back(std::move(ds));
@@ -100,6 +101,7 @@ std::vector<DecodedSignal> decodeAllSignals(const ArDatabase& db, const TraceMes
                 ds.bitLength = sig.bitLength;
                 ds.startBit = sig.startBit;
                 ds.isBigEndian = sig.isBigEndian;
+                ds.parentCanId = arMsg.canId;
                 ds.rawValue
                     = extractSignalRaw(msg.data.data(), msg.data.size(), sig.startBit, sig.bitLength, sig.isBigEndian);
                 result.push_back(std::move(ds));

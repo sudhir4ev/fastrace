@@ -7,7 +7,7 @@ This file provides guidance to Claude when working with code in this repository.
 * **Target Platforms:** Linux, Mac, and Windows (Tauri).
 * **Core Goals:**
   * Fast Prepare (BLF -> Trace Store) and fast Detector Query iteration.
-  * Non-blocking UI; a DuckDB write lock during Prepare is the only user-visible blackout (`docs/adr/0004-detectors-run-after-prepare.md`).
+  * Non-blocking UI; a DuckDB write lock during Prepare or an on-demand signal decode is the only user-visible blackout (`docs/adr/0004-detectors-run-after-prepare.md`, `docs/adr/0005-signal-decode-on-plot.md`).
   * Detection logic lives entirely in SQL, never in C++ or Rust (`docs/adr/0003-anomaly-detection-is-duckdb-sql.md`).
 
 ## Development Commands

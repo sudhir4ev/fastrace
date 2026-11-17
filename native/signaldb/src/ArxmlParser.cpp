@@ -21,6 +21,22 @@ namespace {
 
     struct ISignalInfo {
         uint32_t bitLength = 0;
+        std::string systemSignalRef;
+    };
+
+    // Resolved from SYSTEM-SIGNAL > PHYSICAL-PROPS > ... > COMPU-METHOD-REF.
+    struct SystemSignalInfo {
+        std::string compuMethodRef;
+    };
+
+    // Linear scaling pulled from a COMPU-METHOD's COMPU-RATIONAL-COEFFS, if any.
+    // AUTOSAR COMPU-METHODs can mix a linear COMPU-SCALE (normal operating range) with
+    // COMPU-CONST text-table scales (named special values, e.g. "Init"/"Error") - we only
+    // care about the linear one; text-table-only methods leave hasLinear false.
+    struct CompuMethodInfo {
+        double factor = 1.0;
+        double offset = 0.0;
+        bool hasLinear = false;
     };
 
     struct SignalMapping {
@@ -67,6 +83,8 @@ namespace {
 
     struct IndexMaps {
         std::unordered_map<std::string, ISignalInfo> iSignals;
+        std::unordered_map<std::string, SystemSignalInfo> systemSignals;
+        std::unordered_map<std::string, CompuMethodInfo> compuMethods;
         std::unordered_map<std::string, IPduInfo> iPdus;
         std::unordered_map<std::string, CanFrameInfo> canFrames;
         std::vector<CanFtInfo> frameTriggers;
@@ -132,6 +150,71 @@ namespace {
         }
     }
 
+    // A COMPU-SCALE is linear-decodable when its COMPU-RATIONAL-COEFFS has exactly one
+    // denominator coefficient (no rational/non-linear term) and two numerator coefficients
+    // (offset, factor), matching physValue = rawValue * factor + offset.
+    static bool tryParseLinearCoeffs(pugi::xml_node scale, double& factor, double& offset)
+    {
+        auto coeffs = scale.child("COMPU-RATIONAL-COEFFS");
+        if (!coeffs) {
+            return false;
+        }
+        std::vector<double> num;
+        std::vector<double> den;
+        for (auto v : coeffs.child("COMPU-NUMERATOR").children("V")) {
+            num.push_back(std::strtod(v.text().get(), nullptr));
+        }
+        for (auto v : coeffs.child("COMPU-DENOMINATOR").children("V")) {
+            den.push_back(std::strtod(v.text().get(), nullptr));
+        }
+        if (num.size() != 2 || den.empty() || den[0] == 0.0) {
+            return false;
+        }
+        if (den.size() > 1 && den[1] != 0.0) {
+            return false; // genuinely rational, not linear - leave to the caller's fallback.
+        }
+        factor = num[1] / den[0];
+        offset = num[0] / den[0];
+        return true;
+    }
+
+    static CompuMethodInfo parseCompuMethod(pugi::xml_node el)
+    {
+        CompuMethodInfo info;
+        for (auto scale : el.select_nodes(".//COMPU-SCALE")) {
+            double factor = 1.0;
+            double offset = 0.0;
+            if (tryParseLinearCoeffs(scale.node(), factor, offset)) {
+                info.factor = factor;
+                info.offset = offset;
+                info.hasLinear = true;
+                break;
+            }
+        }
+        return info;
+    }
+
+    // Resolves an I-SIGNAL's factor/offset by following I-SIGNAL -> SYSTEM-SIGNAL ->
+    // COMPU-METHOD-REF. Leaves sig.factor/offset at their 1.0/0.0 defaults on any broken
+    // or missing link, or when the method has no linear scale.
+    static void applyFactorOffset(ArSignal& sig, const std::string& iSignalRef, const IndexMaps& maps)
+    {
+        auto sigIt = maps.iSignals.find(iSignalRef);
+        if (sigIt == maps.iSignals.end()) {
+            return;
+        }
+        auto sysIt = maps.systemSignals.find(sigIt->second.systemSignalRef);
+        if (sysIt == maps.systemSignals.end()) {
+            return;
+        }
+        auto cmIt = maps.compuMethods.find(sysIt->second.compuMethodRef);
+        if (cmIt == maps.compuMethods.end() || !cmIt->second.hasLinear) {
+            return;
+        }
+        sig.factor = cmIt->second.factor;
+        sig.offset = cmIt->second.offset;
+    }
+
     static void indexPackage(pugi::xml_node pkg, const std::string& parentPath, IndexMaps& maps)
     {
         const char* nameStr = cv(pkg, "SHORT-NAME");
@@ -148,7 +231,16 @@ namespace {
             if (std::strcmp(tag, "I-SIGNAL") == 0) {
                 ISignalInfo info;
                 info.bitLength = parseU32(cv(el, "LENGTH"));
+                info.systemSignalRef = el.child("SYSTEM-SIGNAL-REF").text().get();
                 maps.iSignals[elPath] = info;
+            } else if (std::strcmp(tag, "SYSTEM-SIGNAL") == 0) {
+                SystemSignalInfo info;
+                if (auto ref = el.select_node(".//COMPU-METHOD-REF")) {
+                    info.compuMethodRef = ref.node().text().get();
+                }
+                maps.systemSignals[elPath] = std::move(info);
+            } else if (std::strcmp(tag, "COMPU-METHOD") == 0) {
+                maps.compuMethods[elPath] = parseCompuMethod(el);
             } else if (std::strcmp(tag, "I-SIGNAL-I-PDU") == 0) {
                 IPduInfo info;
                 info.byteLength = parseU32(cv(el, "LENGTH"));
@@ -305,6 +397,7 @@ namespace {
                 if (sigIt != maps.iSignals.end()) {
                     sig.bitLength = sigIt->second.bitLength;
                 }
+                applyFactorOffset(sig, sm.iSignalRef, maps);
                 msg.signalDefs.push_back(std::move(sig));
             }
 
@@ -348,6 +441,7 @@ namespace {
                 if (sigIt != maps.iSignals.end()) {
                     sig.bitLength = sigIt->second.bitLength;
                 }
+                applyFactorOffset(sig, sm.iSignalRef, maps);
                 msg.signalDefs.push_back(std::move(sig));
             }
 

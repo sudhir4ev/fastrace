@@ -13,6 +13,10 @@ struct DecodedSignal {
     uint32_t bitLength = 0;
     uint32_t startBit = 0;
     bool isBigEndian = false;
+    // Parent message identity, so callers (e.g. decode-signals) can disambiguate
+    // same-named signals defined on different CAN/PDU messages. Exactly one is nonzero.
+    uint32_t parentCanId = 0;
+    uint32_t parentPduId = 0;
 };
 
 // Extract raw unsigned value from CAN data bytes.

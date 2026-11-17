@@ -173,6 +173,68 @@ pub fn get_message_detail(conn: &trace_store::Connection, msg_id: i64) -> Result
         .map_err(|e| format!("message {msg_id} not found: {e}"))
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalCatalogEntry {
+    pub signal_id: i64,
+    pub name: String,
+    pub parent_label: String,
+    pub decodable: bool,
+    pub cached: bool,
+}
+
+/// ARXML signal dictionary, joined against `messages`/`protocol_pdu` for decodability
+/// and against `signals` for cache status. `order by cached desc` is what pins
+/// already-decoded signals to the top of the UI's list.
+pub fn list_signal_catalog(conn: &trace_store::Connection) -> Result<Vec<SignalCatalogEntry>, String> {
+    let sql = format!(
+        "select s.signal_id, s.name,
+                case when s.parent_kind = 'can' then 'CAN ' || cast(s.parent_id as varchar)
+                     else 'PDU ' || cast(s.parent_id as varchar) end as parent_label,
+                case when s.parent_kind = 'can' then
+                       exists (select 1 from messages m where m.object_type in ({CAN_OBJECT_TYPES}) and m.arb_id = s.parent_id)
+                     else
+                       exists (select 1 from protocol_pdu p where p.pdu_id = s.parent_id)
+                     end as decodable,
+                exists (select 1 from signals sig where sig.signal_id = s.signal_id) as cached
+         from arxml_signal s
+         order by cached desc, s.name"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SignalCatalogEntry {
+                signal_id: row.get(0)?,
+                name: row.get(1)?,
+                parent_label: row.get(2)?,
+                decodable: row.get(3)?,
+                cached: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+/// First `limit` decoded samples for one signal, ordered by time - backs the Signals
+/// tab's minimal inline value preview (no charting, docs/adr/0005's "second pass").
+pub fn list_signal_samples(
+    conn: &trace_store::Connection,
+    signal_id: i64,
+    limit: i64,
+) -> Result<Vec<(i64, f64)>, String> {
+    let mut stmt = conn
+        .prepare("select timestamp_us, phys_value from signals where signal_id = ? order by timestamp_us limit ?")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(duckdb::params![signal_id, limit], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
 pub fn list_ecus(conn: &trace_store::Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare("select name from arxml_ecu order by name")
@@ -208,6 +270,9 @@ mod tests {
             "CREATE TABLE messages (msg_id BIGINT, timestamp_us BIGINT, object_type INTEGER, arb_id INTEGER, dst_ip VARCHAR, dst_port INTEGER, dlc INTEGER, payload_len INTEGER);
              CREATE TABLE arxml_can (can_id BIGINT, name VARCHAR);
              CREATE TABLE arxml_ecu (name VARCHAR);
+             CREATE TABLE protocol_pdu (msg_id BIGINT, pdu_id BIGINT, length BIGINT);
+             CREATE TABLE arxml_signal (signal_id BIGINT, name VARCHAR, parent_kind VARCHAR, parent_id BIGINT, start_bit INTEGER, bit_length INTEGER, big_endian BOOLEAN, factor DOUBLE, \"offset\" DOUBLE);
+             CREATE TABLE signals (signal_id BIGINT, msg_id BIGINT, timestamp_us BIGINT, raw_value UBIGINT, phys_value DOUBLE);
              INSERT INTO arxml_can VALUES (100, 'EngineSpeed');
              INSERT INTO messages VALUES (1, 1000, 1, 100, NULL, NULL, 8, 8);
              INSERT INTO messages VALUES (2, 2000, 1, 100, NULL, NULL, 8, 8);
@@ -283,5 +348,48 @@ mod tests {
     fn list_ecus_returns_empty_vec_when_no_ecus() {
         let conn = setup();
         assert_eq!(list_ecus(&conn).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn list_signal_catalog_reports_decodable_and_cached_flags() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO arxml_signal VALUES (1, 'GhostSignal', 'can', 999, 0, 8, false, 1.0, 0.0);
+             INSERT INTO protocol_pdu VALUES (4, 42, 64);
+             INSERT INTO arxml_signal VALUES (2, 'PduSignal', 'pdu', 42, 0, 8, false, 1.0, 0.0);
+             INSERT INTO signals VALUES (0, 1, 1000, 513, 128.25);",
+        )
+        .unwrap();
+        let catalog = list_signal_catalog(&conn).unwrap();
+
+        let engine = catalog.iter().find(|s| s.signal_id == 0).unwrap();
+        assert_eq!(engine.parent_label, "CAN 100");
+        assert!(engine.decodable, "EngineRpm's carrier message (arb_id 100) exists");
+        assert!(engine.cached, "EngineRpm has a row in signals");
+
+        let ghost = catalog.iter().find(|s| s.signal_id == 1).unwrap();
+        assert!(!ghost.decodable, "GhostSignal's carrier message (arb_id 999) is absent");
+        assert!(!ghost.cached);
+
+        let pdu = catalog.iter().find(|s| s.signal_id == 2).unwrap();
+        assert_eq!(pdu.parent_label, "PDU 42");
+        assert!(pdu.decodable, "PduSignal's carrier pdu_id 42 exists in protocol_pdu");
+
+        // cached signal sorts first.
+        assert_eq!(catalog[0].signal_id, 0);
+    }
+
+    #[test]
+    fn list_signal_samples_orders_by_timestamp_and_respects_limit() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 2, 2000, 600, 150.0);
+             INSERT INTO signals VALUES (0, 1, 1000, 513, 128.25);",
+        )
+        .unwrap();
+        let samples = list_signal_samples(&conn, 0, 1).unwrap();
+        assert_eq!(samples, vec![(1000, 128.25)], "earliest sample first, limited to 1");
     }
 }

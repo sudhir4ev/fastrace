@@ -24,10 +24,14 @@ fn validate_bin_path(bin: &PathBuf) -> Result<PathBuf, String> {
     Ok(bin.clone())
 }
 
-/// Rejects a second concurrent `prepare_trace` run. Shortcut: a JoinError
-/// from spawn_blocking (see `prepare_trace`) skips the `release()` call -
-/// acceptable for this wave since a panicking fastrace_parse run is already
-/// an exceptional case the user has to restart the app for.
+/// Rejects a second concurrent native write op against the same store.
+/// Shared by `prepare_trace` and `decode_signals` - both spawn
+/// `fastrace_parse` holding the store's DuckDB write lock for the duration
+/// (docs/adr/0005), so letting one run while the other starts would corrupt
+/// the file, not just confuse the UI. Shortcut: a JoinError from
+/// spawn_blocking skips the `release()` call - acceptable for this wave
+/// since a panicking fastrace_parse run is already an exceptional case the
+/// user has to restart the app for.
 struct PrepareGuard(Mutex<bool>);
 
 impl PrepareGuard {
@@ -122,6 +126,32 @@ async fn prepare_trace(
     joined
 }
 
+#[tauri::command]
+async fn decode_signals(
+    app: tauri::AppHandle,
+    blf_path: String,
+    signal_ids: Vec<i64>,
+) -> Result<serde_json::Value, String> {
+    let bin = begin_prepare(app.state::<PrepareGuard>().inner(), fastrace_parse_bin())?;
+    let app_for_task = app.clone();
+    let joined: Result<serde_json::Value, String> =
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut args = vec!["decode-signals".to_string(), blf_path];
+            args.extend(signal_ids.iter().map(|id| id.to_string()));
+            let mut ticks = Vec::new();
+            sidecar::spawn(&bin, &args, |progress| {
+                let _ = app_for_task.emit("decode-progress", progress_to_json(&progress));
+                ticks.push(progress);
+            })
+            .map(|_| fold_final_done(&ticks))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    app.state::<PrepareGuard>().release();
+    joined
+}
+
 // BLFObjectType values that carry CAN vs Ethernet messages
 // (native/blf/include/BlfTypes.h) - duplicated here because Rust has no
 // visibility into the C++ header; keep in sync if that enum changes.
@@ -187,6 +217,20 @@ fn get_message_detail(blf_path: String, msg_id: i64) -> Result<query::MessageRow
 }
 
 #[tauri::command]
+fn list_signal_catalog(blf_path: String) -> Result<Vec<query::SignalCatalogEntry>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::list_signal_catalog(&conn)
+}
+
+#[tauri::command]
+fn get_signal_samples(blf_path: String, signal_id: i64, limit: i64) -> Result<Vec<(i64, f64)>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::list_signal_samples(&conn, signal_id, limit)
+}
+
+#[tauri::command]
 fn list_ecus(blf_path: String) -> Result<Vec<String>, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
@@ -243,6 +287,17 @@ fn delete_trace_store(blf_path: String) -> Result<(), String> {
     delete_trace_store_file(&blf_path)
 }
 
+/// One row in a trace's activity log (initial ingestion, each signal-decode
+/// run, ...) - shown in the footer's "last activity" popup.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActivityEntry {
+    kind: String,
+    at: i64,
+    elapsed_ms: i64,
+    detail: String,
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct RecentTraceEntry {
     blf_path: String,
@@ -253,6 +308,8 @@ struct RecentTraceEntry {
     protocol_rows: Option<i64>,
     #[serde(default)]
     elapsed_ms: Option<i64>,
+    #[serde(default)]
+    activities: Vec<ActivityEntry>,
 }
 
 #[derive(serde::Serialize)]
@@ -292,6 +349,10 @@ fn upsert_recent(
             protocol_rows: protocol_rows
                 .or_else(|| previous.as_ref().and_then(|p| p.protocol_rows)),
             elapsed_ms: elapsed_ms.or_else(|| previous.as_ref().and_then(|p| p.elapsed_ms)),
+            // Re-opening a trace rebuilds this entry from scratch (see the
+            // `retain` above) - without carrying the old activity log
+            // forward, every reopen would silently wipe its history.
+            activities: previous.map(|p| p.activities).unwrap_or_default(),
         },
     );
     list.truncate(MAX_RECENT_TRACES);
@@ -302,6 +363,32 @@ fn remove_recent(list: Vec<RecentTraceEntry>, blf_path: &str) -> Vec<RecentTrace
     list.into_iter()
         .filter(|e| e.blf_path != blf_path)
         .collect()
+}
+
+/// Appends one activity entry to the matching trace, creating a minimal
+/// entry if none exists yet (shouldn't normally happen - `record_recent_trace`
+/// runs first on every Prepare - but keeps this pure function total rather
+/// than silently dropping the activity).
+fn push_activity(mut list: Vec<RecentTraceEntry>, blf_path: &str, entry: ActivityEntry) -> Vec<RecentTraceEntry> {
+    match list.iter_mut().find(|e| e.blf_path == blf_path) {
+        Some(e) => e.activities.push(entry),
+        None => list.push(RecentTraceEntry {
+            blf_path: blf_path.to_string(),
+            opened_at: entry.at,
+            messages: None,
+            protocol_rows: None,
+            elapsed_ms: None,
+            activities: vec![entry],
+        }),
+    }
+    list
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn recent_traces_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -333,14 +420,49 @@ fn record_recent_trace(
 ) -> Result<(), String> {
     let path = recent_traces_path(&app)?;
     let list = read_recent_traces(&path)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    write_recent_traces(
-        &path,
-        &upsert_recent(list, &blf_path, now, messages, protocol_rows, elapsed_ms),
-    )
+    let now = now_ms();
+    let mut list = upsert_recent(list, &blf_path, now, messages, protocol_rows, elapsed_ms);
+    // Only a genuine fresh-Prepare completion carries all three stats - this
+    // command is also called when merely reopening an already-ingested trace
+    // (with everything `None`), which must not log a bogus "prepare" entry.
+    if let (Some(messages), Some(_), Some(elapsed_ms)) = (messages, protocol_rows, elapsed_ms) {
+        list = push_activity(
+            list,
+            &blf_path,
+            ActivityEntry {
+                kind: "prepare".to_string(),
+                at: now,
+                elapsed_ms,
+                detail: format!("{messages} messages"),
+            },
+        );
+    }
+    write_recent_traces(&path, &list)
+}
+
+#[tauri::command]
+fn record_activity(
+    app: tauri::AppHandle,
+    blf_path: String,
+    kind: String,
+    elapsed_ms: i64,
+    detail: String,
+) -> Result<(), String> {
+    let path = recent_traces_path(&app)?;
+    let list = read_recent_traces(&path)?;
+    let entry = ActivityEntry { kind, at: now_ms(), elapsed_ms, detail };
+    write_recent_traces(&path, &push_activity(list, &blf_path, entry))
+}
+
+#[tauri::command]
+fn list_activities(app: tauri::AppHandle, blf_path: String) -> Result<Vec<ActivityEntry>, String> {
+    let path = recent_traces_path(&app)?;
+    let list = read_recent_traces(&path)?;
+    Ok(list
+        .into_iter()
+        .find(|e| e.blf_path == blf_path)
+        .map(|e| e.activities)
+        .unwrap_or_default())
 }
 
 #[tauri::command]
@@ -377,10 +499,13 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             prepare_trace,
+            decode_signals,
             get_trace_summary,
             list_message_groups,
             list_messages,
             get_message_detail,
+            list_signal_catalog,
+            get_signal_samples,
             list_ecus,
             get_file_sizes,
             get_path_size,
@@ -388,7 +513,9 @@ fn main() {
             delete_trace_store,
             record_recent_trace,
             remove_recent_trace,
-            list_recent_traces
+            list_recent_traces,
+            record_activity,
+            list_activities
         ])
         .run(tauri::generate_context!())
         .expect("error while running fastrace");
@@ -485,6 +612,7 @@ mod tests {
                 messages: None,
                 protocol_rows: None,
                 elapsed_ms: None,
+                activities: vec![],
             },
             RecentTraceEntry {
                 blf_path: "b.blf".into(),
@@ -492,6 +620,7 @@ mod tests {
                 messages: None,
                 protocol_rows: None,
                 elapsed_ms: None,
+                activities: vec![],
             },
         ];
         let result = upsert_recent(list, "a.blf", 99, None, None, None);
@@ -509,11 +638,62 @@ mod tests {
             messages: Some(1000),
             protocol_rows: Some(5),
             elapsed_ms: Some(2500),
+            activities: vec![],
         }];
         let result = upsert_recent(list, "a.blf", 99, None, None, None);
         assert_eq!(result[0].messages, Some(1000));
         assert_eq!(result[0].protocol_rows, Some(5));
         assert_eq!(result[0].elapsed_ms, Some(2500));
+    }
+
+    #[test]
+    fn upsert_recent_preserves_activities_across_reopen() {
+        let list = vec![RecentTraceEntry {
+            blf_path: "a.blf".into(),
+            opened_at: 1,
+            messages: Some(1000),
+            protocol_rows: Some(5),
+            elapsed_ms: Some(2500),
+            activities: vec![ActivityEntry {
+                kind: "prepare".into(),
+                at: 1,
+                elapsed_ms: 2500,
+                detail: "1000 messages".into(),
+            }],
+        }];
+        let result = upsert_recent(list, "a.blf", 99, None, None, None);
+        assert_eq!(result[0].activities.len(), 1, "reopening must not wipe the activity log");
+    }
+
+    #[test]
+    fn push_activity_appends_to_existing_entry() {
+        let list = vec![RecentTraceEntry {
+            blf_path: "a.blf".into(),
+            opened_at: 1,
+            messages: Some(1000),
+            protocol_rows: Some(5),
+            elapsed_ms: Some(2500),
+            activities: vec![],
+        }];
+        let result = push_activity(
+            list,
+            "a.blf",
+            ActivityEntry { kind: "decode".into(), at: 2, elapsed_ms: 11, detail: "3 signals".into() },
+        );
+        assert_eq!(result[0].activities.len(), 1);
+        assert_eq!(result[0].activities[0].kind, "decode");
+    }
+
+    #[test]
+    fn push_activity_creates_entry_when_missing() {
+        let result = push_activity(
+            Vec::new(),
+            "a.blf",
+            ActivityEntry { kind: "decode".into(), at: 2, elapsed_ms: 11, detail: "3 signals".into() },
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].blf_path, "a.blf");
+        assert_eq!(result[0].activities.len(), 1);
     }
 
     #[test]
@@ -537,6 +717,7 @@ mod tests {
                 messages: None,
                 protocol_rows: None,
                 elapsed_ms: None,
+                activities: vec![],
             },
             RecentTraceEntry {
                 blf_path: "b.blf".into(),
@@ -544,6 +725,7 @@ mod tests {
                 messages: None,
                 protocol_rows: None,
                 elapsed_ms: None,
+                activities: vec![],
             },
         ];
         let result = remove_recent(list, "a.blf");
@@ -587,7 +769,7 @@ mod tests {
         let conn = trace_store::Connection::open(&duckdb_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE meta (key VARCHAR, value VARCHAR);
-             INSERT INTO meta VALUES ('schema_version', '1');",
+             INSERT INTO meta VALUES ('schema_version', '2');",
         )
         .unwrap();
         drop(conn);

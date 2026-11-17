@@ -49,12 +49,37 @@ export interface PrepareMeta {
   elapsedMs: number;
 }
 
+export interface ActivityEntry {
+  kind: string;
+  at: number;
+  elapsedMs: number;
+  detail: string;
+}
+
+export interface DecodeResult {
+  elapsedMs: number;
+  decodedCount: number;
+}
+
+export interface SignalCatalogEntry {
+  signalId: number;
+  name: string;
+  parentLabel: string;
+  decodable: boolean;
+  cached: boolean;
+}
+
 export interface TraceDataSource {
   getTraceSummary(blfPath: string): Promise<TraceSummary>;
   listMessageGroups(blfPath: string): Promise<MessageGroup[]>;
   listMessages(blfPath: string, groupKey: string, cursor: number | null, limit: number): Promise<MessagePage>;
   getMessageDetail(blfPath: string, msgId: number): Promise<MessageDetail>;
   listEcus(blfPath: string): Promise<EcuInfo[]>;
+  listSignalCatalog(blfPath: string): Promise<SignalCatalogEntry[]>;
+  getSignalSamples(blfPath: string, signalId: number, limit: number): Promise<[number, number][]>;
+  decodeSignals(blfPath: string, signalIds: number[]): Promise<DecodeResult>;
+  recordActivity(blfPath: string, kind: string, elapsedMs: number, detail: string): Promise<void>;
+  listActivities(blfPath: string): Promise<ActivityEntry[]>;
   getFileSizes(blfPath: string): Promise<FileSizes>;
   checkExistingStore(blfPath: string): Promise<boolean>;
   deleteTraceStore(blfPath: string): Promise<void>;
@@ -84,6 +109,34 @@ export class TauriTraceDataSource implements TraceDataSource {
   async listEcus(blfPath: string): Promise<EcuInfo[]> {
     const names = await invoke<string[]>("list_ecus", { blfPath });
     return names.map((name) => ({ name }));
+  }
+
+  listSignalCatalog(blfPath: string): Promise<SignalCatalogEntry[]> {
+    return invoke<SignalCatalogEntry[]>("list_signal_catalog", { blfPath });
+  }
+
+  getSignalSamples(blfPath: string, signalId: number, limit: number): Promise<[number, number][]> {
+    return invoke<[number, number][]>("get_signal_samples", { blfPath, signalId, limit });
+  }
+
+  async decodeSignals(blfPath: string, signalIds: number[]): Promise<DecodeResult> {
+    // decode_signals resolves with the run's raw Done tick (same shape as
+    // prepare_trace's), snake_case because it's forwarded as-is from the
+    // sidecar's progress protocol - reused here as "signal rows decoded"
+    // rather than widening the native progress protocol for one new field.
+    const tick = await invoke<{ elapsed_ms: number; protocol_rows: number }>("decode_signals", {
+      blfPath,
+      signalIds,
+    });
+    return { elapsedMs: tick.elapsed_ms, decodedCount: tick.protocol_rows };
+  }
+
+  recordActivity(blfPath: string, kind: string, elapsedMs: number, detail: string): Promise<void> {
+    return invoke<void>("record_activity", { blfPath, kind, elapsedMs, detail });
+  }
+
+  listActivities(blfPath: string): Promise<ActivityEntry[]> {
+    return invoke<ActivityEntry[]>("list_activities", { blfPath });
   }
 
   getFileSizes(blfPath: string): Promise<FileSizes> {

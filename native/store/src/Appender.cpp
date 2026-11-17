@@ -23,9 +23,19 @@ void Appender::i64(int64_t v)
     duckdb_append_int64(m_app, v);
 }
 
+void Appender::u64(uint64_t v)
+{
+    duckdb_append_uint64(m_app, v);
+}
+
 void Appender::i32(int32_t v)
 {
     duckdb_append_int32(m_app, v);
+}
+
+void Appender::f64(double v)
+{
+    duckdb_append_double(m_app, v);
 }
 
 void Appender::b(bool v)
