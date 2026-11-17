@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 trace-store = { path = "../trace-store" }
+serde = { version = "1", features = ["derive"] }
+duckdb = { version = "=1.1.1", features = ["bundled"] }
