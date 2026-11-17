@@ -47,6 +47,15 @@ impl PrepareGuard {
     }
 }
 
+/// Validates the binary path before touching the guard, so a missing-binary
+/// error never leaves `PrepareGuard` stuck held (the bug this fixes: calling
+/// `try_acquire()` before validation leaked the guard on every early return).
+fn begin_prepare(guard: &PrepareGuard, bin: PathBuf) -> Result<PathBuf, String> {
+    let bin = validate_bin_path(&bin)?;
+    guard.try_acquire()?;
+    Ok(bin)
+}
+
 fn progress_to_json(p: &sidecar::Progress) -> serde_json::Value {
     match p {
         sidecar::Progress::Running { containers, messages, elapsed_ms } => serde_json::json!({
@@ -61,9 +70,7 @@ fn progress_to_json(p: &sidecar::Progress) -> serde_json::Value {
 
 #[tauri::command]
 async fn prepare_trace(app: tauri::AppHandle, blf_path: String, arxml_path: String) -> Result<(), String> {
-    app.state::<PrepareGuard>().try_acquire()?;
-
-    let bin = validate_bin_path(&fastrace_parse_bin())?;
+    let bin = begin_prepare(app.state::<PrepareGuard>().inner(), fastrace_parse_bin())?;
     let app_for_task = app.clone();
     let joined: Result<(), String> = tauri::async_runtime::spawn_blocking(move || {
         sidecar::spawn(&bin, &["prepare".to_string(), blf_path, arxml_path], move |progress| {
@@ -131,6 +138,14 @@ mod tests {
         let err = validate_bin_path(&PathBuf::from("/nonexistent/fastrace_parse_test_xyz"))
             .expect_err("missing binary should error");
         assert!(err.contains("fastrace_parse not found"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn begin_prepare_does_not_leak_guard_on_missing_binary() {
+        let guard = PrepareGuard(Mutex::new(false));
+        let missing = PathBuf::from("/nonexistent/fastrace_parse_test_xyz");
+        assert!(begin_prepare(&guard, missing).is_err());
+        guard.try_acquire().expect("guard must not stay held after a validation failure");
     }
 
     #[test]
