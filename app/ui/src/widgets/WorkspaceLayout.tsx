@@ -1,6 +1,8 @@
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
+import AnalyzerPanel from "./AnalyzerPanel";
 import MessageDetails from "./MessageDetails";
 import MessageList from "./MessageList";
+import TimelinePanel from "./TimelinePanel";
 import Toaster from "./Toaster";
 import TopBar from "./TopBar";
 import TraceRail from "./TraceRail";
@@ -24,7 +26,7 @@ export default function WorkspaceLayout({ blfPath, prepareTotals, onOpenTrace }:
           <ResizablePanel defaultSize={55}>
             <ResizablePanelGroup direction="vertical">
               <ResizablePanel defaultSize={40} minSize={20}>
-                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Timeline</div>
+                <TimelinePanel />
               </ResizablePanel>
               <ResizableHandle withHandle />
               <ResizablePanel defaultSize={35} minSize={15}>
@@ -38,7 +40,7 @@ export default function WorkspaceLayout({ blfPath, prepareTotals, onOpenTrace }:
           </ResizablePanel>
           <ResizableHandle withHandle />
           <ResizablePanel defaultSize={25} minSize={15}>
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Analyzer</div>
+            <AnalyzerPanel />
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
