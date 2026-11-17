@@ -12,6 +12,7 @@ type Screen = "welcome" | "progress" | "summary" | "error";
 export default function App() {
   const [screen, setScreen] = useState<Screen>("welcome");
   const [tick, setTick] = useState<ProgressTick | null>(null);
+  const [totals, setTotals] = useState<(ProgressTick & { done: true }) | null>(null);
   const [summary, setSummary] = useState<TraceSummary | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -28,8 +29,14 @@ export default function App() {
     setTick(null);
     setScreen("progress");
     try {
-      await invoke("prepare_trace", { blfPath, arxmlPath });
+      // prepare_trace resolves with the run's final Done tick directly, so
+      // the summary transition never races the "prepare-progress" event
+      // listener (separate async IPC completions with no ordering
+      // guarantee between them) - the event stream is only for the live
+      // counters on the Progress screen.
+      const doneTick = await invoke<ProgressTick & { done: true }>("prepare_trace", { blfPath, arxmlPath });
       const trace = await invoke<TraceSummary>("get_trace_summary", { blfPath });
+      setTotals(doneTick);
       setSummary(trace);
       setScreen("summary");
     } catch (e) {
@@ -41,6 +48,7 @@ export default function App() {
   function reset() {
     setScreen("welcome");
     setTick(null);
+    setTotals(null);
     setSummary(null);
     setErrorMessage("");
   }
@@ -54,8 +62,8 @@ export default function App() {
   if (screen === "error") {
     return <ErrorScreen message={errorMessage} onRetry={reset} />;
   }
-  if (screen === "summary" && summary && tick?.done) {
-    return <SummaryScreen totals={tick} breakdown={summary} onReset={reset} />;
+  if (screen === "summary" && summary && totals) {
+    return <SummaryScreen totals={totals} breakdown={summary} onReset={reset} />;
   }
   return null;
 }

@@ -68,14 +68,35 @@ fn progress_to_json(p: &sidecar::Progress) -> serde_json::Value {
     }
 }
 
+/// Picks the final `Done` tick out of every tick a Prepare run emitted, so
+/// `prepare_trace` can return it directly instead of making the frontend
+/// race the `"prepare-progress"` event listener for the authoritative
+/// totals (event delivery and command-resolution are separate async IPC
+/// completions with no ordering guarantee between them).
+fn fold_final_done(ticks: &[sidecar::Progress]) -> serde_json::Value {
+    ticks
+        .iter()
+        .rev()
+        .find(|p| matches!(p, sidecar::Progress::Done { .. }))
+        .map(progress_to_json)
+        .unwrap_or(serde_json::Value::Null)
+}
+
 #[tauri::command]
-async fn prepare_trace(app: tauri::AppHandle, blf_path: String, arxml_path: String) -> Result<(), String> {
+async fn prepare_trace(
+    app: tauri::AppHandle,
+    blf_path: String,
+    arxml_path: String,
+) -> Result<serde_json::Value, String> {
     let bin = begin_prepare(app.state::<PrepareGuard>().inner(), fastrace_parse_bin())?;
     let app_for_task = app.clone();
-    let joined: Result<(), String> = tauri::async_runtime::spawn_blocking(move || {
-        sidecar::spawn(&bin, &["prepare".to_string(), blf_path, arxml_path], move |progress| {
+    let joined: Result<serde_json::Value, String> = tauri::async_runtime::spawn_blocking(move || {
+        let mut ticks = Vec::new();
+        sidecar::spawn(&bin, &["prepare".to_string(), blf_path, arxml_path], |progress| {
             let _ = app_for_task.emit("prepare-progress", progress_to_json(&progress));
+            ticks.push(progress);
         })
+        .map(|_| fold_final_done(&ticks))
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -138,6 +159,24 @@ mod tests {
         let err = validate_bin_path(&PathBuf::from("/nonexistent/fastrace_parse_test_xyz"))
             .expect_err("missing binary should error");
         assert!(err.contains("fastrace_parse not found"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn fold_final_done_picks_the_done_tick_not_the_last_running_one() {
+        let ticks = vec![
+            sidecar::Progress::Running { containers: 1, messages: 10000, elapsed_ms: 50 },
+            sidecar::Progress::Done { containers: 1, messages: 20000, protocol_rows: 15, elapsed_ms: 120 },
+        ];
+        let v = fold_final_done(&ticks);
+        assert_eq!(v["done"], true);
+        assert_eq!(v["messages"], 20000);
+        assert_eq!(v["protocol_rows"], 15);
+    }
+
+    #[test]
+    fn fold_final_done_is_null_when_no_done_tick_present() {
+        let ticks = vec![sidecar::Progress::Running { containers: 1, messages: 10000, elapsed_ms: 50 }];
+        assert!(fold_final_done(&ticks).is_null());
     }
 
     #[test]
