@@ -159,6 +159,30 @@ pub fn list_messages(
     Ok(MessagePage { rows, next_cursor })
 }
 
+pub fn get_message_detail(conn: &trace_store::Connection, msg_id: i64) -> Result<MessageRow, String> {
+    let sql = format!(
+        "select msg_id, timestamp_us,
+                case when object_type in ({CAN_OBJECT_TYPES}) then 'CAN' else 'Ethernet' end as bus_label,
+                case when object_type in ({CAN_OBJECT_TYPES}) then cast(arb_id as varchar)
+                     else coalesce(dst_ip,'') || ':' || cast(coalesce(dst_port,0) as varchar) end as id_or_src,
+                cast(null as varchar) as name,
+                dlc, payload_len
+         from messages where msg_id = ?"
+    );
+    conn.query_row(&sql, duckdb::params![msg_id], map_message_row)
+        .map_err(|e| format!("message {msg_id} not found: {e}"))
+}
+
+pub fn list_ecus(conn: &trace_store::Connection) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("select name from arxml_ecu order by name")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +255,33 @@ mod tests {
     fn list_messages_rejects_unrecognized_group_key() {
         let conn = setup();
         assert!(list_messages(&conn, "bogus:1", None, 10).is_err());
+    }
+
+    #[test]
+    fn get_message_detail_returns_row_by_id() {
+        let conn = setup();
+        let detail = get_message_detail(&conn, 1).unwrap();
+        assert_eq!(detail.bus_label, "CAN");
+        assert_eq!(detail.id_or_src, "100");
+    }
+
+    #[test]
+    fn get_message_detail_errors_when_missing() {
+        let conn = setup();
+        assert!(get_message_detail(&conn, 999).is_err());
+    }
+
+    #[test]
+    fn list_ecus_returns_sorted_names() {
+        let conn = setup();
+        conn.execute_batch("INSERT INTO arxml_ecu VALUES ('Gateway'), ('BodyControl');").unwrap();
+        let ecus = list_ecus(&conn).unwrap();
+        assert_eq!(ecus, vec!["BodyControl".to_string(), "Gateway".to_string()]);
+    }
+
+    #[test]
+    fn list_ecus_returns_empty_vec_when_no_ecus() {
+        let conn = setup();
+        assert_eq!(list_ecus(&conn).unwrap(), Vec::<String>::new());
     }
 }
