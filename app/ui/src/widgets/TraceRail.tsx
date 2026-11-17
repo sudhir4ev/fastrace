@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useWorkspaceStore, type LeftTab } from "@/app/store";
 import { useEcus, useMessageGroups, useTraceSummary } from "@/shared/api/hooks";
 import { Badge } from "@/shared/ui/badge";
@@ -18,6 +19,11 @@ export default function TraceRail({ blfPath }: TraceRailProps) {
   const setLeftTab = useWorkspaceStore((s) => s.setLeftTab);
   const selectedGroupKey = useWorkspaceStore((s) => s.selectedGroupKey);
   const setSelectedGroup = useWorkspaceStore((s) => s.setSelectedGroup);
+  const [messageFilter, setMessageFilter] = useState("");
+
+  const filteredGroups = groups.data?.filter((g) =>
+    `${g.busLabel} ${g.label}`.toLowerCase().includes(messageFilter.toLowerCase())
+  );
 
   return (
     <div className="flex h-full flex-col gap-3 p-3">
@@ -42,7 +48,14 @@ export default function TraceRail({ blfPath }: TraceRailProps) {
           <TabsTrigger value="signals" disabled>
             Signals
           </TabsTrigger>
-          <TabsTrigger value="messages">Messages</TabsTrigger>
+          <TabsTrigger value="messages" className="gap-1.5">
+            Messages
+            {groups.data && (
+              <Badge variant="secondary" className="px-1.5 py-0">
+                {groups.data.length}
+              </Badge>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="ecus">ECUs</TabsTrigger>
         </TabsList>
 
@@ -50,14 +63,28 @@ export default function TraceRail({ blfPath }: TraceRailProps) {
           <p className="p-3 text-sm text-muted-foreground">Signal catalog - coming soon.</p>
         </TabsContent>
 
-        <TabsContent value="messages" className="min-h-0 flex-1">
+        <TabsContent value="messages" className="flex min-h-0 flex-1 flex-col">
+          {groups.data && groups.data.length > 0 && (
+            <div className="shrink-0 p-2">
+              <input
+                type="text"
+                value={messageFilter}
+                onChange={(e) => setMessageFilter(e.target.value)}
+                placeholder="Filter messages..."
+                className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />
+            </div>
+          )}
           <ScrollArea className="h-full">
             {groups.isPending && <p className="p-3 text-sm text-muted-foreground">Loading...</p>}
             {groups.isError && <p className="p-3 text-sm text-muted-foreground">Couldn't load message groups.</p>}
             {groups.data?.length === 0 && (
               <p className="p-3 text-sm text-muted-foreground">No messages in this trace.</p>
             )}
-            {groups.data?.map((g) => (
+            {groups.data && groups.data.length > 0 && filteredGroups?.length === 0 && (
+              <p className="p-3 text-sm text-muted-foreground">No messages match "{messageFilter}".</p>
+            )}
+            {filteredGroups?.map((g) => (
               <button
                 key={g.key}
                 onClick={() => setSelectedGroup(g.key)}
