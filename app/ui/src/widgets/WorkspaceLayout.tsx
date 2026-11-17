@@ -2,6 +2,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/u
 import MessageDetails from "./MessageDetails";
 import MessageList from "./MessageList";
 import Toaster from "./Toaster";
+import TopBar from "./TopBar";
 import TraceRail from "./TraceRail";
 
 interface WorkspaceLayoutProps {
@@ -13,9 +14,7 @@ interface WorkspaceLayoutProps {
 export default function WorkspaceLayout({ blfPath, prepareTotals, onOpenTrace }: WorkspaceLayoutProps) {
   return (
     <div className="flex h-screen flex-col">
-      <div className="flex h-[50px] shrink-0 items-center border-b border-border bg-card px-4 text-sm font-semibold">
-        Top Bar
-      </div>
+      <TopBar traceName={blfPath.split(/[\\/]/).pop() ?? blfPath} onOpenTrace={onOpenTrace} />
       <div className="flex-1">
         <ResizablePanelGroup direction="horizontal">
           <ResizablePanel defaultSize={20} minSize={15}>
