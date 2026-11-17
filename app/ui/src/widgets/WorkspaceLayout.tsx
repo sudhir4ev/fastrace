@@ -1,4 +1,5 @@
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
+import MessageList from "./MessageList";
 import Toaster from "./Toaster";
 import TraceRail from "./TraceRail";
 
@@ -27,7 +28,7 @@ export default function WorkspaceLayout({ blfPath, prepareTotals, onOpenTrace }:
               </ResizablePanel>
               <ResizableHandle withHandle />
               <ResizablePanel defaultSize={35} minSize={15}>
-                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Message List</div>
+                <MessageList blfPath={blfPath} />
               </ResizablePanel>
               <ResizableHandle withHandle />
               <ResizablePanel defaultSize={25} minSize={15}>
