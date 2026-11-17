@@ -77,11 +77,47 @@ async fn prepare_trace(app: tauri::AppHandle, blf_path: String, arxml_path: Stri
     joined
 }
 
+// BLFObjectType values that carry CAN vs Ethernet messages
+// (native/blf/include/BlfTypes.h) - duplicated here because Rust has no
+// visibility into the C++ header; keep in sync if that enum changes.
+const CAN_OBJECT_TYPES: &str = "1,100,101"; // CAN_MESSAGE, CAN_FD_MESSAGE, CAN_FD_MESSAGE_64
+const ETHERNET_OBJECT_TYPES: &str = "71,120,121"; // ETHERNET_FRAME, ETHERNET_FRAME_EX, ETHERNET_FRAME_FORWARDED
+
+#[derive(serde::Serialize)]
+struct TraceSummary {
+    can_messages: i64,
+    ethernet_messages: i64,
+    protocol_pdu: i64,
+    protocol_someip: i64,
+    protocol_someip_sd: i64,
+    protocol_doip: i64,
+}
+
+#[tauri::command]
+fn get_trace_summary(blf_path: String) -> Result<TraceSummary, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    Ok(TraceSummary {
+        can_messages: query::count(
+            &conn,
+            &format!("select count(*) from messages where object_type in ({CAN_OBJECT_TYPES})"),
+        )?,
+        ethernet_messages: query::count(
+            &conn,
+            &format!("select count(*) from messages where object_type in ({ETHERNET_OBJECT_TYPES})"),
+        )?,
+        protocol_pdu: query::count(&conn, "select count(*) from protocol_pdu")?,
+        protocol_someip: query::count(&conn, "select count(*) from protocol_someip")?,
+        protocol_someip_sd: query::count(&conn, "select count(*) from protocol_someip_sd")?,
+        protocol_doip: query::count(&conn, "select count(*) from protocol_doip")?,
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(PrepareGuard(Mutex::new(false)))
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![prepare_trace])
+        .invoke_handler(tauri::generate_handler![prepare_trace, get_trace_summary])
         .run(tauri::generate_context!())
         .expect("error while running fastrace");
 }
