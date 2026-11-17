@@ -1,5 +1,6 @@
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 import Toaster from "./Toaster";
+import TraceRail from "./TraceRail";
 
 interface WorkspaceLayoutProps {
   blfPath: string;
@@ -16,7 +17,7 @@ export default function WorkspaceLayout({ blfPath, prepareTotals, onOpenTrace }:
       <div className="flex-1">
         <ResizablePanelGroup direction="horizontal">
           <ResizablePanel defaultSize={20} minSize={15}>
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Trace Rail</div>
+            <TraceRail blfPath={blfPath} />
           </ResizablePanel>
           <ResizableHandle withHandle />
           <ResizablePanel defaultSize={55}>
