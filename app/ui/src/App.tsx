@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { queryClient } from "./app/query-client";
 import Welcome from "./Welcome";
 import ProgressScreen from "./Progress";
 import SummaryScreen from "./Summary";
@@ -54,16 +56,32 @@ export default function App() {
   }
 
   if (screen === "welcome") {
-    return <Welcome onStart={handleStart} />;
+    return (
+      <QueryClientProvider client={queryClient}>
+        <Welcome onStart={handleStart} />
+      </QueryClientProvider>
+    );
   }
   if (screen === "progress") {
-    return <ProgressScreen tick={tick} />;
+    return (
+      <QueryClientProvider client={queryClient}>
+        <ProgressScreen tick={tick} />
+      </QueryClientProvider>
+    );
   }
   if (screen === "error") {
-    return <ErrorScreen message={errorMessage} onRetry={reset} />;
+    return (
+      <QueryClientProvider client={queryClient}>
+        <ErrorScreen message={errorMessage} onRetry={reset} />
+      </QueryClientProvider>
+    );
   }
   if (screen === "summary" && summary && totals) {
-    return <SummaryScreen totals={totals} breakdown={summary} onReset={reset} />;
+    return (
+      <QueryClientProvider client={queryClient}>
+        <SummaryScreen totals={totals} breakdown={summary} onReset={reset} />
+      </QueryClientProvider>
+    );
   }
   return null;
 }
