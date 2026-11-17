@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getTraceDataSource } from "./trace-source";
 
 const MESSAGE_PAGE_SIZE = 200;
@@ -45,4 +45,28 @@ export function useMessageDetail(blfPath: string, msgId: number | null) {
     queryFn: () => getTraceDataSource().getMessageDetail(blfPath, msgId as number),
     enabled: msgId !== null,
   });
+}
+
+export function useFileSizes(blfPath: string) {
+  return useQuery({
+    queryKey: ["file-sizes", blfPath],
+    queryFn: () => getTraceDataSource().getFileSizes(blfPath),
+  });
+}
+
+const RECENT_TRACES_KEY = ["recent-traces"];
+
+export function useRecentTraces() {
+  return useQuery({
+    queryKey: RECENT_TRACES_KEY,
+    queryFn: () => getTraceDataSource().listRecentTraces(),
+  });
+}
+
+export function useRemoveRecentTrace() {
+  const queryClient = useQueryClient();
+  return (blfPath: string) =>
+    getTraceDataSource()
+      .removeRecentTrace(blfPath)
+      .then(() => queryClient.invalidateQueries({ queryKey: RECENT_TRACES_KEY }));
 }

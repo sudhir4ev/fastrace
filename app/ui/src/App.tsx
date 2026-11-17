@@ -7,6 +7,7 @@ import ProgressScreen from "./Progress";
 import ErrorScreen from "./ErrorScreen";
 import WorkspaceLayout from "./widgets/WorkspaceLayout";
 import { queryClient } from "./app/query-client";
+import { getTraceDataSource } from "./shared/api/trace-source";
 import type { ProgressTick } from "./types";
 
 type Screen = "welcome" | "progress" | "summary" | "error";
@@ -44,10 +45,18 @@ export default function App() {
       });
       setPrepareTotals(doneTick);
       setScreen("summary");
+      getTraceDataSource().recordRecentTrace(startBlfPath);
     } catch (e) {
       setErrorMessage(String(e));
       setScreen("error");
     }
+  }
+
+  function handleOpenExisting(openBlfPath: string) {
+    getTraceDataSource().recordRecentTrace(openBlfPath);
+    setBlfPath(openBlfPath);
+    setPrepareTotals(null);
+    setScreen("summary");
   }
 
   function reset() {
@@ -60,10 +69,10 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {screen === "welcome" && <Welcome onStart={handleStart} />}
+      {screen === "welcome" && <Welcome onStart={handleStart} onOpenExisting={handleOpenExisting} />}
       {screen === "progress" && <ProgressScreen tick={tick} />}
       {screen === "error" && <ErrorScreen message={errorMessage} onRetry={reset} />}
-      {screen === "summary" && prepareTotals && (
+      {screen === "summary" && blfPath && (
         <WorkspaceLayout blfPath={blfPath} prepareTotals={prepareTotals} onOpenTrace={reset} />
       )}
     </QueryClientProvider>

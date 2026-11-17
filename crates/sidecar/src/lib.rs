@@ -8,8 +8,17 @@ use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Progress {
-    Running { containers: u64, messages: u64, elapsed_ms: u64 },
-    Done { containers: u64, messages: u64, protocol_rows: u64, elapsed_ms: u64 },
+    Running {
+        containers: u64,
+        messages: u64,
+        elapsed_ms: u64,
+    },
+    Done {
+        containers: u64,
+        messages: u64,
+        protocol_rows: u64,
+        elapsed_ms: u64,
+    },
 }
 
 impl Progress {
@@ -37,7 +46,11 @@ impl Progress {
 /// Spawns `binary_path` with `args`, calling `on_progress` for each parsed
 /// stdout progress line. On nonzero exit, returns Err with the child's
 /// stderr (expected to be one `{"error":"..."}` line per the protocol).
-pub fn spawn(binary_path: &Path, args: &[String], mut on_progress: impl FnMut(Progress)) -> Result<(), String> {
+pub fn spawn(
+    binary_path: &Path,
+    args: &[String],
+    mut on_progress: impl FnMut(Progress),
+) -> Result<(), String> {
     let mut child = Command::new(binary_path)
         .args(args)
         .stdout(Stdio::piped())
@@ -59,7 +72,12 @@ pub fn spawn(binary_path: &Path, args: &[String], mut on_progress: impl FnMut(Pr
         if let Some(mut stderr) = child.stderr.take() {
             let _ = stderr.read_to_string(&mut stderr_out);
         }
-        return Err(format!("{} exited with {}: {}", binary_path.display(), status, stderr_out.trim()));
+        return Err(format!(
+            "{} exited with {}: {}",
+            binary_path.display(),
+            status,
+            stderr_out.trim()
+        ));
     }
     Ok(())
 }
@@ -71,14 +89,31 @@ mod tests {
     #[test]
     fn parse_running_line() {
         let p = Progress::parse(r#"{"containers":1,"messages":10000,"elapsed_ms":42}"#).unwrap();
-        assert_eq!(p, Progress::Running { containers: 1, messages: 10000, elapsed_ms: 42 });
+        assert_eq!(
+            p,
+            Progress::Running {
+                containers: 1,
+                messages: 10000,
+                elapsed_ms: 42
+            }
+        );
     }
 
     #[test]
     fn parse_done_line() {
-        let p = Progress::parse(r#"{"done":true,"containers":1,"messages":6,"protocol_rows":5,"elapsed_ms":78}"#)
-            .unwrap();
-        assert_eq!(p, Progress::Done { containers: 1, messages: 6, protocol_rows: 5, elapsed_ms: 78 });
+        let p = Progress::parse(
+            r#"{"done":true,"containers":1,"messages":6,"protocol_rows":5,"elapsed_ms":78}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            p,
+            Progress::Done {
+                containers: 1,
+                messages: 6,
+                protocol_rows: 5,
+                elapsed_ms: 78
+            }
+        );
     }
 
     #[test]

@@ -846,6 +846,8 @@ dependencies = [
 name = "query"
 version = "0.1.0"
 dependencies = [
+ "duckdb",
+ "serde",
  "trace-store",
 ]
 

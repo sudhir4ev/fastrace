@@ -21,7 +21,11 @@ fn summary_counts_match_fixture() {
     let fixture_blf = repo_root.join("native/store/test/fixtures/fixture.blf");
     let fixture_arxml = repo_root.join("native/store/test/fixtures/fixture.arxml");
     let fixture_duckdb = fixture_blf.with_extension("duckdb");
-    assert!(fixture_blf.exists(), "missing committed fixture: {}", fixture_blf.display());
+    assert!(
+        fixture_blf.exists(),
+        "missing committed fixture: {}",
+        fixture_blf.display()
+    );
 
     let status = Command::new(&bin)
         .args([
@@ -31,13 +35,22 @@ fn summary_counts_match_fixture() {
         ])
         .status()
         .expect("failed to run fastrace_parse");
-    assert!(status.success(), "fastrace_parse prepare exited with {status}");
+    assert!(
+        status.success(),
+        "fastrace_parse prepare exited with {status}"
+    );
 
     let result = (|| -> Result<(i64, i64, i64, i64, i64, i64), String> {
         let conn = trace_store::open(&fixture_duckdb)?;
         Ok((
-            query::count(&conn, "select count(*) from messages where object_type in (1,100,101)")?,
-            query::count(&conn, "select count(*) from messages where object_type in (71,120,121)")?,
+            query::count(
+                &conn,
+                "select count(*) from messages where object_type in (1,100,101)",
+            )?,
+            query::count(
+                &conn,
+                "select count(*) from messages where object_type in (71,120,121)",
+            )?,
             query::count(&conn, "select count(*) from protocol_pdu")?,
             query::count(&conn, "select count(*) from protocol_someip")?,
             query::count(&conn, "select count(*) from protocol_someip_sd")?,

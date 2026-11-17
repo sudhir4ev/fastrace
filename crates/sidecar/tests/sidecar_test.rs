@@ -9,8 +9,23 @@ fn spawn_parses_fake_progress() {
     spawn(&bin, &[], |p| seen.push(p)).expect("fake_progress should exit 0");
 
     assert_eq!(seen.len(), 3);
-    assert_eq!(seen[0], Progress::Running { containers: 1, messages: 10000, elapsed_ms: 50 });
-    assert_eq!(seen[2], Progress::Done { containers: 1, messages: 20000, protocol_rows: 15, elapsed_ms: 120 });
+    assert_eq!(
+        seen[0],
+        Progress::Running {
+            containers: 1,
+            messages: 10000,
+            elapsed_ms: 50
+        }
+    );
+    assert_eq!(
+        seen[2],
+        Progress::Done {
+            containers: 1,
+            messages: 20000,
+            protocol_rows: 15,
+            elapsed_ms: 120
+        }
+    );
 }
 
 /// Points `spawn()` at a real, locally-built `fastrace_parse` and runs it
@@ -29,7 +44,11 @@ fn spawn_runs_real_fastrace_parse_against_fixture() {
     let repo_root = manifest_dir.join("../..");
     let fixture_blf = repo_root.join("native/store/test/fixtures/fixture.blf");
     let fixture_arxml = repo_root.join("native/store/test/fixtures/fixture.arxml");
-    assert!(fixture_blf.exists(), "missing committed fixture: {}", fixture_blf.display());
+    assert!(
+        fixture_blf.exists(),
+        "missing committed fixture: {}",
+        fixture_blf.display()
+    );
 
     let mut saw_done = false;
     let result = spawn(
@@ -47,10 +66,16 @@ fn spawn_runs_real_fastrace_parse_against_fixture() {
     );
 
     let _ = std::fs::remove_file(fixture_blf.with_extension("duckdb"));
-    let _ = std::fs::remove_file(format!("{}.wal", fixture_blf.with_extension("duckdb").display()));
+    let _ = std::fs::remove_file(format!(
+        "{}.wal",
+        fixture_blf.with_extension("duckdb").display()
+    ));
 
     result.expect("fastrace_parse prepare should exit 0 against the fixture");
-    assert!(saw_done, "expected a final {{\"done\":true,...}} progress line");
+    assert!(
+        saw_done,
+        "expected a final {{\"done\":true,...}} progress line"
+    );
 }
 
 fn locate_fastrace_parse() -> Option<PathBuf> {

@@ -15,7 +15,11 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         .map_err(|e| e.to_string())?;
     let conn = Connection::open_with_flags(path, config).map_err(|e| e.to_string())?;
     let version: String = conn
-        .query_row("select value from meta where key = 'schema_version'", [], |row| row.get(0))
+        .query_row(
+            "select value from meta where key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|e| format!("could not read schema_version: {e}"))?;
     if version != EXPECTED_SCHEMA_VERSION {
         return Err(format!(
@@ -37,7 +41,8 @@ mod tests {
              CREATE TABLE messages (msg_id BIGINT);",
         )
         .unwrap();
-        conn.execute("INSERT INTO meta VALUES ('schema_version', ?)", [version]).unwrap();
+        conn.execute("INSERT INTO meta VALUES ('schema_version', ?)", [version])
+            .unwrap();
     }
 
     #[test]
@@ -53,7 +58,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("trace_store_test_bad_{}", std::process::id()));
         write_store_with_version(&dir, "999");
         let err = open(&dir).expect_err("mismatched schema_version should error");
-        assert!(err.contains("schema_version mismatch"), "unexpected error: {err}");
+        assert!(
+            err.contains("schema_version mismatch"),
+            "unexpected error: {err}"
+        );
         let _ = std::fs::remove_file(&dir);
     }
 

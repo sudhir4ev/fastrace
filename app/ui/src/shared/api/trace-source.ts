@@ -29,12 +29,29 @@ export interface EcuInfo {
   name: string;
 }
 
+export interface FileSizes {
+  blfBytes: number;
+  duckdbBytes: number;
+}
+
+export interface RecentTraceInfo {
+  blfPath: string;
+  openedAt: number;
+  duckdbBytes: number | null;
+}
+
 export interface TraceDataSource {
   getTraceSummary(blfPath: string): Promise<TraceSummary>;
   listMessageGroups(blfPath: string): Promise<MessageGroup[]>;
   listMessages(blfPath: string, groupKey: string, cursor: number | null, limit: number): Promise<MessagePage>;
   getMessageDetail(blfPath: string, msgId: number): Promise<MessageDetail>;
   listEcus(blfPath: string): Promise<EcuInfo[]>;
+  getFileSizes(blfPath: string): Promise<FileSizes>;
+  checkExistingStore(blfPath: string): Promise<boolean>;
+  deleteTraceStore(blfPath: string): Promise<void>;
+  listRecentTraces(): Promise<RecentTraceInfo[]>;
+  recordRecentTrace(blfPath: string): Promise<void>;
+  removeRecentTrace(blfPath: string): Promise<void>;
 }
 
 export class TauriTraceDataSource implements TraceDataSource {
@@ -57,6 +74,30 @@ export class TauriTraceDataSource implements TraceDataSource {
   async listEcus(blfPath: string): Promise<EcuInfo[]> {
     const names = await invoke<string[]>("list_ecus", { blfPath });
     return names.map((name) => ({ name }));
+  }
+
+  getFileSizes(blfPath: string): Promise<FileSizes> {
+    return invoke<FileSizes>("get_file_sizes", { blfPath });
+  }
+
+  checkExistingStore(blfPath: string): Promise<boolean> {
+    return invoke<boolean>("check_existing_store", { blfPath });
+  }
+
+  deleteTraceStore(blfPath: string): Promise<void> {
+    return invoke<void>("delete_trace_store", { blfPath });
+  }
+
+  listRecentTraces(): Promise<RecentTraceInfo[]> {
+    return invoke<RecentTraceInfo[]>("list_recent_traces");
+  }
+
+  recordRecentTrace(blfPath: string): Promise<void> {
+    return invoke<void>("record_recent_trace", { blfPath });
+  }
+
+  removeRecentTrace(blfPath: string): Promise<void> {
+    return invoke<void>("remove_recent_trace", { blfPath });
   }
 }
 
