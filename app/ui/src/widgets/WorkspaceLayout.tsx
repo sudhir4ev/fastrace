@@ -59,19 +59,19 @@ export default function WorkspaceLayout({ blfPath, prepareTotals, onOpenTrace }:
           <ResizableHandle withHandle />
           <ResizablePanel defaultSize={55}>
             <ResizablePanelGroup direction="vertical">
-              <ResizablePanel defaultSize={40} minSize={20}>
+              <ResizablePanel defaultSize={20} minSize={10}>
                 <PanelTag label="Timeline">
                   <TimelinePanel />
                 </PanelTag>
               </ResizablePanel>
               <ResizableHandle withHandle />
-              <ResizablePanel defaultSize={35} minSize={15}>
+              <ResizablePanel defaultSize={45} minSize={15}>
                 <PanelTag label="Message List">
                   <MessageList blfPath={blfPath} />
                 </PanelTag>
               </ResizablePanel>
               <ResizableHandle withHandle />
-              <ResizablePanel defaultSize={25} minSize={15}>
+              <ResizablePanel defaultSize={35} minSize={15}>
                 <PanelTag label="Message Details">
                   <MessageDetails blfPath={blfPath} />
                 </PanelTag>

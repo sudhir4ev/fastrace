@@ -38,6 +38,15 @@ export interface RecentTraceInfo {
   blfPath: string;
   openedAt: number;
   duckdbBytes: number | null;
+  messages: number | null;
+  protocolRows: number | null;
+  elapsedMs: number | null;
+}
+
+export interface PrepareMeta {
+  messages: number;
+  protocolRows: number;
+  elapsedMs: number;
 }
 
 export interface TraceDataSource {
@@ -49,8 +58,9 @@ export interface TraceDataSource {
   getFileSizes(blfPath: string): Promise<FileSizes>;
   checkExistingStore(blfPath: string): Promise<boolean>;
   deleteTraceStore(blfPath: string): Promise<void>;
+  getPathSize(path: string): Promise<number>;
   listRecentTraces(): Promise<RecentTraceInfo[]>;
-  recordRecentTrace(blfPath: string): Promise<void>;
+  recordRecentTrace(blfPath: string, meta?: PrepareMeta): Promise<void>;
   removeRecentTrace(blfPath: string): Promise<void>;
 }
 
@@ -88,12 +98,21 @@ export class TauriTraceDataSource implements TraceDataSource {
     return invoke<void>("delete_trace_store", { blfPath });
   }
 
+  getPathSize(path: string): Promise<number> {
+    return invoke<number>("get_path_size", { path });
+  }
+
   listRecentTraces(): Promise<RecentTraceInfo[]> {
     return invoke<RecentTraceInfo[]>("list_recent_traces");
   }
 
-  recordRecentTrace(blfPath: string): Promise<void> {
-    return invoke<void>("record_recent_trace", { blfPath });
+  recordRecentTrace(blfPath: string, meta?: PrepareMeta): Promise<void> {
+    return invoke<void>("record_recent_trace", {
+      blfPath,
+      messages: meta?.messages,
+      protocolRows: meta?.protocolRows,
+      elapsedMs: meta?.elapsedMs,
+    });
   }
 
   removeRecentTrace(blfPath: string): Promise<void> {

@@ -7,7 +7,7 @@ import ProgressScreen from "./Progress";
 import ErrorScreen from "./ErrorScreen";
 import WorkspaceLayout from "./widgets/WorkspaceLayout";
 import { queryClient } from "./app/query-client";
-import { getTraceDataSource } from "./shared/api/trace-source";
+import { getTraceDataSource, type PrepareMeta } from "./shared/api/trace-source";
 import type { ProgressTick } from "./types";
 
 type Screen = "welcome" | "progress" | "summary" | "error";
@@ -15,7 +15,11 @@ type Screen = "welcome" | "progress" | "summary" | "error";
 export default function App() {
   const [screen, setScreen] = useState<Screen>("welcome");
   const [tick, setTick] = useState<ProgressTick | null>(null);
-  const [prepareTotals, setPrepareTotals] = useState<(ProgressTick & { done: true }) | null>(null);
+  const [prepareTotals, setPrepareTotals] = useState<{
+    messages: number;
+    protocol_rows: number;
+    elapsed_ms: number;
+  } | null>(null);
   const [blfPath, setBlfPath] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -45,17 +49,23 @@ export default function App() {
       });
       setPrepareTotals(doneTick);
       setScreen("summary");
-      getTraceDataSource().recordRecentTrace(startBlfPath);
+      getTraceDataSource().recordRecentTrace(startBlfPath, {
+        messages: doneTick.messages,
+        protocolRows: doneTick.protocol_rows,
+        elapsedMs: doneTick.elapsed_ms,
+      });
     } catch (e) {
       setErrorMessage(String(e));
       setScreen("error");
     }
   }
 
-  function handleOpenExisting(openBlfPath: string) {
+  function handleOpenExisting(openBlfPath: string, meta?: PrepareMeta) {
     getTraceDataSource().recordRecentTrace(openBlfPath);
     setBlfPath(openBlfPath);
-    setPrepareTotals(null);
+    setPrepareTotals(
+      meta ? { messages: meta.messages, protocol_rows: meta.protocolRows, elapsed_ms: meta.elapsedMs } : null
+    );
     setScreen("summary");
   }
 

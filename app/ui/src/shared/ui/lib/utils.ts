@@ -17,6 +17,13 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
+// Keeps the trailing `maxLength` characters (so the file name/extension
+// always survives) and replaces the hidden prefix with "...".
+export function truncatePathStart(path: string, maxLength = 60): string {
+  if (path.length <= maxLength) return path;
+  return `...${path.slice(path.length - (maxLength - 3))}`;
+}
+
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms} ms`;
   const totalSeconds = ms / 1000;

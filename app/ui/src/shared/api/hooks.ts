@@ -54,6 +54,14 @@ export function useFileSizes(blfPath: string) {
   });
 }
 
+export function usePathSize(path: string | null) {
+  return useQuery({
+    queryKey: ["path-size", path],
+    queryFn: () => getTraceDataSource().getPathSize(path as string),
+    enabled: path !== null,
+  });
+}
+
 const RECENT_TRACES_KEY = ["recent-traces"];
 
 export function useRecentTraces() {

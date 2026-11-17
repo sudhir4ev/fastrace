@@ -1,19 +1,24 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FileCode, FolderOpen, Trash2, Waypoints } from "lucide-react";
-import { useRecentTraces, useRemoveRecentTrace } from "@/shared/api/hooks";
-import { getTraceDataSource } from "@/shared/api/trace-source";
+import { usePathSize, useRecentTraces, useRemoveRecentTrace } from "@/shared/api/hooks";
+import { getTraceDataSource, type PrepareMeta, type RecentTraceInfo } from "@/shared/api/trace-source";
 import { Button } from "@/shared/ui/button";
-import { formatBytes } from "@/shared/ui/lib/utils";
+import { formatBytes, truncatePathStart } from "@/shared/ui/lib/utils";
 import { Separator } from "@/shared/ui/separator";
 
 interface WelcomeProps {
   onStart: (blfPath: string, arxmlPath: string) => void;
-  onOpenExisting: (blfPath: string) => void;
+  onOpenExisting: (blfPath: string, meta?: PrepareMeta) => void;
 }
 
 function basename(path: string) {
   return path.split(/[\\/]/).pop() ?? path;
+}
+
+function toPrepareMeta(trace: RecentTraceInfo | undefined): PrepareMeta | undefined {
+  if (!trace || trace.messages === null || trace.protocolRows === null || trace.elapsedMs === null) return undefined;
+  return { messages: trace.messages, protocolRows: trace.protocolRows, elapsedMs: trace.elapsedMs };
 }
 
 export default function Welcome({ onStart, onOpenExisting }: WelcomeProps) {
@@ -23,6 +28,8 @@ export default function Welcome({ onStart, onOpenExisting }: WelcomeProps) {
   const [storeExists, setStoreExists] = useState(false);
   const recentTraces = useRecentTraces();
   const removeRecentTrace = useRemoveRecentTrace();
+  const blfSize = usePathSize(blfPath);
+  const arxmlSize = usePathSize(arxmlPath);
 
   useEffect(() => {
     if (!blfPath) {
@@ -56,10 +63,10 @@ export default function Welcome({ onStart, onOpenExisting }: WelcomeProps) {
     onStart(blfPath, arxmlPath);
   }
 
-  function handleOpenExisting(path: string) {
+  function handleOpenExisting(path: string, meta?: PrepareMeta) {
     if (starting) return;
     setStarting(true);
-    onOpenExisting(path);
+    onOpenExisting(path, meta);
   }
 
   async function handleReIngest() {
@@ -84,7 +91,12 @@ export default function Welcome({ onStart, onOpenExisting }: WelcomeProps) {
           <Button variant="ghost" className="h-auto w-full justify-start gap-3 px-2 py-2" onClick={pickBlf}>
             <FolderOpen className="h-4 w-4 text-primary" />
             <span>Choose BLF...</span>
-            {blfPath && <span className="truncate text-xs text-muted-foreground">{blfPath}</span>}
+            {blfPath && (
+              <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground" title={blfPath}>
+                <span className="truncate">{truncatePathStart(blfPath)}</span>
+                {blfSize.data !== undefined && <span className="shrink-0">{formatBytes(blfSize.data)}</span>}
+              </span>
+            )}
           </Button>
 
           {blfPath &&
@@ -95,7 +107,13 @@ export default function Welcome({ onStart, onOpenExisting }: WelcomeProps) {
                   <Button variant="outline" size="sm" disabled={starting} onClick={handleReIngest}>
                     Delete &amp; Re-ingest
                   </Button>
-                  <Button size="sm" disabled={starting} onClick={() => handleOpenExisting(blfPath)}>
+                  <Button
+                    size="sm"
+                    disabled={starting}
+                    onClick={() =>
+                      handleOpenExisting(blfPath, toPrepareMeta(recentTraces.data?.find((t) => t.blfPath === blfPath)))
+                    }
+                  >
                     Open Trace
                   </Button>
                 </div>
@@ -105,7 +123,12 @@ export default function Welcome({ onStart, onOpenExisting }: WelcomeProps) {
                 <Button variant="ghost" className="h-auto w-full justify-start gap-3 px-2 py-2" onClick={pickArxml}>
                   <FileCode className="h-4 w-4 text-primary" />
                   <span>Choose ARXML...</span>
-                  {arxmlPath && <span className="truncate text-xs text-muted-foreground">{arxmlPath}</span>}
+                  {arxmlPath && (
+                    <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground" title={arxmlPath}>
+                      <span className="truncate">{truncatePathStart(arxmlPath)}</span>
+                      {arxmlSize.data !== undefined && <span className="shrink-0">({formatBytes(arxmlSize.data)})</span>}
+                    </span>
+                  )}
                 </Button>
                 <div className="px-2 pt-2">
                   <Button disabled={!blfPath || !arxmlPath || starting} onClick={handleStart}>
@@ -126,10 +149,12 @@ export default function Welcome({ onStart, onOpenExisting }: WelcomeProps) {
                   <button
                     className="flex min-w-0 flex-1 items-center gap-3 text-left"
                     disabled={starting}
-                    onClick={() => handleOpenExisting(trace.blfPath)}
+                    onClick={() => handleOpenExisting(trace.blfPath, toPrepareMeta(trace))}
                   >
                     <span className="shrink-0 text-sm font-medium text-primary">{basename(trace.blfPath)}</span>
-                    <span className="truncate text-xs text-muted-foreground">{trace.blfPath}</span>
+                    <span className="truncate text-xs text-muted-foreground" title={trace.blfPath}>
+                      {truncatePathStart(trace.blfPath)}
+                    </span>
                   </button>
                   <span className="shrink-0 text-xs text-muted-foreground">
                     {trace.duckdbBytes !== null ? formatBytes(trace.duckdbBytes) : "-"}

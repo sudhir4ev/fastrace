@@ -217,6 +217,11 @@ fn get_file_sizes(blf_path: String) -> Result<FileSizes, String> {
 }
 
 #[tauri::command]
+fn get_path_size(path: String) -> Result<u64, String> {
+    file_size(std::path::Path::new(&path))
+}
+
+#[tauri::command]
 fn check_existing_store(blf_path: String) -> bool {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     trace_store::open(&duckdb_path).is_ok()
@@ -242,6 +247,12 @@ fn delete_trace_store(blf_path: String) -> Result<(), String> {
 struct RecentTraceEntry {
     blf_path: String,
     opened_at: i64,
+    #[serde(default)]
+    messages: Option<i64>,
+    #[serde(default)]
+    protocol_rows: Option<i64>,
+    #[serde(default)]
+    elapsed_ms: Option<i64>,
 }
 
 #[derive(serde::Serialize)]
@@ -250,23 +261,37 @@ struct RecentTraceInfo {
     blf_path: String,
     opened_at: i64,
     duckdb_bytes: Option<u64>,
+    messages: Option<i64>,
+    protocol_rows: Option<i64>,
+    elapsed_ms: Option<i64>,
 }
 
 const MAX_RECENT_TRACES: usize = 5;
 
 /// Moves `blf_path` to the front, deduping by path, capped at
 /// `MAX_RECENT_TRACES`. Pure so it's unit-testable without a Tauri app handle.
+/// `messages`/`protocol_rows`/`elapsed_ms` of `None` keep the previous
+/// entry's values (e.g. re-opening a trace from the recent list shouldn't
+/// erase the ingestion stats recorded when it was first prepared).
 fn upsert_recent(
     mut list: Vec<RecentTraceEntry>,
     blf_path: &str,
     now: i64,
+    messages: Option<i64>,
+    protocol_rows: Option<i64>,
+    elapsed_ms: Option<i64>,
 ) -> Vec<RecentTraceEntry> {
+    let previous = list.iter().find(|e| e.blf_path == blf_path).cloned();
     list.retain(|e| e.blf_path != blf_path);
     list.insert(
         0,
         RecentTraceEntry {
             blf_path: blf_path.to_string(),
             opened_at: now,
+            messages: messages.or_else(|| previous.as_ref().and_then(|p| p.messages)),
+            protocol_rows: protocol_rows
+                .or_else(|| previous.as_ref().and_then(|p| p.protocol_rows)),
+            elapsed_ms: elapsed_ms.or_else(|| previous.as_ref().and_then(|p| p.elapsed_ms)),
         },
     );
     list.truncate(MAX_RECENT_TRACES);
@@ -299,14 +324,23 @@ fn write_recent_traces(path: &std::path::Path, list: &[RecentTraceEntry]) -> Res
 }
 
 #[tauri::command]
-fn record_recent_trace(app: tauri::AppHandle, blf_path: String) -> Result<(), String> {
+fn record_recent_trace(
+    app: tauri::AppHandle,
+    blf_path: String,
+    messages: Option<i64>,
+    protocol_rows: Option<i64>,
+    elapsed_ms: Option<i64>,
+) -> Result<(), String> {
     let path = recent_traces_path(&app)?;
     let list = read_recent_traces(&path)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    write_recent_traces(&path, &upsert_recent(list, &blf_path, now))
+    write_recent_traces(
+        &path,
+        &upsert_recent(list, &blf_path, now, messages, protocol_rows, elapsed_ms),
+    )
 }
 
 #[tauri::command]
@@ -329,6 +363,9 @@ fn list_recent_traces(app: tauri::AppHandle) -> Result<Vec<RecentTraceInfo>, Str
                 blf_path: e.blf_path,
                 opened_at: e.opened_at,
                 duckdb_bytes: file_size(&duckdb_path).ok(),
+                messages: e.messages,
+                protocol_rows: e.protocol_rows,
+                elapsed_ms: e.elapsed_ms,
             }
         })
         .collect())
@@ -346,6 +383,7 @@ fn main() {
             get_message_detail,
             list_ecus,
             get_file_sizes,
+            get_path_size,
             check_existing_store,
             delete_trace_store,
             record_recent_trace,
@@ -444,13 +482,19 @@ mod tests {
             RecentTraceEntry {
                 blf_path: "a.blf".into(),
                 opened_at: 1,
+                messages: None,
+                protocol_rows: None,
+                elapsed_ms: None,
             },
             RecentTraceEntry {
                 blf_path: "b.blf".into(),
                 opened_at: 2,
+                messages: None,
+                protocol_rows: None,
+                elapsed_ms: None,
             },
         ];
-        let result = upsert_recent(list, "a.blf", 99);
+        let result = upsert_recent(list, "a.blf", 99, None, None, None);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].blf_path, "a.blf");
         assert_eq!(result[0].opened_at, 99);
@@ -458,13 +502,28 @@ mod tests {
     }
 
     #[test]
+    fn upsert_recent_keeps_previous_metadata_when_not_provided() {
+        let list = vec![RecentTraceEntry {
+            blf_path: "a.blf".into(),
+            opened_at: 1,
+            messages: Some(1000),
+            protocol_rows: Some(5),
+            elapsed_ms: Some(2500),
+        }];
+        let result = upsert_recent(list, "a.blf", 99, None, None, None);
+        assert_eq!(result[0].messages, Some(1000));
+        assert_eq!(result[0].protocol_rows, Some(5));
+        assert_eq!(result[0].elapsed_ms, Some(2500));
+    }
+
+    #[test]
     fn upsert_recent_caps_at_max_entries() {
         let mut list = Vec::new();
         for i in 0..MAX_RECENT_TRACES {
-            list = upsert_recent(list, &format!("{i}.blf"), i as i64);
+            list = upsert_recent(list, &format!("{i}.blf"), i as i64, None, None, None);
         }
         assert_eq!(list.len(), MAX_RECENT_TRACES);
-        list = upsert_recent(list, "new.blf", 999);
+        list = upsert_recent(list, "new.blf", 999, None, None, None);
         assert_eq!(list.len(), MAX_RECENT_TRACES);
         assert_eq!(list[0].blf_path, "new.blf");
     }
@@ -475,10 +534,16 @@ mod tests {
             RecentTraceEntry {
                 blf_path: "a.blf".into(),
                 opened_at: 1,
+                messages: None,
+                protocol_rows: None,
+                elapsed_ms: None,
             },
             RecentTraceEntry {
                 blf_path: "b.blf".into(),
                 opened_at: 2,
+                messages: None,
+                protocol_rows: None,
+                elapsed_ms: None,
             },
         ];
         let result = remove_recent(list, "a.blf");
