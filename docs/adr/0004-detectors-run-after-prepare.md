@@ -33,3 +33,14 @@ No incremental-execution constraints are imposed on rules now.
 ## Revisit when
 
 - Live detection moves into scope.
+
+## Amendment (2026-11-18)
+
+`fastrace_parse decode-signals` (0005, "Signal ingestion, second pass") is a second
+sidecar operation that holds the same write lock Prepare does, for the same reason:
+one process reads and writes, or many read read-only, never both. While a decode run
+is in flight, the whole app - not just the Signals tab - is blocked from querying the
+store, exactly like during Prepare. This was an accepted MVP tradeoff (0005 explicitly
+defers the alternative, a separate `<stem>.signals.duckdb` cache file attached
+read-only, until query blackouts during decode actually become a UX problem). AGENTS.md's
+"Prepare is the only user-visible blackout" line is updated accordingly.

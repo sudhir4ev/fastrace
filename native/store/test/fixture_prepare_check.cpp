@@ -32,6 +32,23 @@ void expectCount(duckdb_connection con, const char* table, int64_t want)
     }
 }
 
+void expectScalar(duckdb_connection con, const char* label, const std::string& sql, double want)
+{
+    duckdb_result res;
+    if (duckdb_query(con, sql.c_str(), &res) != DuckDBSuccess) {
+        std::fprintf(stderr, "FAIL: query failed for %s: %s\n", label, duckdb_result_error(&res));
+        duckdb_destroy_result(&res);
+        ++gFailures;
+        return;
+    }
+    const double got = duckdb_value_double(&res, 0, 0);
+    duckdb_destroy_result(&res);
+    if (got != want) {
+        std::fprintf(stderr, "FAIL: %s = %f, want %f\n", label, got, want);
+        ++gFailures;
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -56,6 +73,9 @@ int main(int argc, char** argv)
     expectCount(con, "arxml_pdu", 1);
     expectCount(con, "arxml_can", 1);
     expectCount(con, "arxml_ecu", 1);
+    expectCount(con, "arxml_signal", 1); // EngineRpm, the fixture's one scaled signal
+    expectScalar(con, "arxml_signal.factor", "select factor from arxml_signal where name = 'EngineRpm'", 0.25);
+    expectScalar(con, "arxml_signal.offset", "select \"offset\" from arxml_signal where name = 'EngineRpm'", 0.0);
 
     duckdb_disconnect(&con);
     duckdb_close(&db);

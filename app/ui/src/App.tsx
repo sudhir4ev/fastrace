@@ -48,12 +48,17 @@ export default function App() {
         arxmlPath,
       });
       setPrepareTotals(doneTick);
-      setScreen("summary");
-      getTraceDataSource().recordRecentTrace(startBlfPath, {
+      // Awaited before the screen switch so the "prepare" activity entry it
+      // writes is already there once WorkspaceLayout's ActivityLog mounts
+      // and fires its first (30s-stale-time-cached) query - otherwise that
+      // first fetch can race the write and show "No activity yet" for a
+      // while.
+      await getTraceDataSource().recordRecentTrace(startBlfPath, {
         messages: doneTick.messages,
         protocolRows: doneTick.protocol_rows,
         elapsedMs: doneTick.elapsed_ms,
       });
+      setScreen("summary");
     } catch (e) {
       setErrorMessage(String(e));
       setScreen("error");

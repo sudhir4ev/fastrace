@@ -107,11 +107,45 @@ int main()
         expect(ecu.close(), "arxml_ecu close");
     }
 
+    {
+        fastrace::Appender sig(db.con(), "arxml_signal");
+        expect(sig.valid(), "arxml_signal appender valid");
+        sig.i64(0);
+        sig.str("EngineRpm");
+        sig.str("can");
+        sig.i64(0x100);
+        sig.i32(0); // start_bit
+        sig.i32(16); // bit_length
+        sig.b(false); // big_endian
+        sig.f64(0.25); // factor
+        sig.f64(0.0); // offset
+        expect(sig.endRow(), "arxml_signal endRow");
+        expect(sig.close(), "arxml_signal close");
+    }
+
+    {
+        fastrace::Appender sampleApp(db.con(), "signals");
+        expect(sampleApp.valid(), "signals appender valid");
+        sampleApp.i64(0); // signal_id
+        sampleApp.i64(0); // msg_id
+        sampleApp.i64(1000); // timestamp_us
+        sampleApp.u64(513); // raw_value
+        sampleApp.f64(128.25); // phys_value == raw_value * factor + offset
+        expect(sampleApp.endRow(), "signals endRow");
+        expect(sampleApp.close(), "signals close");
+    }
+
     expect(queryScalarInt(db.con(), "select count(*) from messages") == 1, "messages row count == 1");
     expect(queryScalarInt(db.con(), "select arb_id from messages where msg_id = 0") == 0x100, "messages.arb_id round trips");
     expect(queryScalarInt(db.con(), "select count(*) from arxml_pdu") == 1, "arxml_pdu row count == 1");
     expect(queryScalarInt(db.con(), "select count(*) from arxml_can") == 1, "arxml_can row count == 1");
     expect(queryScalarInt(db.con(), "select count(*) from arxml_ecu") == 1, "arxml_ecu row count == 1");
+    expect(queryScalarInt(db.con(), "select count(*) from arxml_signal") == 1, "arxml_signal row count == 1");
+    expect(queryScalarStr(db.con(), "select name from arxml_signal where signal_id = 0") == "EngineRpm",
+        "arxml_signal.name round trips");
+    expect(queryScalarInt(db.con(), "select count(*) from signals") == 1, "signals row count == 1");
+    expect(queryScalarInt(db.con(), "select raw_value from signals where signal_id = 0") == 513,
+        "signals.raw_value round trips");
     expect(queryScalarStr(db.con(), "select value from meta where key = 'schema_version'") == fastrace::kSchemaVersion,
         "meta.schema_version round trips");
 

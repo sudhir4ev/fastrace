@@ -33,7 +33,9 @@ public:
 
     bool valid() const { return m_app != nullptr; }
     void i64(int64_t v);
+    void u64(uint64_t v);
     void i32(int32_t v);
+    void f64(double v);
     void b(bool v);
     void str(const std::string& s);
 

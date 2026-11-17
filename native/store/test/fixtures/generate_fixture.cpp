@@ -291,7 +291,59 @@ const char* kArxml = R"ARXML(<?xml version="1.0" encoding="UTF-8"?>
         <CAN-FRAME>
           <SHORT-NAME>EngineFrame</SHORT-NAME>
           <FRAME-LENGTH>8</FRAME-LENGTH>
+          <PDU-TO-FRAME-MAPPINGS>
+            <PDU-TO-FRAME-MAPPING>
+              <SHORT-NAME>EnginePduMapping</SHORT-NAME>
+              <PDU-REF DEST="I-SIGNAL-I-PDU">/Fixture/EnginePdu</PDU-REF>
+            </PDU-TO-FRAME-MAPPING>
+          </PDU-TO-FRAME-MAPPINGS>
         </CAN-FRAME>
+        <I-SIGNAL-I-PDU>
+          <SHORT-NAME>EnginePdu</SHORT-NAME>
+          <LENGTH>8</LENGTH>
+          <I-SIGNAL-TO-PDU-MAPPINGS>
+            <I-SIGNAL-TO-I-PDU-MAPPING>
+              <SHORT-NAME>EngineRpmMapping</SHORT-NAME>
+              <I-SIGNAL-REF DEST="I-SIGNAL">/Fixture/EngineRpm</I-SIGNAL-REF>
+              <START-POSITION>0</START-POSITION>
+              <PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER>
+            </I-SIGNAL-TO-I-PDU-MAPPING>
+          </I-SIGNAL-TO-PDU-MAPPINGS>
+        </I-SIGNAL-I-PDU>
+        <I-SIGNAL>
+          <SHORT-NAME>EngineRpm</SHORT-NAME>
+          <LENGTH>16</LENGTH>
+          <SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Fixture/EngineRpmSignal</SYSTEM-SIGNAL-REF>
+        </I-SIGNAL>
+        <SYSTEM-SIGNAL>
+          <SHORT-NAME>EngineRpmSignal</SHORT-NAME>
+          <PHYSICAL-PROPS>
+            <SW-DATA-DEF-PROPS-VARIANTS>
+              <SW-DATA-DEF-PROPS-CONDITIONAL>
+                <COMPU-METHOD-REF DEST="COMPU-METHOD">/Fixture/EngineRpmScaling</COMPU-METHOD-REF>
+              </SW-DATA-DEF-PROPS-CONDITIONAL>
+            </SW-DATA-DEF-PROPS-VARIANTS>
+          </PHYSICAL-PROPS>
+        </SYSTEM-SIGNAL>
+        <COMPU-METHOD>
+          <SHORT-NAME>EngineRpmScaling</SHORT-NAME>
+          <CATEGORY>LINEAR</CATEGORY>
+          <COMPU-INTERNAL-TO-PHYS>
+            <COMPU-SCALES>
+              <COMPU-SCALE>
+                <COMPU-RATIONAL-COEFFS>
+                  <COMPU-NUMERATOR>
+                    <V>0</V>
+                    <V>0.25</V>
+                  </COMPU-NUMERATOR>
+                  <COMPU-DENOMINATOR>
+                    <V>1</V>
+                  </COMPU-DENOMINATOR>
+                </COMPU-RATIONAL-COEFFS>
+              </COMPU-SCALE>
+            </COMPU-SCALES>
+          </COMPU-INTERNAL-TO-PHYS>
+        </COMPU-METHOD>
         <ETHERNET-CLUSTER>
           <SHORT-NAME>BackboneEthernet</SHORT-NAME>
           <ETHERNET-CLUSTER-VARIANTS>
