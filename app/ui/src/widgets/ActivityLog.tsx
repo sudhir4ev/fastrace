@@ -9,7 +9,7 @@ interface ActivityLogProps {
 
 const KIND_LABELS: Record<string, string> = {
   prepare: "Ingestion",
-  decode: "Decode signals",
+  decode: "Read payloads",
 };
 
 function activityLabel(a: ActivityEntry): string {
