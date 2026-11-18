@@ -1,6 +1,7 @@
 import { useSignalCatalog } from "@/shared/api/hooks";
 import { useWorkspaceStore } from "@/app/store";
 import { getSignalColor } from "@/app/signalColors";
+import MatchLane from "./MatchLane";
 import SignalChart from "./SignalChart";
 import SignalPills from "./SignalPills";
 import TimelineZoomControl from "./TimelineZoomControl";
@@ -12,9 +13,11 @@ interface TimelinePanelProps {
 export default function TimelinePanel({ blfPath }: TimelinePanelProps) {
   const catalog = useSignalCatalog(blfPath);
   const displayedSignalIds = Array.from(useWorkspaceStore((s) => s.displayedSignalIds));
+  const detectorQueryHasRun = useWorkspaceStore((s) => s.detectorQueryHasRun);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {detectorQueryHasRun && <MatchLane />}
       <SignalPills blfPath={blfPath} />
       <div className="min-h-0 flex-1 overflow-y-auto">
         {displayedSignalIds.length === 0 ? (
