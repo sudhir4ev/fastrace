@@ -62,7 +62,11 @@ export default function SignalChart({ blfPath, signalId, name, color, showZoomSl
     chart.setOption(
       {
         animation: false,
-        grid: { left: 60, right: 20, top: 10, bottom: showZoomSlider ? 64 : 10 },
+        // left has buffer room beyond what a 3-decimal label needs so a
+        // signal with an unusually wide value (e.g. a large integer part)
+        // doesn't shift its own grid relative to every other chart's fixed
+        // left offset - that mismatch is what read as "this chart has a gap".
+        grid: { left: 80, right: 20, top: 10, bottom: showZoomSlider ? 64 : 10 },
         // Raw samples are [timestampUs, physValue] pairs (trace-source.ts) -
         // a `time` xAxis would misinterpret microseconds as epoch
         // milliseconds, so this uses a `value` axis with seconds-from-zero
@@ -75,9 +79,7 @@ export default function SignalChart({ blfPath, signalId, name, color, showZoomSl
           type: "value",
           min: min - pad,
           max: max + pad,
-          name,
-          nameLocation: "middle",
-          nameGap: 45,
+          axisLabel: { formatter: (v: number) => v.toFixed(3) },
           splitLine: { show: false },
         },
         tooltip: { trigger: "axis" },
@@ -100,7 +102,20 @@ export default function SignalChart({ blfPath, signalId, name, color, showZoomSl
       },
       true
     );
+    // The container's layout isn't guaranteed final at echarts.init() time
+    // (it mounts inside a flex column, possibly before a scrollbar or a
+    // sibling chart's height settles) - calling resize() here, once data has
+    // actually loaded and the component has painted, catches it stuck at
+    // whatever width it was wrongly measured at on init.
+    chart.resize();
   }, [samples.data, name, color, showZoomSlider]);
 
-  return <div ref={containerRef} className="h-full w-full" />;
+  return (
+    <div className="flex h-full flex-col">
+      <div className="shrink-0 whitespace-normal break-words px-2 pt-1 text-xs font-medium" style={{ color }}>
+        {name}
+      </div>
+      <div ref={containerRef} className="min-h-0 w-full flex-1" />
+    </div>
+  );
 }
