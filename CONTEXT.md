@@ -33,3 +33,19 @@ _Avoid_: Ingest engine as a separate Rust concept; overloading `cpp_parser` as t
 **Shell**:
 The Tauri app under `app/` (Rust `src-tauri` + React/TypeScript `ui`) - sole product UI. Owns Detector Query execution via `crates/query` and spawns the sidecar via `crates/sidecar`. Qt `/ui` and the streaming `DetectionEngine`/C++ detectors are retired (`archive/qt-cpp-legacy`).
 _Avoid_: fastrace_ui / Qt UI as product surface; dual anomaly paths.
+
+**Signal Catalog**:
+The per-Trace list of every signal the Signal Database declares, each annotated with whether it's decodable, whether it's already decoded (cached), and its `signal_stats` (samples/nonzero/changes) so the user can tell a genuinely varying signal from a constant or an unobserved one.
+_Avoid_: "signal list" alone (ambiguous with the decoded-samples list for one signal).
+
+**Read Payloads**:
+The user action (Signals tab) that decodes the checked, not-yet-cached signals from the Signal Catalog and writes their samples into the Trace Store. Formerly called "Apply changes"; the product-facing wording is "read"/"reading", not "decode" (that word stays internal - mutation/hook/component names are unaffected).
+_Avoid_: "Apply changes" in anything user-facing (retired); "decode" in UI copy.
+
+**Active Signal**:
+A Signal Catalog entry that is cached - its samples already exist in the Trace Store because Read Payloads has run for it. Every Active Signal shows as a pill above the Timeline, one-to-one with the catalog's cached signals (not a frozen snapshot - if a signal stops being cached, its pill disappears).
+_Avoid_: confusing with Displayed Signal (below) - being Active only means "available to plot", not "currently plotted".
+
+**Displayed Signal**:
+An Active Signal whose pill has been clicked on, so its track currently renders in the Timeline. A strict subset of the Active Signals; toggled per pill, independent of decoding.
+_Avoid_: assuming every Active Signal is shown - only the first Active Signal auto-displays, and only when nothing else is displayed yet.
