@@ -42,10 +42,14 @@ export default function SignalChart({ blfPath, signalId, name, color, showZoomSl
     chart.group = CHART_GROUP;
     chartRef.current = chart;
     echarts.connect(CHART_GROUP);
-    const resize = () => chart.resize();
-    window.addEventListener("resize", resize);
+    // A window resize listener alone misses width changes from dragging a
+    // ResizablePanel divider - that resizes this chart's own container
+    // without ever firing a window resize event, which is how charts ended
+    // up at different widths from each other.
+    const observer = new ResizeObserver(() => chart.resize());
+    observer.observe(containerRef.current);
     return () => {
-      window.removeEventListener("resize", resize);
+      observer.disconnect();
       chart.dispose();
       chartRef.current = null;
     };
