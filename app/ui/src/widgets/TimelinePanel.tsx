@@ -1,4 +1,4 @@
-import { useSignalCatalog } from "@/shared/api/hooks";
+import { useSignalCatalog, useTraceTimeRange } from "@/shared/api/hooks";
 import { useWorkspaceStore } from "@/app/store";
 import { getSignalColor } from "@/app/signalColors";
 import MatchLane from "./MatchLane";
@@ -14,10 +14,13 @@ export default function TimelinePanel({ blfPath }: TimelinePanelProps) {
   const catalog = useSignalCatalog(blfPath);
   const displayedSignalIds = Array.from(useWorkspaceStore((s) => s.displayedSignalIds));
   const detectorQueryHasRun = useWorkspaceStore((s) => s.detectorQueryHasRun);
+  const timeRange = useTraceTimeRange(blfPath);
+  const minTs = timeRange.data?.minTimestampUs;
+  const maxTs = timeRange.data?.maxTimestampUs;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {detectorQueryHasRun && <MatchLane />}
+      {detectorQueryHasRun && <MatchLane minTs={minTs} maxTs={maxTs} />}
       <SignalPills blfPath={blfPath} />
       <div className="min-h-0 flex-1 overflow-y-auto">
         {displayedSignalIds.length === 0 ? (
@@ -30,7 +33,14 @@ export default function TimelinePanel({ blfPath }: TimelinePanelProps) {
             const name = catalog.data?.find((s) => s.signalId === signalId)?.name ?? `signal ${signalId}`;
             return (
               <div key={signalId} className="h-48 shrink-0 border-b border-border">
-                <SignalChart blfPath={blfPath} signalId={signalId} name={name} color={getSignalColor(colorIndex)} />
+                <SignalChart
+                  blfPath={blfPath}
+                  signalId={signalId}
+                  name={name}
+                  color={getSignalColor(colorIndex)}
+                  minTs={minTs}
+                  maxTs={maxTs}
+                />
               </div>
             );
           })

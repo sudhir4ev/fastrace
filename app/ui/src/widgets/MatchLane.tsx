@@ -5,7 +5,17 @@ import { CHART_GROUP } from "./SignalChart";
 
 const MATCH_COLOR = "#e34948"; // PALETTE[5] - red, distinct from signal colors, reads as "flagged"
 
-export default function MatchLane() {
+interface MatchLaneProps {
+  // Trace-wide [min, max] timestamp_us (useTraceTimeRange) - see SignalChart's
+  // identical props for why: without this, this lane's xAxis auto-scales to
+  // just the matches' own (often narrow) time span, misaligning it against
+  // every full-trace-width SignalChart sharing CHART_GROUP's percentage-based
+  // zoom sync.
+  minTs?: number;
+  maxTs?: number;
+}
+
+export default function MatchLane({ minTs, maxTs }: MatchLaneProps) {
   const matches = useWorkspaceStore((s) => s.detectorMatches);
   const setSelectedMessage = useWorkspaceStore((s) => s.setSelectedMessage);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -46,6 +56,8 @@ export default function MatchLane() {
         grid: { left: 80, right: 20, top: 5, bottom: 5 },
         xAxis: {
           type: "value",
+          min: minTs,
+          max: maxTs,
           axisLabel: { formatter: (v: number) => `${(v / 1_000_000).toFixed(1)}s` },
         },
         yAxis: { type: "value", show: false, min: -1, max: 1 },
@@ -69,7 +81,7 @@ export default function MatchLane() {
       true
     );
     chart.resize();
-  }, [matches]);
+  }, [matches, minTs, maxTs]);
 
   return (
     <div className="h-16 shrink-0 border-b border-border">

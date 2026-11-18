@@ -7,6 +7,12 @@ interface SignalChartProps {
   signalId: number;
   name: string;
   color: string;
+  // Trace-wide [min, max] timestamp_us (useTraceTimeRange) - pins this
+  // chart's xAxis to the same absolute domain every other CHART_GROUP chart
+  // uses, instead of auto-scaling to just this signal's own sample extent.
+  // Undefined while the range is still loading; falls back to auto-scale.
+  minTs?: number;
+  maxTs?: number;
 }
 
 // Shared echarts "group" id - instances in the same group have their
@@ -28,7 +34,7 @@ function minMax(values: number[]): [number, number] {
   return [min, max];
 }
 
-export default function SignalChart({ blfPath, signalId, name, color }: SignalChartProps) {
+export default function SignalChart({ blfPath, signalId, name, color, minTs, maxTs }: SignalChartProps) {
   const samples = useSignalSamples(blfPath, signalId, TIMELINE_SAMPLE_LIMIT);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
@@ -70,6 +76,8 @@ export default function SignalChart({ blfPath, signalId, name, color }: SignalCh
         // tick labels instead of calendar dates.
         xAxis: {
           type: "value",
+          min: minTs,
+          max: maxTs,
           axisLabel: { formatter: (v: number) => `${(v / 1_000_000).toFixed(1)}s` },
         },
         yAxis: {
@@ -108,7 +116,7 @@ export default function SignalChart({ blfPath, signalId, name, color }: SignalCh
     // actually loaded and the component has painted, catches it stuck at
     // whatever width it was wrongly measured at on init.
     chart.resize();
-  }, [samples.data, name, color]);
+  }, [samples.data, name, color, minTs, maxTs]);
 
   return (
     <div className="flex h-full flex-col">
