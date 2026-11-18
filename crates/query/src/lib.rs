@@ -294,8 +294,12 @@ pub fn run_detector_query(
     if trimmed.is_empty() {
         return Err("query is empty".to_string());
     }
+    // A trailing `--` line comment in the user's SQL would otherwise swallow
+    // the `) as detector_query_result limit N` suffix appended on the same
+    // line - the newline before the closing paren keeps that suffix outside
+    // any comment the user's query ends with.
     let wrapped = format!(
-        "select msg_id, timestamp_us from ({trimmed}) as detector_query_result limit {}",
+        "select msg_id, timestamp_us from ({trimmed}\n) as detector_query_result limit {}",
         limit + 1
     );
     let mut stmt = conn.prepare(&wrapped).map_err(|e| e.to_string())?;
@@ -528,6 +532,18 @@ mod tests {
         let result = run_detector_query(
             &conn,
             "select msg_id, timestamp_us from messages where arb_id = 100;",
+            10,
+        )
+        .unwrap();
+        assert_eq!(result.matches.len(), 2);
+    }
+
+    #[test]
+    fn run_detector_query_handles_trailing_line_comment() {
+        let conn = setup();
+        let result = run_detector_query(
+            &conn,
+            "select msg_id, timestamp_us from messages where arb_id = 100 -- note",
             10,
         )
         .unwrap();
