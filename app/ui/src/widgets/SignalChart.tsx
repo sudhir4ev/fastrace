@@ -7,16 +7,13 @@ interface SignalChartProps {
   signalId: number;
   name: string;
   color: string;
-  // Only one chart in the stack should show the visible slider control -
-  // echarts.connect() still syncs the zoom *range* across every chart in the
-  // group even when the others' sliders are hidden, so one control is enough.
-  showZoomSlider: boolean;
 }
 
 // Shared echarts "group" id - instances in the same group have their
 // dataZoom/tooltip crosshair kept in sync by echarts.connect(), which is how
-// separate chart instances still pan/zoom/hover together.
-const CHART_GROUP = "timeline-signals";
+// separate chart instances (including the single pinned zoom control in
+// TimelineZoomControl) still pan/zoom/hover together.
+export const CHART_GROUP = "timeline-signals";
 
 // Spreading into Math.min/max blows V8's call-stack limit well before real
 // trace sizes (signal_stats found signals with 195k+ samples in this
@@ -31,7 +28,7 @@ function minMax(values: number[]): [number, number] {
   return [min, max];
 }
 
-export default function SignalChart({ blfPath, signalId, name, color, showZoomSlider }: SignalChartProps) {
+export default function SignalChart({ blfPath, signalId, name, color }: SignalChartProps) {
   const samples = useSignalSamples(blfPath, signalId, TIMELINE_SAMPLE_LIMIT);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
@@ -66,7 +63,7 @@ export default function SignalChart({ blfPath, signalId, name, color, showZoomSl
         // signal with an unusually wide value (e.g. a large integer part)
         // doesn't shift its own grid relative to every other chart's fixed
         // left offset - that mismatch is what read as "this chart has a gap".
-        grid: { left: 80, right: 20, top: 10, bottom: showZoomSlider ? 64 : 10 },
+        grid: { left: 80, right: 20, top: 10, bottom: 10 },
         // Raw samples are [timestampUs, physValue] pairs (trace-source.ts) -
         // a `time` xAxis would misinterpret microseconds as epoch
         // milliseconds, so this uses a `value` axis with seconds-from-zero
@@ -83,10 +80,13 @@ export default function SignalChart({ blfPath, signalId, name, color, showZoomSl
           splitLine: { show: false },
         },
         tooltip: { trigger: "axis" },
-        dataZoom: [
-          { type: "inside" },
-          { type: "slider", show: showZoomSlider, bottom: 0, height: 50 },
-        ],
+        // A dataZoom component still has to exist on this chart for
+        // echarts.connect() to have something to apply the synced range to
+        // when TimelineZoomControl's slider moves - removing it entirely
+        // broke that sync. Disabling the wheel/drag triggers (not the
+        // component) is what stops scrolling over a chart from hijacking
+        // the page's vertical scroll, while the pinned slider keeps working.
+        dataZoom: [{ type: "inside", zoomOnMouseWheel: false, moveOnMouseWheel: false, moveOnMouseMove: false }],
         series: [
           {
             type: "line",
@@ -108,7 +108,7 @@ export default function SignalChart({ blfPath, signalId, name, color, showZoomSl
     // actually loaded and the component has painted, catches it stuck at
     // whatever width it was wrongly measured at on init.
     chart.resize();
-  }, [samples.data, name, color, showZoomSlider]);
+  }, [samples.data, name, color]);
 
   return (
     <div className="flex h-full flex-col">
