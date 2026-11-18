@@ -56,7 +56,8 @@ export default function WorkspaceLayout({ blfPath, prepareTotals, onOpenTrace }:
       <TopBar traceName={blfPath.split(/[\\/]/).pop() ?? blfPath} onOpenTrace={onOpenTrace} />
       <div className="min-h-0 flex-1">
         <ResizablePanelGroup direction="horizontal">
-          <ResizablePanel defaultSize={20} minSize={15}>
+          {/* minSize is % of panel group width; 27% ~= 320px at the default 1200px window width (tauri.conf.json) */}
+          <ResizablePanel defaultSize={27} minSize={27}>
             <PanelTag label="Trace Rail">
               <TraceRail blfPath={blfPath} />
             </PanelTag>
