@@ -242,6 +242,13 @@ fn list_ecus(blf_path: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+fn get_trace_time_range(blf_path: String) -> Result<query::TraceTimeRange, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::get_trace_time_range(&conn)
+}
+
+#[tauri::command]
 fn run_detector_query(blf_path: String, sql: String) -> Result<query::DetectorQueryResult, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
@@ -527,6 +534,7 @@ fn main() {
             list_signal_catalog,
             get_signal_samples,
             list_ecus,
+            get_trace_time_range,
             run_detector_query,
             get_file_sizes,
             get_path_size,
