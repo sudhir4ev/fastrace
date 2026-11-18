@@ -1,9 +1,11 @@
 import { useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { Filter } from "lucide-react";
 import { useWorkspaceStore } from "@/app/store";
 import { useDecodeSignals, useSignalCatalog, useSignalSamples } from "@/shared/api/hooks";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { cn } from "@/shared/ui/lib/utils";
 
 function setsEqual(a: Set<number>, b: Set<number>): boolean {
@@ -24,6 +26,7 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
   const pendingSignalIds = useWorkspaceStore((s) => s.pendingSignalIds);
   const setPendingSignalIds = useWorkspaceStore((s) => s.setPendingSignalIds);
   const commitActiveSignalIds = useWorkspaceStore((s) => s.commitActiveSignalIds);
+  const autoDisplayFirstIfEmpty = useWorkspaceStore((s) => s.autoDisplayFirstIfEmpty);
   const decodeSignals = useDecodeSignals(blfPath);
   const [signalFilter, setSignalFilter] = useState("");
   const [hideNonDecodable, setHideNonDecodable] = useState(true);
@@ -38,6 +41,7 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
     .filter((s) => !hideConstant || s.changes > 0)
     .filter((s) => `${s.name} ${s.parentLabel}`.toLowerCase().includes(signalFilter.toLowerCase()));
   const hasPendingSignalChanges = !setsEqual(pendingSignalIds, activeSignalIds);
+  const filtersActive = !hideNonDecodable || !hideConstant;
 
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -57,13 +61,18 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
     setPendingSignalIds(next);
   }
 
-  function applySignalChanges() {
+  function readPayloads() {
     const toDecode = (catalog.data ?? [])
       .filter((s) => pendingSignalIds.has(s.signalId) && !s.cached && !s.opaque)
       .map((s) => s.signalId);
     const nextActive = new Set(pendingSignalIds);
     if (toDecode.length > 0) {
-      decodeSignals.mutate(toDecode, { onSuccess: () => commitActiveSignalIds(nextActive) });
+      decodeSignals.mutate(toDecode, {
+        onSuccess: () => {
+          commitActiveSignalIds(nextActive);
+          autoDisplayFirstIfEmpty(toDecode[0]);
+        },
+      });
     } else {
       commitActiveSignalIds(nextActive);
     }
@@ -80,22 +89,34 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
             placeholder="Filter signals..."
             className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
-          <Button
-            variant={hideNonDecodable ? "secondary" : "outline"}
-            size="sm"
-            className="shrink-0 whitespace-nowrap"
-            onClick={() => setHideNonDecodable((v) => !v)}
-          >
-            {hideNonDecodable ? "Show" : "Hide"} non-decodable ({nonDecodableCount})
-          </Button>
-          <Button
-            variant={hideConstant ? "secondary" : "outline"}
-            size="sm"
-            className="shrink-0 whitespace-nowrap"
-            onClick={() => setHideConstant((v) => !v)}
-          >
-            {hideConstant ? "Show" : "Hide"} constant ({constantCount})
-          </Button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant={filtersActive ? "secondary" : "outline"} size="icon" className="relative shrink-0">
+                <Filter className="h-4 w-4" />
+                {filtersActive && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-primary" />}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64">
+              <div className="flex flex-col gap-2 text-sm">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={!hideNonDecodable}
+                    onChange={(e) => setHideNonDecodable(!e.target.checked)}
+                  />
+                  Show non-decodable ({nonDecodableCount})
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={!hideConstant}
+                    onChange={(e) => setHideConstant(!e.target.checked)}
+                  />
+                  Show constants ({constantCount})
+                </label>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
       )}
       <div className="min-h-0 flex-1">
@@ -197,8 +218,8 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
 
       {hasPendingSignalChanges && (
         <div className="shrink-0 border-t border-border p-2">
-          <Button size="sm" className="w-full" onClick={applySignalChanges} disabled={decodeSignals.isPending}>
-            Apply changes
+          <Button size="sm" className="w-full" onClick={readPayloads} disabled={decodeSignals.isPending}>
+            Read Payloads
           </Button>
         </div>
       )}
