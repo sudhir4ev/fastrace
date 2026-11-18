@@ -1,6 +1,6 @@
 -- Trace Store DDL for fastrace_ingest (external duckdb CLI).
 -- Payloads stay in the BLF (source of truth). Signals/detections are on-demand.
--- schema_version: 2
+-- schema_version: 3
 
 CREATE TABLE messages (
   msg_id       BIGINT PRIMARY KEY,
@@ -92,4 +92,18 @@ CREATE TABLE signals (
   timestamp_us BIGINT,
   raw_value    UBIGINT,
   phys_value   DOUBLE     -- raw_value * factor + "offset"
+);
+
+-- Per-signal summary written during Prepare (docs/adr/0005). One row per arxml_signal.
+-- Opaque (bit_length > 64) signals track change/nonzero via a byte-span hash; min/max stay NULL.
+CREATE TABLE signal_stats (
+  signal_id    BIGINT PRIMARY KEY,
+  samples      BIGINT,   -- times the parent message/PDU was seen
+  nonzero      BIGINT,   -- samples with raw != 0 (opaque: any byte != 0)
+  changes      BIGINT,   -- samples whose value differs from the previous one
+  min_raw      UBIGINT,  -- NULL when opaque
+  max_raw      UBIGINT,  -- NULL when opaque
+  first_ts_us  BIGINT,
+  last_ts_us   BIGINT,
+  opaque       BOOLEAN   -- bit_length > 64: tracked by byte hash only
 );

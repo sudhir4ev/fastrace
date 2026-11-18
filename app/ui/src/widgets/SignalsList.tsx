@@ -27,12 +27,15 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
   const decodeSignals = useDecodeSignals(blfPath);
   const [signalFilter, setSignalFilter] = useState("");
   const [hideNonDecodable, setHideNonDecodable] = useState(true);
+  const [hideConstant, setHideConstant] = useState(true);
   const [previewSignalId, setPreviewSignalId] = useState<number | null>(null);
   const samples = useSignalSamples(blfPath, previewSignalId);
 
   const nonDecodableCount = catalog.data?.filter((s) => !s.decodable).length ?? 0;
+  const constantCount = catalog.data?.filter((s) => s.decodable && s.changes === 0).length ?? 0;
   const filteredSignals = catalog.data
     ?.filter((s) => !hideNonDecodable || s.decodable)
+    .filter((s) => !hideConstant || s.changes > 0)
     .filter((s) => `${s.name} ${s.parentLabel}`.toLowerCase().includes(signalFilter.toLowerCase()));
   const hasPendingSignalChanges = !setsEqual(pendingSignalIds, activeSignalIds);
 
@@ -56,7 +59,7 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
 
   function applySignalChanges() {
     const toDecode = (catalog.data ?? [])
-      .filter((s) => pendingSignalIds.has(s.signalId) && !s.cached)
+      .filter((s) => pendingSignalIds.has(s.signalId) && !s.cached && !s.opaque)
       .map((s) => s.signalId);
     const nextActive = new Set(pendingSignalIds);
     if (toDecode.length > 0) {
@@ -69,7 +72,7 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {catalog.data && catalog.data.length > 0 && (
-        <div className="flex shrink-0 items-center gap-2 p-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 p-2">
           <input
             type="text"
             value={signalFilter}
@@ -85,6 +88,14 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
           >
             {hideNonDecodable ? "Show" : "Hide"} non-decodable ({nonDecodableCount})
           </Button>
+          <Button
+            variant={hideConstant ? "secondary" : "outline"}
+            size="sm"
+            className="shrink-0 whitespace-nowrap"
+            onClick={() => setHideConstant((v) => !v)}
+          >
+            {hideConstant ? "Show" : "Hide"} constant ({constantCount})
+          </Button>
         </div>
       )}
       <div className="min-h-0 flex-1">
@@ -97,7 +108,7 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
           <p className="p-3 text-sm text-muted-foreground">
             {signalFilter
               ? `No signals match "${signalFilter}".`
-              : "No decodable signals - try showing non-decodable ones."}
+              : "No matching signals - try showing constant or non-decodable ones."}
           </p>
         )}
         {filteredSignals && filteredSignals.length > 0 && (
@@ -105,19 +116,20 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
             <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
               {virtualizer.getVirtualItems().map((item) => {
                 const s = filteredSignals[item.index];
+                const selectable = s.decodable && !s.opaque;
                 return (
                   <div
                     key={s.signalId}
                     className={cn(
                       "absolute left-0 top-0 flex w-full items-center gap-2 px-3 text-sm",
-                      !s.decodable && "opacity-50"
+                      !selectable && "opacity-50"
                     )}
                     style={{ height: item.size, transform: `translateY(${item.start}px)` }}
                   >
                     <input
                       type="checkbox"
                       checked={pendingSignalIds.has(s.signalId)}
-                      disabled={!s.decodable}
+                      disabled={!selectable}
                       onChange={() => toggleSignal(s.signalId)}
                     />
                     <button
@@ -128,6 +140,14 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
                       {s.name || `signal ${s.signalId}`}
                     </button>
                     <span className="shrink-0 text-xs text-muted-foreground">{s.parentLabel}</span>
+                    {s.decodable && (
+                      <span className="shrink-0 text-xs text-muted-foreground">{s.changes} ch</span>
+                    )}
+                    {s.opaque && (
+                      <Badge variant="outline" className="px-1.5 py-0">
+                        opaque
+                      </Badge>
+                    )}
                     {s.cached && (
                       <Badge variant="secondary" className="px-1.5 py-0">
                         cached

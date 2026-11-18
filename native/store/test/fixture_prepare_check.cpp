@@ -74,8 +74,10 @@ int main(int argc, char** argv)
     expectCount(con, "arxml_can", 1);
     expectCount(con, "arxml_ecu", 1);
     expectCount(con, "arxml_signal", 1); // EngineRpm, the fixture's one scaled signal
+    expectCount(con, "signal_stats", 1); // one row per arxml_signal
     expectScalar(con, "arxml_signal.factor", "select factor from arxml_signal where name = 'EngineRpm'", 0.25);
     expectScalar(con, "arxml_signal.offset", "select \"offset\" from arxml_signal where name = 'EngineRpm'", 0.0);
+    expectScalar(con, "signal_stats.samples", "select samples from signal_stats where signal_id = 0", 1);
 
     duckdb_disconnect(&con);
     duckdb_close(&db);

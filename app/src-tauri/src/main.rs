@@ -769,7 +769,7 @@ mod tests {
         let conn = trace_store::Connection::open(&duckdb_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE meta (key VARCHAR, value VARCHAR);
-             INSERT INTO meta VALUES ('schema_version', '2');",
+             INSERT INTO meta VALUES ('schema_version', '3');",
         )
         .unwrap();
         drop(conn);
