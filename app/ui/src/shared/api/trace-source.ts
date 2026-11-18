@@ -83,6 +83,11 @@ export interface DetectorQueryResult {
   truncated: boolean;
 }
 
+export interface TraceTimeRange {
+  minTimestampUs: number;
+  maxTimestampUs: number;
+}
+
 export interface TraceDataSource {
   getTraceSummary(blfPath: string): Promise<TraceSummary>;
   listMessageGroups(blfPath: string): Promise<MessageGroup[]>;
@@ -92,6 +97,7 @@ export interface TraceDataSource {
   listSignalCatalog(blfPath: string): Promise<SignalCatalogEntry[]>;
   getSignalSamples(blfPath: string, signalId: number, limit: number): Promise<[number, number][]>;
   runDetectorQuery(blfPath: string, sql: string): Promise<DetectorQueryResult>;
+  getTraceTimeRange(blfPath: string): Promise<TraceTimeRange>;
   decodeSignals(blfPath: string, signalIds: number[]): Promise<DecodeResult>;
   recordActivity(blfPath: string, kind: string, elapsedMs: number, detail: string): Promise<void>;
   listActivities(blfPath: string): Promise<ActivityEntry[]>;
@@ -136,6 +142,10 @@ export class TauriTraceDataSource implements TraceDataSource {
 
   runDetectorQuery(blfPath: string, sql: string): Promise<DetectorQueryResult> {
     return invoke<DetectorQueryResult>("run_detector_query", { blfPath, sql });
+  }
+
+  getTraceTimeRange(blfPath: string): Promise<TraceTimeRange> {
+    return invoke<TraceTimeRange>("get_trace_time_range", { blfPath });
   }
 
   async decodeSignals(blfPath: string, signalIds: number[]): Promise<DecodeResult> {

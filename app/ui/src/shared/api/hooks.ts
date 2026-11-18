@@ -83,6 +83,17 @@ export function useRunDetectorQuery(blfPath: string) {
   });
 }
 
+// Shared x-axis domain for every Timeline chart (SignalChart, MatchLane) -
+// without this, each chart auto-scales to its own series' extent, and
+// CHART_GROUP's percentage-based zoom sync maps the same percentage to
+// different absolute time windows per chart (the misalignment this fixes).
+export function useTraceTimeRange(blfPath: string) {
+  return useQuery({
+    queryKey: ["trace-time-range", blfPath],
+    queryFn: () => getTraceDataSource().getTraceTimeRange(blfPath),
+  });
+}
+
 const decodeSignalsMutationKey = (blfPath: string) => ["decode-signals", blfPath];
 const ACTIVITIES_KEY = (blfPath: string) => ["activities", blfPath];
 
