@@ -62,7 +62,7 @@ export default function SignalChart({ blfPath, signalId, name, color, showZoomSl
     chart.setOption(
       {
         animation: false,
-        grid: { left: 60, right: 20, top: 10, bottom: showZoomSlider ? 24 : 10 },
+        grid: { left: 60, right: 20, top: 10, bottom: showZoomSlider ? 64 : 10 },
         // Raw samples are [timestampUs, physValue] pairs (trace-source.ts) -
         // a `time` xAxis would misinterpret microseconds as epoch
         // milliseconds, so this uses a `value` axis with seconds-from-zero
@@ -83,7 +83,7 @@ export default function SignalChart({ blfPath, signalId, name, color, showZoomSl
         tooltip: { trigger: "axis" },
         dataZoom: [
           { type: "inside" },
-          { type: "slider", show: showZoomSlider, bottom: 0, height: 10 },
+          { type: "slider", show: showZoomSlider, bottom: 0, height: 50 },
         ],
         series: [
           {

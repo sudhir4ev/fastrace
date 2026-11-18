@@ -1,6 +1,7 @@
 import { useSignalCatalog } from "@/shared/api/hooks";
 import { useWorkspaceStore } from "@/app/store";
 import { getSignalColor } from "@/app/signalColors";
+import { cn } from "@/shared/ui/lib/utils";
 import SignalChart from "./SignalChart";
 import SignalPills from "./SignalPills";
 
@@ -24,14 +25,15 @@ export default function TimelinePanel({ blfPath }: TimelinePanelProps) {
           displayedSignalIds.map((signalId, i) => {
             const colorIndex = (catalog.data ?? []).findIndex((c) => c.signalId === signalId);
             const name = catalog.data?.find((s) => s.signalId === signalId)?.name ?? `signal ${signalId}`;
+            const isLast = i === displayedSignalIds.length - 1;
             return (
-              <div key={signalId} className="h-48 shrink-0 border-b border-border">
+              <div key={signalId} className={cn("shrink-0 border-b border-border", isLast ? "h-64" : "h-48")}>
                 <SignalChart
                   blfPath={blfPath}
                   signalId={signalId}
                   name={name}
                   color={getSignalColor(colorIndex)}
-                  showZoomSlider={i === displayedSignalIds.length - 1}
+                  showZoomSlider={isLast}
                 />
               </div>
             );
