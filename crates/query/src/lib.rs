@@ -261,6 +261,33 @@ pub fn list_ecus(conn: &trace_store::Connection) -> Result<Vec<String>, String> 
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TraceTimeRange {
+    pub min_timestamp_us: i64,
+    pub max_timestamp_us: i64,
+}
+
+/// The trace's overall time span (first/last `messages.timestamp_us`) - the
+/// shared x-axis domain every Timeline chart (SignalChart, MatchLane) pins
+/// to, instead of each auto-scaling to its own series' data extent. Errors
+/// on an empty `messages` table (no range to report).
+pub fn get_trace_time_range(conn: &trace_store::Connection) -> Result<TraceTimeRange, String> {
+    conn.query_row(
+        "select min(timestamp_us), max(timestamp_us) from messages",
+        [],
+        |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+    )
+    .map_err(|e| e.to_string())
+    .and_then(|(min, max)| match (min, max) {
+        (Some(min_timestamp_us), Some(max_timestamp_us)) => Ok(TraceTimeRange {
+            min_timestamp_us,
+            max_timestamp_us,
+        }),
+        _ => Err("messages table is empty - no time range to report".to_string()),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DetectorMatch {
     pub msg_id: i64,
     pub timestamp_us: i64,
@@ -461,6 +488,22 @@ mod tests {
 
         // cached signal sorts first, then by changes desc.
         assert_eq!(catalog[0].signal_id, 0);
+    }
+
+    #[test]
+    fn get_trace_time_range_returns_min_and_max_message_timestamp() {
+        let conn = setup();
+        let range = get_trace_time_range(&conn).unwrap();
+        assert_eq!(range.min_timestamp_us, 1000);
+        assert_eq!(range.max_timestamp_us, 4000);
+    }
+
+    #[test]
+    fn get_trace_time_range_errors_on_empty_messages_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE messages (msg_id BIGINT, timestamp_us BIGINT);")
+            .unwrap();
+        assert!(get_trace_time_range(&conn).is_err());
     }
 
     #[test]
