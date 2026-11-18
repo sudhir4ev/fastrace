@@ -31,7 +31,7 @@ export default function DecodeOverlay({ active }: DecodeOverlayProps) {
   return (
     <div className="fixed inset-0 z-40 flex flex-col items-center justify-center gap-2 bg-background/60 backdrop-blur-sm">
       <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
-      <p className="text-sm text-foreground">Decoding signals...</p>
+      <p className="text-sm text-foreground">Reading payloads...</p>
       {tick && <p className="text-xs text-muted-foreground">{tick.messages.toLocaleString()} messages scanned</p>}
     </div>
   );

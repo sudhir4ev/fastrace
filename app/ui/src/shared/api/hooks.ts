@@ -65,6 +65,13 @@ export function useSignalSamples(blfPath: string, signalId: number | null, limit
   });
 }
 
+// Timeline-scale fetch: each displayed signal's own chart calls
+// useSignalSamples(blfPath, signalId, TIMELINE_SAMPLE_LIMIT) - 200k rows
+// comfortably covers a full drive per docs/adr/0005's real-trace
+// signal_stats numbers, with no server-side windowing - ECharts' own
+// `large`/`sampling: 'lttb'` handles render-time density.
+export const TIMELINE_SAMPLE_LIMIT = 200_000;
+
 const decodeSignalsMutationKey = (blfPath: string) => ["decode-signals", blfPath];
 const ACTIVITIES_KEY = (blfPath: string) => ["activities", blfPath];
 
