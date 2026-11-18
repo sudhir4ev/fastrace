@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { DetectorMatch } from "@/shared/api/trace-source";
 
 export type LeftTab = "signals" | "messages" | "ecus";
 
@@ -29,6 +30,20 @@ export interface WorkspaceState {
   // cached (e.g. after a catalog refetch) - keeps pills and chart in sync
   // without the caller having to know why a signal stopped being cached.
   reconcileDisplayedSignals: (cachedIds: Set<number>) => void;
+  // Detector Query editor state (Analyzer panel). One query at a time -
+  // every run replaces the previous result wholesale. `detectorQueryHasRun`
+  // is distinct from `detectorMatches.length === 0`: a query that matched
+  // nothing still "ran" and the Match lane should show (empty), not stay
+  // hidden as if nothing happened yet.
+  detectorQuerySql: string;
+  detectorMatches: DetectorMatch[];
+  detectorQueryTruncated: boolean;
+  detectorQueryError: string | null;
+  detectorQueryHasRun: boolean;
+  setDetectorQuerySql: (sql: string) => void;
+  setDetectorQueryResult: (matches: DetectorMatch[], truncated: boolean) => void;
+  setDetectorQueryError: (error: string) => void;
+  resetDetectorQuery: () => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
@@ -73,5 +88,33 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         }
       }
       return changed ? { displayedSignalIds: next } : {};
+    }),
+  detectorQuerySql: "",
+  detectorMatches: [],
+  detectorQueryTruncated: false,
+  detectorQueryError: null,
+  detectorQueryHasRun: false,
+  setDetectorQuerySql: (sql) => set({ detectorQuerySql: sql }),
+  setDetectorQueryResult: (matches, truncated) =>
+    set({
+      detectorMatches: matches,
+      detectorQueryTruncated: truncated,
+      detectorQueryError: null,
+      detectorQueryHasRun: true,
+    }),
+  setDetectorQueryError: (error) =>
+    set({
+      detectorQueryError: error,
+      detectorMatches: [],
+      detectorQueryTruncated: false,
+      detectorQueryHasRun: true,
+    }),
+  resetDetectorQuery: () =>
+    set({
+      detectorQuerySql: "",
+      detectorMatches: [],
+      detectorQueryTruncated: false,
+      detectorQueryError: null,
+      detectorQueryHasRun: false,
     }),
 }));
