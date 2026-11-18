@@ -73,6 +73,16 @@ export interface SignalCatalogEntry {
   opaque: boolean;
 }
 
+export interface DetectorMatch {
+  msgId: number;
+  timestampUs: number;
+}
+
+export interface DetectorQueryResult {
+  matches: DetectorMatch[];
+  truncated: boolean;
+}
+
 export interface TraceDataSource {
   getTraceSummary(blfPath: string): Promise<TraceSummary>;
   listMessageGroups(blfPath: string): Promise<MessageGroup[]>;
@@ -81,6 +91,7 @@ export interface TraceDataSource {
   listEcus(blfPath: string): Promise<EcuInfo[]>;
   listSignalCatalog(blfPath: string): Promise<SignalCatalogEntry[]>;
   getSignalSamples(blfPath: string, signalId: number, limit: number): Promise<[number, number][]>;
+  runDetectorQuery(blfPath: string, sql: string): Promise<DetectorQueryResult>;
   decodeSignals(blfPath: string, signalIds: number[]): Promise<DecodeResult>;
   recordActivity(blfPath: string, kind: string, elapsedMs: number, detail: string): Promise<void>;
   listActivities(blfPath: string): Promise<ActivityEntry[]>;
@@ -121,6 +132,10 @@ export class TauriTraceDataSource implements TraceDataSource {
 
   getSignalSamples(blfPath: string, signalId: number, limit: number): Promise<[number, number][]> {
     return invoke<[number, number][]>("get_signal_samples", { blfPath, signalId, limit });
+  }
+
+  runDetectorQuery(blfPath: string, sql: string): Promise<DetectorQueryResult> {
+    return invoke<DetectorQueryResult>("run_detector_query", { blfPath, sql });
   }
 
   async decodeSignals(blfPath: string, signalIds: number[]): Promise<DecodeResult> {
