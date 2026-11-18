@@ -1,11 +1,4 @@
-import {
-  useInfiniteQuery,
-  useMutation,
-  useMutationState,
-  useQueries,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToastStore } from "@/app/toast-store";
 import { getTraceDataSource } from "./trace-source";
 
@@ -72,20 +65,12 @@ export function useSignalSamples(blfPath: string, signalId: number | null, limit
   });
 }
 
-// Timeline-scale fetch: one query per displayed signal, each uncapped-ish
-// (200k rows comfortably covers a full drive per docs/adr/0005's real-trace
-// signal_stats numbers) with no server-side windowing - ECharts' own
+// Timeline-scale fetch: each displayed signal's own chart calls
+// useSignalSamples(blfPath, signalId, TIMELINE_SAMPLE_LIMIT) - 200k rows
+// comfortably covers a full drive per docs/adr/0005's real-trace
+// signal_stats numbers, with no server-side windowing - ECharts' own
 // `large`/`sampling: 'lttb'` handles render-time density.
-const TIMELINE_SAMPLE_LIMIT = 200_000;
-
-export function useSignalSamplesMany(blfPath: string, signalIds: number[]) {
-  return useQueries({
-    queries: signalIds.map((signalId) => ({
-      queryKey: ["signal-samples", blfPath, signalId, TIMELINE_SAMPLE_LIMIT],
-      queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId, TIMELINE_SAMPLE_LIMIT),
-    })),
-  });
-}
+export const TIMELINE_SAMPLE_LIMIT = 200_000;
 
 const decodeSignalsMutationKey = (blfPath: string) => ["decode-signals", blfPath];
 const ACTIVITIES_KEY = (blfPath: string) => ["activities", blfPath];
