@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as echarts from "echarts";
 import { useSignalCatalog, useSignalSamplesMany } from "@/shared/api/hooks";
 import { useWorkspaceStore } from "@/app/store";
@@ -11,9 +11,27 @@ interface TimelinePanelProps {
 
 const GRID_GAP_PERCENT = 4;
 
+// Spreading into Math.min/max blows V8's call-stack limit well before real
+// trace sizes (signal_stats found signals with 195k+ samples in this
+// project's own traces) - a manual reduce has no such ceiling.
+function minMax(values: number[]): [number, number] {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const v of values) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return [min, max];
+}
+
 export default function TimelinePanel({ blfPath }: TimelinePanelProps) {
   const catalog = useSignalCatalog(blfPath);
-  const displayedSignalIds = Array.from(useWorkspaceStore((s) => s.displayedSignalIds));
+  const displayedSignalIdsSet = useWorkspaceStore((s) => s.displayedSignalIds);
+  // `displayedSignalIdsSet` is a stable reference across unrelated re-renders
+  // (the store only allocates a new Set on an actual toggle/reconcile), so
+  // memoizing on it keeps this array identity stable too - otherwise every
+  // render would rebuild the whole ECharts option via the effect below.
+  const displayedSignalIds = useMemo(() => Array.from(displayedSignalIdsSet), [displayedSignalIdsSet]);
   const samples = useSignalSamplesMany(blfPath, displayedSignalIds);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -67,8 +85,7 @@ export default function TimelinePanel({ blfPath }: TimelinePanelProps) {
     const yAxes = displayedSignalIds.map((_, i) => {
       const result = samples[i];
       const values = (result?.data ?? []).map(([, v]) => v);
-      const min = values.length ? Math.min(...values) : 0;
-      const max = values.length ? Math.max(...values) : 1;
+      const [min, max] = values.length ? minMax(values) : [0, 1];
       const pad = (max - min) * 0.1 || 1;
       return {
         type: "value" as const,
@@ -122,13 +139,12 @@ export default function TimelinePanel({ blfPath }: TimelinePanelProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <SignalPills blfPath={blfPath} />
-      <div className="min-h-0 flex-1">
-        {displayedSignalIds.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      <div className="relative min-h-0 flex-1">
+        <div ref={containerRef} className="h-full w-full" />
+        {displayedSignalIds.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
             No signals displayed - click a pill above to plot a decoded signal.
           </div>
-        ) : (
-          <div ref={containerRef} className="h-full w-full" />
         )}
       </div>
     </div>
