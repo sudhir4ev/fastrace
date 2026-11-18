@@ -259,6 +259,95 @@ pub fn list_ecus(conn: &trace_store::Connection) -> Result<Vec<String>, String> 
         .map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceTimeRange {
+    pub min_timestamp_us: i64,
+    pub max_timestamp_us: i64,
+}
+
+/// The trace's overall time span (first/last `messages.timestamp_us`) - the
+/// shared x-axis domain every Timeline chart (SignalChart, MatchLane) pins
+/// to, instead of each auto-scaling to its own series' data extent. Errors
+/// on an empty `messages` table (no range to report).
+pub fn get_trace_time_range(conn: &trace_store::Connection) -> Result<TraceTimeRange, String> {
+    conn.query_row(
+        "select min(timestamp_us), max(timestamp_us) from messages",
+        [],
+        |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+    )
+    .map_err(|e| e.to_string())
+    .and_then(|(min, max)| match (min, max) {
+        (Some(min_timestamp_us), Some(max_timestamp_us)) => Ok(TraceTimeRange {
+            min_timestamp_us,
+            max_timestamp_us,
+        }),
+        _ => Err("messages table is empty - no time range to report".to_string()),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectorMatch {
+    pub msg_id: i64,
+    pub timestamp_us: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectorQueryResult {
+    pub matches: Vec<DetectorMatch>,
+    pub truncated: bool,
+}
+
+/// Default Match cap for the Analyzer's Detector Query editor - same order of
+/// magnitude as `TIMELINE_SAMPLE_LIMIT` on the frontend (both already proven
+/// at this scale via `large: true` echarts rendering).
+pub const DETECTOR_QUERY_MATCH_LIMIT: i64 = 200_000;
+
+/// Runs a user-authored Detector Query and extracts just `msg_id` /
+/// `timestamp_us` from its result, for plotting as Matches on the Timeline.
+/// The query is run read-only (the connection itself is opened read-only) and
+/// wrapped as a subquery rather than string-validated, so DuckDB's own
+/// binder error - not custom validation code - is what reports a missing
+/// required column.
+pub fn run_detector_query(
+    conn: &trace_store::Connection,
+    sql: &str,
+    limit: i64,
+) -> Result<DetectorQueryResult, String> {
+    let trimmed = sql.trim();
+    let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed).trim();
+    if trimmed.is_empty() {
+        return Err("query is empty".to_string());
+    }
+    // A trailing `--` line comment in the user's SQL would otherwise swallow
+    // the `) as detector_query_result limit N` suffix appended on the same
+    // line - the newline before the closing paren keeps that suffix outside
+    // any comment the user's query ends with.
+    let wrapped = format!(
+        "select msg_id, timestamp_us from ({trimmed}\n) as detector_query_result limit {}",
+        limit + 1
+    );
+    let mut stmt = conn.prepare(&wrapped).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(DetectorMatch {
+                msg_id: row.get(0)?,
+                timestamp_us: row.get(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut matches = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let truncated = matches.len() as i64 > limit;
+    if truncated {
+        matches.truncate(limit as usize);
+    }
+    Ok(DetectorQueryResult { matches, truncated })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +488,115 @@ mod tests {
 
         // cached signal sorts first, then by changes desc.
         assert_eq!(catalog[0].signal_id, 0);
+    }
+
+    #[test]
+    fn get_trace_time_range_returns_min_and_max_message_timestamp() {
+        let conn = setup();
+        let range = get_trace_time_range(&conn).unwrap();
+        assert_eq!(range.min_timestamp_us, 1000);
+        assert_eq!(range.max_timestamp_us, 4000);
+    }
+
+    #[test]
+    fn get_trace_time_range_errors_on_empty_messages_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE messages (msg_id BIGINT, timestamp_us BIGINT);")
+            .unwrap();
+        assert!(get_trace_time_range(&conn).is_err());
+    }
+
+    #[test]
+    fn run_detector_query_returns_matching_rows() {
+        let conn = setup();
+        let result = run_detector_query(
+            &conn,
+            "select msg_id, timestamp_us from messages where arb_id = 100",
+            10,
+        )
+        .unwrap();
+        assert_eq!(result.matches.len(), 2);
+        assert_eq!(result.matches[0].msg_id, 1);
+        assert_eq!(result.matches[0].timestamp_us, 1000);
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn run_detector_query_truncates_at_limit_and_reports_it() {
+        let conn = setup();
+        let result =
+            run_detector_query(&conn, "select msg_id, timestamp_us from messages", 2).unwrap();
+        assert_eq!(
+            result.matches.len(),
+            2,
+            "capped to the limit, not the full 4 rows"
+        );
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn run_detector_query_does_not_truncate_when_exactly_at_limit() {
+        let conn = setup();
+        let result =
+            run_detector_query(&conn, "select msg_id, timestamp_us from messages", 4).unwrap();
+        assert_eq!(result.matches.len(), 4);
+        assert!(!result.truncated, "exactly `limit` rows is not truncation");
+    }
+
+    #[test]
+    fn run_detector_query_errors_when_msg_id_column_missing() {
+        let conn = setup();
+        let err = run_detector_query(&conn, "select timestamp_us from messages", 10).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("msg_id"),
+            "error should mention the missing column, got: {err}"
+        );
+    }
+
+    #[test]
+    fn run_detector_query_errors_when_timestamp_us_column_missing() {
+        let conn = setup();
+        let err = run_detector_query(&conn, "select msg_id from messages", 10).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("timestamp_us"),
+            "error should mention the missing column, got: {err}"
+        );
+    }
+
+    #[test]
+    fn run_detector_query_errors_on_empty_sql() {
+        let conn = setup();
+        assert!(run_detector_query(&conn, "   ", 10).is_err());
+    }
+
+    #[test]
+    fn run_detector_query_strips_one_trailing_semicolon() {
+        let conn = setup();
+        let result = run_detector_query(
+            &conn,
+            "select msg_id, timestamp_us from messages where arb_id = 100;",
+            10,
+        )
+        .unwrap();
+        assert_eq!(result.matches.len(), 2);
+    }
+
+    #[test]
+    fn run_detector_query_handles_trailing_line_comment() {
+        let conn = setup();
+        let result = run_detector_query(
+            &conn,
+            "select msg_id, timestamp_us from messages where arb_id = 100 -- note",
+            10,
+        )
+        .unwrap();
+        assert_eq!(result.matches.len(), 2);
+    }
+
+    #[test]
+    fn run_detector_query_surfaces_bad_sql_errors() {
+        let conn = setup();
+        assert!(run_detector_query(&conn, "select * from no_such_table", 10).is_err());
     }
 
     #[test]

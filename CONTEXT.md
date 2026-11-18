@@ -19,8 +19,16 @@ The one user action: the C++ sidecar (`fastrace_parse prepare`) reads the Trace 
 _Avoid_: Separate "Parse" and "Ingest" steps or a "Parse Artifact" (both were the pre-ADR-0002 plan; the sidecar now writes DuckDB in one pass).
 
 **Detector Query**:
-User-editable SQL run against the Trace Store by `crates/query`. Results are raw returned columns/rows. All anomaly-detection logic is SQL, never C++ or Rust (`docs/adr/0003`).
-_Avoid_: Detector (C++ class); a streaming detection engine.
+User-editable SQL run against the Trace Store by `crates/query`. Results are raw returned columns/rows. All anomaly-detection logic is SQL, never C++ or Rust (`docs/adr/0003`). Authored and run from the Analyzer. Must return `msg_id` and `timestamp_us` columns (exact names, no aliasing inferred) so its rows can plot as Matches. Currently ephemeral - one Detector Query at a time, not persisted past a trace switch; saving/naming a Detector Query to re-run later is a later phase, not yet built.
+_Avoid_: Detector (C++ class); a streaming detection engine; "analyzer query" (same thing, non-canonical name).
+
+**Analyzer**:
+The workbench (right-rail panel) where a Detector Query is edited and run. A testbench for tailoring anomaly-detector SQL per anomaly, not a general-purpose SQL console.
+_Avoid_: "Analyzer script" (earlier placeholder wording, superseded now that it's a Detector Query testbench, not a scripting surface).
+
+**Match**:
+One Detector Query result row, plotted as a point on the Timeline. Exists only after a Detector Query has been run; clicking one selects its `msg_id`, same as selecting a row in the Message List.
+_Avoid_: "result" alone (ambiguous with the whole result set vs one row); "detection" (that's the C++-era streaming-engine term retired by `docs/adr/0003`).
 
 **Signal Database**:
 An AUTOSAR ARXML (or later DBC) description of the vehicle network - PDUs, signals, ECUs - used to interpret IDs/addresses. Optional Prepare input; its dictionary is materialized into `arxml_*` tables. Actual signal values are decoded on demand when the user plots a signal, not at Prepare time (`docs/adr/0005`).

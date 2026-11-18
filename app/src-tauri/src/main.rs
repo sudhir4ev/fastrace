@@ -224,7 +224,11 @@ fn list_signal_catalog(blf_path: String) -> Result<Vec<query::SignalCatalogEntry
 }
 
 #[tauri::command]
-fn get_signal_samples(blf_path: String, signal_id: i64, limit: i64) -> Result<Vec<(i64, f64)>, String> {
+fn get_signal_samples(
+    blf_path: String,
+    signal_id: i64,
+    limit: i64,
+) -> Result<Vec<(i64, f64)>, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
     query::list_signal_samples(&conn, signal_id, limit)
@@ -235,6 +239,20 @@ fn list_ecus(blf_path: String) -> Result<Vec<String>, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
     query::list_ecus(&conn)
+}
+
+#[tauri::command]
+fn get_trace_time_range(blf_path: String) -> Result<query::TraceTimeRange, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::get_trace_time_range(&conn)
+}
+
+#[tauri::command]
+fn run_detector_query(blf_path: String, sql: String) -> Result<query::DetectorQueryResult, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::run_detector_query(&conn, &sql, query::DETECTOR_QUERY_MATCH_LIMIT)
 }
 
 #[derive(serde::Serialize)]
@@ -369,7 +387,11 @@ fn remove_recent(list: Vec<RecentTraceEntry>, blf_path: &str) -> Vec<RecentTrace
 /// entry if none exists yet (shouldn't normally happen - `record_recent_trace`
 /// runs first on every Prepare - but keeps this pure function total rather
 /// than silently dropping the activity).
-fn push_activity(mut list: Vec<RecentTraceEntry>, blf_path: &str, entry: ActivityEntry) -> Vec<RecentTraceEntry> {
+fn push_activity(
+    mut list: Vec<RecentTraceEntry>,
+    blf_path: &str,
+    entry: ActivityEntry,
+) -> Vec<RecentTraceEntry> {
     match list.iter_mut().find(|e| e.blf_path == blf_path) {
         Some(e) => e.activities.push(entry),
         None => list.push(RecentTraceEntry {
@@ -450,7 +472,12 @@ fn record_activity(
 ) -> Result<(), String> {
     let path = recent_traces_path(&app)?;
     let list = read_recent_traces(&path)?;
-    let entry = ActivityEntry { kind, at: now_ms(), elapsed_ms, detail };
+    let entry = ActivityEntry {
+        kind,
+        at: now_ms(),
+        elapsed_ms,
+        detail,
+    };
     write_recent_traces(&path, &push_activity(list, &blf_path, entry))
 }
 
@@ -507,6 +534,8 @@ fn main() {
             list_signal_catalog,
             get_signal_samples,
             list_ecus,
+            get_trace_time_range,
+            run_detector_query,
             get_file_sizes,
             get_path_size,
             check_existing_store,
@@ -662,7 +691,11 @@ mod tests {
             }],
         }];
         let result = upsert_recent(list, "a.blf", 99, None, None, None);
-        assert_eq!(result[0].activities.len(), 1, "reopening must not wipe the activity log");
+        assert_eq!(
+            result[0].activities.len(),
+            1,
+            "reopening must not wipe the activity log"
+        );
     }
 
     #[test]
@@ -678,7 +711,12 @@ mod tests {
         let result = push_activity(
             list,
             "a.blf",
-            ActivityEntry { kind: "decode".into(), at: 2, elapsed_ms: 11, detail: "3 signals".into() },
+            ActivityEntry {
+                kind: "decode".into(),
+                at: 2,
+                elapsed_ms: 11,
+                detail: "3 signals".into(),
+            },
         );
         assert_eq!(result[0].activities.len(), 1);
         assert_eq!(result[0].activities[0].kind, "decode");
@@ -689,7 +727,12 @@ mod tests {
         let result = push_activity(
             Vec::new(),
             "a.blf",
-            ActivityEntry { kind: "decode".into(), at: 2, elapsed_ms: 11, detail: "3 signals".into() },
+            ActivityEntry {
+                kind: "decode".into(),
+                at: 2,
+                elapsed_ms: 11,
+                detail: "3 signals".into(),
+            },
         );
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].blf_path, "a.blf");

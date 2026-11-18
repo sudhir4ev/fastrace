@@ -7,6 +7,7 @@ import ProgressScreen from "./Progress";
 import ErrorScreen from "./ErrorScreen";
 import WorkspaceLayout from "./widgets/WorkspaceLayout";
 import { queryClient } from "./app/query-client";
+import { useWorkspaceStore } from "./app/store";
 import { getTraceDataSource, type PrepareMeta } from "./shared/api/trace-source";
 import type { ProgressTick } from "./types";
 
@@ -35,6 +36,7 @@ export default function App() {
   async function handleStart(startBlfPath: string, arxmlPath: string) {
     setTick(null);
     setBlfPath(startBlfPath);
+    useWorkspaceStore.getState().resetDetectorQuery();
     setScreen("progress");
     try {
       // prepare_trace resolves with the run's final Done tick directly, so
@@ -68,6 +70,7 @@ export default function App() {
   function handleOpenExisting(openBlfPath: string, meta?: PrepareMeta) {
     getTraceDataSource().recordRecentTrace(openBlfPath);
     setBlfPath(openBlfPath);
+    useWorkspaceStore.getState().resetDetectorQuery();
     setPrepareTotals(
       meta ? { messages: meta.messages, protocol_rows: meta.protocolRows, elapsed_ms: meta.elapsedMs } : null
     );
@@ -79,6 +82,7 @@ export default function App() {
     setTick(null);
     setPrepareTotals(null);
     setBlfPath("");
+    useWorkspaceStore.getState().resetDetectorQuery();
     setErrorMessage("");
   }
 

@@ -72,6 +72,28 @@ export function useSignalSamples(blfPath: string, signalId: number | null, limit
 // `large`/`sampling: 'lttb'` handles render-time density.
 export const TIMELINE_SAMPLE_LIMIT = 200_000;
 
+// Same order of magnitude as TIMELINE_SAMPLE_LIMIT - duplicated from the
+// Rust-side query::DETECTOR_QUERY_MATCH_LIMIT because there's no
+// shared-constant mechanism across the Tauri IPC boundary.
+export const DETECTOR_QUERY_MATCH_LIMIT = 200_000;
+
+export function useRunDetectorQuery(blfPath: string) {
+  return useMutation({
+    mutationFn: (sql: string) => getTraceDataSource().runDetectorQuery(blfPath, sql),
+  });
+}
+
+// Shared x-axis domain for every Timeline chart (SignalChart, MatchLane) -
+// without this, each chart auto-scales to its own series' extent, and
+// CHART_GROUP's percentage-based zoom sync maps the same percentage to
+// different absolute time windows per chart (the misalignment this fixes).
+export function useTraceTimeRange(blfPath: string) {
+  return useQuery({
+    queryKey: ["trace-time-range", blfPath],
+    queryFn: () => getTraceDataSource().getTraceTimeRange(blfPath),
+  });
+}
+
 const decodeSignalsMutationKey = (blfPath: string) => ["decode-signals", blfPath];
 const ACTIVITIES_KEY = (blfPath: string) => ["activities", blfPath];
 

@@ -87,7 +87,7 @@ export default function WorkspaceLayout({ blfPath, prepareTotals, onOpenTrace }:
           <ResizableHandle withHandle />
           <ResizablePanel defaultSize={25} minSize={15}>
             <PanelTag label="Analyzer">
-              <AnalyzerPanel />
+              <AnalyzerPanel blfPath={blfPath} />
             </PanelTag>
           </ResizablePanel>
         </ResizablePanelGroup>
