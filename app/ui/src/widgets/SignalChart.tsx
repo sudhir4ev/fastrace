@@ -7,6 +7,10 @@ interface SignalChartProps {
   signalId: number;
   name: string;
   color: string;
+  // Only one chart in the stack should show the visible slider control -
+  // echarts.connect() still syncs the zoom *range* across every chart in the
+  // group even when the others' sliders are hidden, so one control is enough.
+  showZoomSlider: boolean;
 }
 
 // Shared echarts "group" id - instances in the same group have their
@@ -27,7 +31,7 @@ function minMax(values: number[]): [number, number] {
   return [min, max];
 }
 
-export default function SignalChart({ blfPath, signalId, name, color }: SignalChartProps) {
+export default function SignalChart({ blfPath, signalId, name, color, showZoomSlider }: SignalChartProps) {
   const samples = useSignalSamples(blfPath, signalId, TIMELINE_SAMPLE_LIMIT);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
@@ -58,7 +62,7 @@ export default function SignalChart({ blfPath, signalId, name, color }: SignalCh
     chart.setOption(
       {
         animation: false,
-        grid: { left: 60, right: 20, top: 10, bottom: 24 },
+        grid: { left: 60, right: 20, top: 10, bottom: showZoomSlider ? 24 : 10 },
         // Raw samples are [timestampUs, physValue] pairs (trace-source.ts) -
         // a `time` xAxis would misinterpret microseconds as epoch
         // milliseconds, so this uses a `value` axis with seconds-from-zero
@@ -79,7 +83,7 @@ export default function SignalChart({ blfPath, signalId, name, color }: SignalCh
         tooltip: { trigger: "axis" },
         dataZoom: [
           { type: "inside" },
-          { type: "slider", bottom: 0, height: 10 },
+          { type: "slider", show: showZoomSlider, bottom: 0, height: 10 },
         ],
         series: [
           {
@@ -96,7 +100,7 @@ export default function SignalChart({ blfPath, signalId, name, color }: SignalCh
       },
       true
     );
-  }, [samples.data, name, color]);
+  }, [samples.data, name, color, showZoomSlider]);
 
   return <div ref={containerRef} className="h-full w-full" />;
 }

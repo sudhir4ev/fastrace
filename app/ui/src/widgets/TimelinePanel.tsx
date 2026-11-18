@@ -21,12 +21,18 @@ export default function TimelinePanel({ blfPath }: TimelinePanelProps) {
             No signals displayed - click a pill above to plot a decoded signal.
           </div>
         ) : (
-          displayedSignalIds.map((signalId) => {
+          displayedSignalIds.map((signalId, i) => {
             const colorIndex = (catalog.data ?? []).findIndex((c) => c.signalId === signalId);
             const name = catalog.data?.find((s) => s.signalId === signalId)?.name ?? `signal ${signalId}`;
             return (
               <div key={signalId} className="h-48 shrink-0 border-b border-border">
-                <SignalChart blfPath={blfPath} signalId={signalId} name={name} color={getSignalColor(colorIndex)} />
+                <SignalChart
+                  blfPath={blfPath}
+                  signalId={signalId}
+                  name={name}
+                  color={getSignalColor(colorIndex)}
+                  showZoomSlider={i === displayedSignalIds.length - 1}
+                />
               </div>
             );
           })
