@@ -5,6 +5,7 @@
 
 #include <duckdb.h>
 
+#include "ArxmlTypes.h"
 #include "ProtocolMessage.h"
 
 namespace fastrace {
@@ -38,6 +39,7 @@ public:
     void f64(double v);
     void b(bool v);
     void str(const std::string& s);
+    void null();
 
     bool endRow();
     bool close();
@@ -47,8 +49,10 @@ private:
     duckdb_appender m_app = nullptr;
 };
 
-/// Loads an ARXML-derived ArDatabase into arxml_pdu/arxml_can/arxml_ecu.
+/// Loads an ARXML-derived ArDatabase into arxml_pdu/arxml_can/arxml_ecu/arxml_signal.
 bool loadArxml(Db& db, const std::string& path);
+/// Same as above, but reuses an already-parsed ArDatabase (Prepare parses once).
+bool loadArxml(Db& db, const ArDatabase& arDb, const std::string& path);
 
 /// Appends one peeled ProtocolMessage into the matching protocol_* table.
 /// Known gap: uses pm.sourceIndices.front() for msg_id. Today ProtocolParser

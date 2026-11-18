@@ -67,6 +67,10 @@ export interface SignalCatalogEntry {
   parentLabel: string;
   decodable: boolean;
   cached: boolean;
+  samples: number;
+  changes: number;
+  nonzero: number;
+  opaque: boolean;
 }
 
 export interface TraceDataSource {

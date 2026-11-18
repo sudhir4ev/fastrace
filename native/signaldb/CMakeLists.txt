@@ -1,6 +1,7 @@
 add_library(fastrace_signaldb STATIC
   src/ArxmlParser.cpp
   src/SignalDecoder.cpp
+  src/SignalStatsTracker.cpp
 )
 target_include_directories(fastrace_signaldb PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -43,7 +43,7 @@ std::string queryScalarStr(duckdb_connection con, const std::string& sql)
     duckdb_result res;
     if (duckdb_query(con, sql.c_str(), &res) != DuckDBSuccess) {
         duckdb_destroy_result(&res);
-        return {};
+        return { };
     }
     char* s = duckdb_value_varchar(&res, 0, 0);
     std::string out = s ? s : "";
@@ -56,7 +56,8 @@ std::string queryScalarStr(duckdb_connection con, const std::string& sql)
 
 int main()
 {
-    const std::string outPath = (std::filesystem::temp_directory_path() / "fastrace_store_roundtrip_test.duckdb").string();
+    const std::string outPath
+        = (std::filesystem::temp_directory_path() / "fastrace_store_roundtrip_test.duckdb").string();
     std::error_code ec;
     std::filesystem::remove(outPath, ec);
     std::filesystem::remove(outPath + ".wal", ec);
@@ -135,8 +136,25 @@ int main()
         expect(sampleApp.close(), "signals close");
     }
 
+    {
+        fastrace::Appender stats(db.con(), "signal_stats");
+        expect(stats.valid(), "signal_stats appender valid");
+        stats.i64(0); // signal_id
+        stats.i64(10); // samples
+        stats.i64(8); // nonzero
+        stats.i64(3); // changes
+        stats.u64(1); // min_raw
+        stats.u64(99); // max_raw
+        stats.i64(1000); // first_ts_us
+        stats.i64(9000); // last_ts_us
+        stats.b(false); // opaque
+        expect(stats.endRow(), "signal_stats endRow");
+        expect(stats.close(), "signal_stats close");
+    }
+
     expect(queryScalarInt(db.con(), "select count(*) from messages") == 1, "messages row count == 1");
-    expect(queryScalarInt(db.con(), "select arb_id from messages where msg_id = 0") == 0x100, "messages.arb_id round trips");
+    expect(queryScalarInt(db.con(), "select arb_id from messages where msg_id = 0") == 0x100,
+        "messages.arb_id round trips");
     expect(queryScalarInt(db.con(), "select count(*) from arxml_pdu") == 1, "arxml_pdu row count == 1");
     expect(queryScalarInt(db.con(), "select count(*) from arxml_can") == 1, "arxml_can row count == 1");
     expect(queryScalarInt(db.con(), "select count(*) from arxml_ecu") == 1, "arxml_ecu row count == 1");
@@ -146,6 +164,9 @@ int main()
     expect(queryScalarInt(db.con(), "select count(*) from signals") == 1, "signals row count == 1");
     expect(queryScalarInt(db.con(), "select raw_value from signals where signal_id = 0") == 513,
         "signals.raw_value round trips");
+    expect(queryScalarInt(db.con(), "select count(*) from signal_stats") == 1, "signal_stats one row per arxml_signal");
+    expect(queryScalarInt(db.con(), "select changes from signal_stats where signal_id = 0") == 3,
+        "signal_stats.changes round trips");
     expect(queryScalarStr(db.con(), "select value from meta where key = 'schema_version'") == fastrace::kSchemaVersion,
         "meta.schema_version round trips");
 

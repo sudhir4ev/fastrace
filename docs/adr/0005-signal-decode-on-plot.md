@@ -22,7 +22,8 @@ Cache rows: `(signal_id, msg_id, timestamp_us, raw_value, phys_value)`, every sa
 ## Consequences
 
 - Users choose signals by plotting them; the cached set grows from real use.
-- "Decodable" is inferred from message IDs: a message's presence means its signals can be decoded, not that they hold valid or changing values (multiplexed and padding fields look the same at the ID level).
+- "Decodable" is measured at Prepare via a `signal_stats` table (schema_version 3): one in-memory summary per ARXML signal (samples, nonzero, changes, min/max, opaque). A signal is decodable when `samples > 0`. Opaque signals (`bit_length > 64`, typically SOME/IP structs) are tracked by a byte-span hash only and are not offered for scalar decode.
+- The Signals UI ranks by cache status then `changes`, and can hide constant (`changes = 0`) signals so the deep dive starts from live values.
 - Queries are unavailable during a decode. Acceptable for the MVP.
 
 ## Deferred

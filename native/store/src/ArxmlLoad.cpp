@@ -6,9 +6,8 @@
 
 namespace fastrace {
 
-bool loadArxml(Db& db, const std::string& path)
+bool loadArxml(Db& db, const ArDatabase& arDb, const std::string& path)
 {
-    const ArDatabase arDb = ArxmlParser::parseFile(path);
     if (arDb.empty()) {
         spdlog::warn("ARXML parse produced empty database: {}", path);
         return true;
@@ -64,6 +63,12 @@ bool loadArxml(Db& db, const std::string& path)
         }
     }
     return pdu.close() && can.close() && ecu.close() && sig.close() && db.meta("source_arxml", path);
+}
+
+bool loadArxml(Db& db, const std::string& path)
+{
+    const ArDatabase arDb = ArxmlParser::parseFile(path);
+    return loadArxml(db, arDb, path);
 }
 
 } // namespace fastrace

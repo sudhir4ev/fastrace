@@ -10,7 +10,9 @@
 #include <string>
 
 #include "ArxmlParser.h"
+#include "BlfTypes.h"
 #include "SignalDecoder.h"
+#include "SignalStatsTracker.h"
 
 #ifndef FASTRACE_FIXTURE_ARXML
 #error "FASTRACE_FIXTURE_ARXML must be defined by CMake"
@@ -172,6 +174,112 @@ int main()
             }
         }
         expect(found, "RawCounter signal found");
+    }
+
+    // -- SignalStatsTracker: constant / varying / opaque / dstIp mismatch -----
+    {
+        fastrace::ArDatabase db;
+        {
+            fastrace::ArMessage canMsg;
+            canMsg.name = "CanParent";
+            canMsg.canId = 0x100;
+            canMsg.busType = fastrace::ArBusType::CAN;
+            fastrace::ArSignal constSig;
+            constSig.name = "ConstByte";
+            constSig.startBit = 0;
+            constSig.bitLength = 8;
+            fastrace::ArSignal varySig;
+            varySig.name = "VaryByte";
+            varySig.startBit = 8;
+            varySig.bitLength = 8;
+            canMsg.signalDefs.push_back(constSig);
+            canMsg.signalDefs.push_back(varySig);
+            db.messages.push_back(std::move(canMsg));
+        }
+        {
+            fastrace::ArMessage ethMsg;
+            ethMsg.name = "EthParent";
+            ethMsg.busType = fastrace::ArBusType::ETHERNET;
+            ethMsg.pduId = 42;
+            ethMsg.dstIp = "10.0.0.1";
+            ethMsg.dstPort = 5000;
+            fastrace::ArSignal opaqueSig;
+            opaqueSig.name = "OpaqueBlob";
+            opaqueSig.startBit = 0;
+            opaqueSig.bitLength = 96; // > 64 -> opaque
+            ethMsg.signalDefs.push_back(opaqueSig);
+            db.messages.push_back(std::move(ethMsg));
+        }
+        db.buildIndex();
+
+        fastrace::SignalStatsTracker tracker(db);
+        expect(tracker.slots().size() == 3, "tracker builds one slot per signal");
+
+        fastrace::TraceMessage can1;
+        can1.objectType = CAN_MESSAGE;
+        can1.arbId = 0x100;
+        can1.timestampUs = 1000;
+        can1.data = { 0x11, 0x01 };
+        tracker.observe(can1);
+
+        fastrace::TraceMessage can2;
+        can2.objectType = CAN_MESSAGE;
+        can2.arbId = 0x100;
+        can2.timestampUs = 2000;
+        can2.data = { 0x11, 0x02 };
+        tracker.observe(can2);
+
+        fastrace::TraceMessage can3;
+        can3.objectType = CAN_MESSAGE;
+        can3.arbId = 0x100;
+        can3.timestampUs = 3000;
+        can3.data = { 0x11, 0x02 };
+        tracker.observe(can3);
+
+        const auto& constSlot = tracker.slots()[0];
+        expect(constSlot.samples == 3, "constant signal samples == 3");
+        expect(constSlot.changes == 0, "constant signal changes == 0");
+        expect(constSlot.minRaw == 0x11 && constSlot.maxRaw == 0x11, "constant signal min==max");
+        expect(constSlot.nonzero == 3, "constant nonzero samples counted");
+
+        const auto& varySlot = tracker.slots()[1];
+        expect(varySlot.samples == 3, "varying signal samples == 3");
+        expect(varySlot.changes == 1, "varying signal changes once (1->2)");
+        expect(varySlot.minRaw == 1 && varySlot.maxRaw == 2, "varying signal min/max");
+
+        // Matching Ethernet PDU with changing opaque payload.
+        fastrace::TraceMessage eth1;
+        eth1.objectType = ETHERNET_FRAME_EX;
+        eth1.dstIp = "10.0.0.1";
+        eth1.dstPort = 5000;
+        eth1.timestampUs = 4000;
+        // Packed PDU header (8) + 16 payload bytes = 24.
+        eth1.data.assign(24, 0);
+        eth1.data[3] = 42; // pdu id
+        eth1.data[7] = 16; // pdu len
+        eth1.data[8] = 0xAA;
+        fastrace::indexEthernetPdus(eth1);
+        tracker.observe(eth1);
+
+        fastrace::TraceMessage eth2 = eth1;
+        eth2.timestampUs = 5000;
+        eth2.data[8] = 0xBB;
+        fastrace::indexEthernetPdus(eth2);
+        tracker.observe(eth2);
+
+        const auto& opaqueSlot = tracker.slots()[2];
+        expect(opaqueSlot.opaque, "96-bit signal marked opaque");
+        expect(opaqueSlot.samples == 2, "opaque signal samples == 2");
+        expect(opaqueSlot.changes == 1, "opaque signal detects payload change via hash");
+        expect(opaqueSlot.nonzero == 2, "opaque nonzero when any payload byte != 0");
+
+        // Wrong dstIp must not count.
+        fastrace::SignalStatsTracker tracker2(db);
+        fastrace::TraceMessage ethWrong = eth1;
+        ethWrong.dstIp = "10.0.0.99";
+        fastrace::indexEthernetPdus(ethWrong);
+        tracker2.observe(ethWrong);
+        expect(tracker2.slots()[2].samples == 0, "pdu signal with mismatched dstIp is not counted");
     }
 
     if (gFailures > 0) {

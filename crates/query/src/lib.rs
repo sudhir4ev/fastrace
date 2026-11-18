@@ -159,7 +159,10 @@ pub fn list_messages(
     Ok(MessagePage { rows, next_cursor })
 }
 
-pub fn get_message_detail(conn: &trace_store::Connection, msg_id: i64) -> Result<MessageRow, String> {
+pub fn get_message_detail(
+    conn: &trace_store::Connection,
+    msg_id: i64,
+) -> Result<MessageRow, String> {
     let sql = format!(
         "select msg_id, timestamp_us,
                 case when object_type in ({CAN_OBJECT_TYPES}) then 'CAN' else 'Ethernet' end as bus_label,
@@ -181,26 +184,32 @@ pub struct SignalCatalogEntry {
     pub parent_label: String,
     pub decodable: bool,
     pub cached: bool,
+    pub samples: i64,
+    pub changes: i64,
+    pub nonzero: i64,
+    pub opaque: bool,
 }
 
-/// ARXML signal dictionary, joined against `messages`/`protocol_pdu` for decodability
-/// and against `signals` for cache status. `order by cached desc` is what pins
-/// already-decoded signals to the top of the UI's list.
-pub fn list_signal_catalog(conn: &trace_store::Connection) -> Result<Vec<SignalCatalogEntry>, String> {
-    let sql = format!(
-        "select s.signal_id, s.name,
+/// ARXML signal dictionary joined to Prepare-time `signal_stats` (docs/adr/0005)
+/// and to `signals` for cache status. `decodable` means the parent message/PDU
+/// was observed at least once (`samples > 0`). Sort pins cached, then live
+/// (most-changing) signals to the top of the UI list.
+pub fn list_signal_catalog(
+    conn: &trace_store::Connection,
+) -> Result<Vec<SignalCatalogEntry>, String> {
+    let sql = "select s.signal_id, s.name,
                 case when s.parent_kind = 'can' then 'CAN ' || cast(s.parent_id as varchar)
                      else 'PDU ' || cast(s.parent_id as varchar) end as parent_label,
-                case when s.parent_kind = 'can' then
-                       exists (select 1 from messages m where m.object_type in ({CAN_OBJECT_TYPES}) and m.arb_id = s.parent_id)
-                     else
-                       exists (select 1 from protocol_pdu p where p.pdu_id = s.parent_id)
-                     end as decodable,
-                exists (select 1 from signals sig where sig.signal_id = s.signal_id) as cached
+                coalesce(st.samples, 0) > 0 as decodable,
+                exists (select 1 from signals sig where sig.signal_id = s.signal_id) as cached,
+                coalesce(st.samples, 0) as samples,
+                coalesce(st.changes, 0) as changes,
+                coalesce(st.nonzero, 0) as nonzero,
+                coalesce(st.opaque, false) as opaque
          from arxml_signal s
-         order by cached desc, s.name"
-    );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+         left join signal_stats st on st.signal_id = s.signal_id
+         order by cached desc, changes desc, s.name";
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
             Ok(SignalCatalogEntry {
@@ -209,6 +218,10 @@ pub fn list_signal_catalog(conn: &trace_store::Connection) -> Result<Vec<SignalC
                 parent_label: row.get(2)?,
                 decodable: row.get(3)?,
                 cached: row.get(4)?,
+                samples: row.get(5)?,
+                changes: row.get(6)?,
+                nonzero: row.get(7)?,
+                opaque: row.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -242,7 +255,8 @@ pub fn list_ecus(conn: &trace_store::Connection) -> Result<Vec<String>, String> 
     let rows = stmt
         .query_map([], |row| row.get::<_, String>(0))
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -273,6 +287,7 @@ mod tests {
              CREATE TABLE protocol_pdu (msg_id BIGINT, pdu_id BIGINT, length BIGINT);
              CREATE TABLE arxml_signal (signal_id BIGINT, name VARCHAR, parent_kind VARCHAR, parent_id BIGINT, start_bit INTEGER, bit_length INTEGER, big_endian BOOLEAN, factor DOUBLE, \"offset\" DOUBLE);
              CREATE TABLE signals (signal_id BIGINT, msg_id BIGINT, timestamp_us BIGINT, raw_value UBIGINT, phys_value DOUBLE);
+             CREATE TABLE signal_stats (signal_id BIGINT PRIMARY KEY, samples BIGINT, nonzero BIGINT, changes BIGINT, min_raw UBIGINT, max_raw UBIGINT, first_ts_us BIGINT, last_ts_us BIGINT, opaque BOOLEAN);
              INSERT INTO arxml_can VALUES (100, 'EngineSpeed');
              INSERT INTO messages VALUES (1, 1000, 1, 100, NULL, NULL, 8, 8);
              INSERT INTO messages VALUES (2, 2000, 1, 100, NULL, NULL, 8, 8);
@@ -339,7 +354,8 @@ mod tests {
     #[test]
     fn list_ecus_returns_sorted_names() {
         let conn = setup();
-        conn.execute_batch("INSERT INTO arxml_ecu VALUES ('Gateway'), ('BodyControl');").unwrap();
+        conn.execute_batch("INSERT INTO arxml_ecu VALUES ('Gateway'), ('BodyControl');")
+            .unwrap();
         let ecus = list_ecus(&conn).unwrap();
         assert_eq!(ecus, vec!["BodyControl".to_string(), "Gateway".to_string()]);
     }
@@ -358,25 +374,30 @@ mod tests {
              INSERT INTO arxml_signal VALUES (1, 'GhostSignal', 'can', 999, 0, 8, false, 1.0, 0.0);
              INSERT INTO protocol_pdu VALUES (4, 42, 64);
              INSERT INTO arxml_signal VALUES (2, 'PduSignal', 'pdu', 42, 0, 8, false, 1.0, 0.0);
-             INSERT INTO signals VALUES (0, 1, 1000, 513, 128.25);",
+             INSERT INTO signals VALUES (0, 1, 1000, 513, 128.25);
+             INSERT INTO signal_stats VALUES (0, 10, 8, 3, 1, 99, 1000, 9000, false);
+             INSERT INTO signal_stats VALUES (1, 0, 0, 0, NULL, NULL, NULL, NULL, false);
+             INSERT INTO signal_stats VALUES (2, 5, 5, 4, 1, 7, 4000, 8000, false);",
         )
         .unwrap();
         let catalog = list_signal_catalog(&conn).unwrap();
 
         let engine = catalog.iter().find(|s| s.signal_id == 0).unwrap();
         assert_eq!(engine.parent_label, "CAN 100");
-        assert!(engine.decodable, "EngineRpm's carrier message (arb_id 100) exists");
+        assert!(engine.decodable, "EngineRpm samples > 0");
         assert!(engine.cached, "EngineRpm has a row in signals");
+        assert_eq!(engine.changes, 3);
 
         let ghost = catalog.iter().find(|s| s.signal_id == 1).unwrap();
-        assert!(!ghost.decodable, "GhostSignal's carrier message (arb_id 999) is absent");
+        assert!(!ghost.decodable, "GhostSignal samples == 0");
         assert!(!ghost.cached);
 
         let pdu = catalog.iter().find(|s| s.signal_id == 2).unwrap();
         assert_eq!(pdu.parent_label, "PDU 42");
-        assert!(pdu.decodable, "PduSignal's carrier pdu_id 42 exists in protocol_pdu");
+        assert!(pdu.decodable, "PduSignal samples > 0");
+        assert_eq!(pdu.changes, 4);
 
-        // cached signal sorts first.
+        // cached signal sorts first, then by changes desc.
         assert_eq!(catalog[0].signal_id, 0);
     }
 
@@ -390,6 +411,10 @@ mod tests {
         )
         .unwrap();
         let samples = list_signal_samples(&conn, 0, 1).unwrap();
-        assert_eq!(samples, vec![(1000, 128.25)], "earliest sample first, limited to 1");
+        assert_eq!(
+            samples,
+            vec![(1000, 128.25)],
+            "earliest sample first, limited to 1"
+        );
     }
 }

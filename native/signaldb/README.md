@@ -5,6 +5,11 @@ ARXML file into an `ArDatabase` (ECUs, CAN/Ethernet messages, signal definitions
 bit layout and linear scaling), and extracts raw/decoded signal values from BLF
 message bytes (`docs/adr/0005-signal-decode-on-plot.md`).
 
+`SignalStatsTracker` builds an indexed per-signal summary during Prepare: for every
+payload it updates samples/nonzero/changes/min/max (or a byte-span FNV-1a hash for
+opaque signals with `bit_length > 64`). The CLI writes one `signal_stats` row per
+`arxml_signal` at the end of Prepare. Signal IDs match `loadArxml`'s assignment order.
+
 ## Build and test
 
 ```
@@ -26,6 +31,9 @@ No BLF file, DuckDB, Rust, or Tauri involved - this runs against the committed
   `factor=1.0, offset=0.0`.
 - `decodeAllSignals`' new `parentCanId`/`parentPduId` tagging on `DecodedSignal`, used
   by `decode-signals` to disambiguate same-named signals across different messages.
+- `SignalStatsTracker`: constant signal → `changes == 0`; varying signal → correct
+  counts/min/max; opaque (`bit_length > 64`) change detection via hash; Ethernet PDU
+  with mismatched `dstIp` is not counted.
 
 ## Known gaps
 

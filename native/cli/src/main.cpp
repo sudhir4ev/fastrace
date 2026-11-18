@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -12,6 +13,7 @@
 #include "ProtocolParser.h"
 #include "SchemaEmbed.h"
 #include "SignalDecoder.h"
+#include "SignalStatsTracker.h"
 #include "Store.h"
 
 namespace {
@@ -36,8 +38,7 @@ void printProgress(uint64_t containers, uint64_t messages, int64_t elapsedMs)
 
 void printDone(uint64_t containers, uint64_t messages, uint64_t protocolRows, int64_t elapsedMs)
 {
-    std::printf(
-        "{\"done\":true,\"containers\":%llu,\"messages\":%llu,\"protocol_rows\":%llu,\"elapsed_ms\":%lld}\n",
+    std::printf("{\"done\":true,\"containers\":%llu,\"messages\":%llu,\"protocol_rows\":%llu,\"elapsed_ms\":%lld}\n",
         static_cast<unsigned long long>(containers), static_cast<unsigned long long>(messages),
         static_cast<unsigned long long>(protocolRows), static_cast<long long>(elapsedMs));
     std::fflush(stdout);
@@ -49,8 +50,8 @@ void printError(const std::string& message)
     std::fflush(stderr);
 }
 
-bool appendProtocolRows(const std::vector<ProtocolMessage>& protos, fastrace::Appender& pdu,
-    fastrace::Appender& someip, fastrace::Appender& sd, fastrace::Appender& doip)
+bool appendProtocolRows(const std::vector<ProtocolMessage>& protos, fastrace::Appender& pdu, fastrace::Appender& someip,
+    fastrace::Appender& sd, fastrace::Appender& doip)
 {
     for (const auto& pm : protos) {
         if (!fastrace::appendProto(pm, pdu, someip, sd, doip)) {
@@ -260,6 +261,39 @@ int runDecodeSignals(int argc, char** argv)
     return 0;
 }
 
+bool writeSignalStats(fastrace::Db& db, const fastrace::SignalStatsTracker& tracker)
+{
+    fastrace::Appender app(db.con(), "signal_stats");
+    if (!app.valid()) {
+        return false;
+    }
+    for (const auto& slot : tracker.slots()) {
+        app.i64(slot.signalId);
+        app.i64(slot.samples);
+        app.i64(slot.nonzero);
+        app.i64(slot.changes);
+        if (slot.opaque || slot.samples == 0) {
+            app.null();
+            app.null();
+        } else {
+            app.u64(slot.minRaw);
+            app.u64(slot.maxRaw);
+        }
+        if (slot.samples == 0) {
+            app.null();
+            app.null();
+        } else {
+            app.i64(slot.firstTsUs);
+            app.i64(slot.lastTsUs);
+        }
+        app.b(slot.opaque);
+        if (!app.endRow()) {
+            return false;
+        }
+    }
+    return app.close();
+}
+
 int runPrepare(int argc, char** argv)
 {
     if (argc < 3) {
@@ -284,18 +318,24 @@ int runPrepare(int argc, char** argv)
         = static_cast<int64_t>(std::filesystem::last_write_time(blfPath, statEc).time_since_epoch().count());
 
     fastrace::Db db;
-    bool failed = !db.open(outPath.string()) || !db.exec(fastrace::kSchemaSql)
-        || !db.meta("source_blf", blfPath) || !db.meta("schema_version", fastrace::kSchemaVersion)
-        || !db.meta("stage_format", "libduckdb_appender")
+    bool failed = !db.open(outPath.string()) || !db.exec(fastrace::kSchemaSql) || !db.meta("source_blf", blfPath)
+        || !db.meta("schema_version", fastrace::kSchemaVersion) || !db.meta("stage_format", "libduckdb_appender")
         || !db.meta("blf_size", std::to_string(blfSize)) || !db.meta("blf_mtime", std::to_string(blfMtime));
 
+    fastrace::ArDatabase arDb;
+    std::optional<fastrace::SignalStatsTracker> tracker;
     if (!failed && !arxmlPath.empty()) {
-        failed = !fastrace::loadArxml(db, arxmlPath);
+        arDb = fastrace::ArxmlParser::parseFile(arxmlPath);
+        failed = !fastrace::loadArxml(db, arDb, arxmlPath);
+        if (!failed) {
+            tracker.emplace(arDb);
+        }
     }
 
     uint64_t peeled = 0;
     uint64_t finalContainers = 0;
     uint64_t finalMessages = 0;
+    int64_t signalStatsUs = 0;
     if (!failed) {
         fastrace::Appender msgApp(db.con(), "messages");
         fastrace::Appender pduApp(db.con(), "protocol_pdu");
@@ -325,6 +365,12 @@ int runPrepare(int argc, char** argv)
             protos = parser.parse(msg, static_cast<size_t>(msgId));
             peeled += protos.size();
 
+            if (tracker) {
+                const auto stats0 = Clock::now();
+                tracker->observe(msg);
+                signalStatsUs += std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - stats0).count();
+            }
+
             msgApp.i64(static_cast<int64_t>(msgId));
             msgApp.i64(static_cast<int64_t>(msg.timestampUs));
             msgApp.i32(static_cast<int32_t>(msg.objectType));
@@ -349,8 +395,17 @@ int runPrepare(int argc, char** argv)
         });
 
         failed = failed || !ok;
-        failed = !msgApp.close() || !pduApp.close() || !someipApp.close() || !sdApp.close() || !doipApp.close()
-            || failed;
+        failed
+            = !msgApp.close() || !pduApp.close() || !someipApp.close() || !sdApp.close() || !doipApp.close() || failed;
+
+        if (!failed && tracker) {
+            const auto write0 = Clock::now();
+            failed = !writeSignalStats(db, *tracker);
+            signalStatsUs += std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - write0).count();
+            if (!failed) {
+                db.meta("signal_stats_ms", std::to_string(signalStatsUs / 1000));
+            }
+        }
 
         if (!failed) {
             finalContainers = reader.stats().containers;
@@ -361,8 +416,7 @@ int runPrepare(int argc, char** argv)
         }
     }
 
-    const int64_t elapsedMs
-        = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - wall0).count();
+    const int64_t elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - wall0).count();
 
     if (failed) {
         removeOutputs(outPath);
