@@ -8,6 +8,33 @@ pub fn count(conn: &trace_store::Connection, sql: &str) -> Result<i64, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Total row count of `messages` - backs the message-ordinal trim slider's
+/// max bound. Not trim-bound itself (it must report the trace's full count
+/// regardless of the currently applied window, same as get_trace_time_range).
+pub fn count_messages(conn: &trace_store::Connection) -> Result<i64, String> {
+    conn.query_row("select count(*) from messages", [], |row| row.get(0))
+        .map_err(|e| e.to_string())
+}
+
+/// Resolves a 1-based ordinal position (1..=count_messages) to that message's
+/// timestamp_us, by msg_id order (msg_id assignment order matches time order -
+/// Prepare assigns ids sequentially while iterating the BLF in time order).
+/// position 1 maps to the earliest message's timestamp.
+pub fn resolve_message_position(
+    conn: &trace_store::Connection,
+    position: i64,
+) -> Result<i64, String> {
+    if position < 1 {
+        return Err(format!("message position must be >= 1, got {position}"));
+    }
+    conn.query_row(
+        "select timestamp_us from messages order by msg_id limit 1 offset ?",
+        duckdb::params![position - 1],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("position {position} not found: {e}"))
+}
+
 // CAN vs Ethernet object_type values (native/blf/include/BlfTypes.h),
 // duplicated here because Rust has no visibility into the C++ header - keep
 // in sync if that enum changes.
@@ -172,6 +199,8 @@ pub fn list_messages(
 pub fn get_message_detail(
     conn: &trace_store::Connection,
     msg_id: i64,
+    start_us: i64,
+    end_us: i64,
 ) -> Result<MessageRow, String> {
     let sql = format!(
         "select msg_id, timestamp_us,
@@ -180,10 +209,14 @@ pub fn get_message_detail(
                      else coalesce(dst_ip,'') || ':' || cast(coalesce(dst_port,0) as varchar) end as id_or_src,
                 cast(null as varchar) as name,
                 dlc, payload_len
-         from messages where msg_id = ?"
+         from messages where msg_id = ? and timestamp_us between ? and ?"
     );
-    conn.query_row(&sql, duckdb::params![msg_id], map_message_row)
-        .map_err(|e| format!("message {msg_id} not found: {e}"))
+    conn.query_row(
+        &sql,
+        duckdb::params![msg_id, start_us, end_us],
+        map_message_row,
+    )
+    .map_err(|e| format!("message {msg_id} not found: {e}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -453,7 +486,7 @@ mod tests {
     #[test]
     fn get_message_detail_returns_row_by_id() {
         let conn = setup();
-        let detail = get_message_detail(&conn, 1).unwrap();
+        let detail = get_message_detail(&conn, 1, 0, 10_000).unwrap();
         assert_eq!(detail.bus_label, "CAN");
         assert_eq!(detail.id_or_src, "100");
     }
@@ -461,7 +494,47 @@ mod tests {
     #[test]
     fn get_message_detail_errors_when_missing() {
         let conn = setup();
-        assert!(get_message_detail(&conn, 999).is_err());
+        assert!(get_message_detail(&conn, 999, 0, 10_000).is_err());
+    }
+
+    #[test]
+    fn get_message_detail_errors_when_outside_trim_bound() {
+        let conn = setup();
+        // msg_id 1 is at timestamp_us 1000 - a bound of [2000, 4000] excludes it.
+        assert!(get_message_detail(&conn, 1, 2000, 4000).is_err());
+    }
+
+    #[test]
+    fn count_messages_returns_total_row_count() {
+        let conn = setup();
+        assert_eq!(count_messages(&conn).unwrap(), 4);
+    }
+
+    #[test]
+    fn resolve_message_position_maps_first_and_last_position() {
+        let conn = setup();
+        assert_eq!(
+            resolve_message_position(&conn, 1).unwrap(),
+            1000,
+            "position 1 is the earliest message"
+        );
+        assert_eq!(
+            resolve_message_position(&conn, 4).unwrap(),
+            4000,
+            "position 4 is the latest message"
+        );
+    }
+
+    #[test]
+    fn resolve_message_position_errors_when_out_of_range() {
+        let conn = setup();
+        assert!(resolve_message_position(&conn, 5).is_err());
+    }
+
+    #[test]
+    fn resolve_message_position_rejects_position_below_one() {
+        let conn = setup();
+        assert!(resolve_message_position(&conn, 0).is_err());
     }
 
     #[test]
