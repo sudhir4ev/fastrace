@@ -310,6 +310,24 @@ int runApplyTrim(int argc, char** argv)
         }
     }
 
+    // Pass-level short-circuit: if every active signal's coverage already fully
+    // contains [startUs,endUs], there is no possible sample to append (a shrink,
+    // or a re-Apply of an unchanged window) - skip decodeAllSignals entirely for
+    // every message instead of calling it and discarding the result per-message.
+    // decodeAllSignals is expensive (an O(ARXML messages) scan per Ethernet
+    // frame), so this is the difference between re-reading the window and doing
+    // real decode work vs. just the inflate + stats pass every message needs anyway.
+    bool needDecode = false;
+    for (int64_t id : activeIds) {
+        const auto it = cov.find(id);
+        const bool fullyCovered = it != cov.end() && it->second.has && it->second.start <= startUs
+            && it->second.end >= endUs;
+        if (!fullyCovered) {
+            needDecode = true;
+            break;
+        }
+    }
+
     if (!db.exec("DELETE FROM signal_stats")) {
         printError("could not clear signal_stats before recompute");
         return 1;
@@ -339,7 +357,7 @@ int runApplyTrim(int argc, char** argv)
 
         tracker.observe(msg);
 
-        if (!lookup.empty()) {
+        if (needDecode) {
             for (const auto& ds : fastrace::decodeAllSignals(arDb, msg)) {
                 const std::string key = (ds.parentPduId != 0)
                     ? ("pdu:" + std::to_string(ds.parentPduId) + ":" + ds.name)
