@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useToastStore } from "@/app/toast-store";
 import { useWorkspaceStore } from "@/app/store";
 import { resolveMessagePosition, useMessageCount, useTraceTimeRange } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
@@ -56,13 +57,19 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
   async function handleApply() {
     if (strategy === "message" && positionRange) {
       setIsResolving(true);
-      const [start, end] = await Promise.all([
-        resolveMessagePosition(blfPath, positionRange.startPos),
-        resolveMessagePosition(blfPath, positionRange.endPos),
-      ]);
-      setIsResolving(false);
-      setPendingTrimRange({ start, end });
-      applyTrim();
+      try {
+        const [start, end] = await Promise.all([
+          resolveMessagePosition(blfPath, positionRange.startPos),
+          resolveMessagePosition(blfPath, positionRange.endPos),
+        ]);
+        setPendingTrimRange({ start, end });
+        applyTrim();
+      } catch (e) {
+        useToastStore.getState().pushError(String(e));
+        return;
+      } finally {
+        setIsResolving(false);
+      }
     } else {
       applyTrim();
     }
