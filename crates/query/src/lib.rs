@@ -45,14 +45,18 @@ pub struct MessagePage {
 /// One group per distinct CAN arb_id and per distinct Ethernet (dst_ip,
 /// dst_port) pair. `key` is the opaque cursor `list_messages` parses back
 /// apart - "can:<arb_id>" or "eth:<dst_ip>:<dst_port>".
-pub fn list_message_groups(conn: &trace_store::Connection) -> Result<Vec<MessageGroup>, String> {
+pub fn list_message_groups(
+    conn: &trace_store::Connection,
+    start_us: i64,
+    end_us: i64,
+) -> Result<Vec<MessageGroup>, String> {
     let sql = format!(
         "select 'can:' || cast(arb_id as varchar) as key,
                 'CAN' as bus_label,
                 coalesce((select name from arxml_can where can_id = arb_id limit 1), cast(arb_id as varchar)) as label,
                 count(*) as count
          from messages
-         where object_type in ({CAN_OBJECT_TYPES})
+         where object_type in ({CAN_OBJECT_TYPES}) and timestamp_us between ? and ?
          group by arb_id
          union all
          select 'eth:' || coalesce(dst_ip,'') || ':' || cast(coalesce(dst_port,0) as varchar) as key,
@@ -60,13 +64,13 @@ pub fn list_message_groups(conn: &trace_store::Connection) -> Result<Vec<Message
                 coalesce(dst_ip,'?') || ':' || cast(coalesce(dst_port,0) as varchar) as label,
                 count(*) as count
          from messages
-         where object_type in ({ETHERNET_OBJECT_TYPES})
+         where object_type in ({ETHERNET_OBJECT_TYPES}) and timestamp_us between ? and ?
          group by dst_ip, dst_port
          order by 2, 3"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(duckdb::params![start_us, end_us, start_us, end_us], |row| {
             Ok(MessageGroup {
                 key: row.get(0)?,
                 bus_label: row.get(1)?,
@@ -99,6 +103,8 @@ pub fn list_messages(
     group_key: &str,
     cursor: Option<i64>,
     limit: i64,
+    start_us: i64,
+    end_us: i64,
 ) -> Result<MessagePage, String> {
     let cursor = cursor.unwrap_or(-1);
     let fetch = limit + 1;
@@ -111,13 +117,16 @@ pub fn list_messages(
             "select msg_id, timestamp_us, 'CAN' as bus_label, cast(arb_id as varchar) as id_or_src,
                     (select name from arxml_can where can_id = arb_id limit 1) as name, dlc, payload_len
              from messages
-             where object_type in ({CAN_OBJECT_TYPES}) and arb_id = ? and msg_id > ?
+             where object_type in ({CAN_OBJECT_TYPES}) and arb_id = ? and timestamp_us between ? and ? and msg_id > ?
              order by msg_id
              limit ?"
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let out = stmt
-            .query_map(duckdb::params![arb_id, cursor, fetch], map_message_row)
+            .query_map(
+                duckdb::params![arb_id, start_us, end_us, cursor, fetch],
+                map_message_row,
+            )
             .map_err(|e| e.to_string())?;
         out.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?
@@ -133,14 +142,15 @@ pub fn list_messages(
                     coalesce(dst_ip,'') || ':' || cast(coalesce(dst_port,0) as varchar) as id_or_src,
                     cast(null as varchar) as name, dlc, payload_len
              from messages
-             where object_type in ({ETHERNET_OBJECT_TYPES}) and dst_ip = ? and dst_port = ? and msg_id > ?
+             where object_type in ({ETHERNET_OBJECT_TYPES}) and dst_ip = ? and dst_port = ?
+                   and timestamp_us between ? and ? and msg_id > ?
              order by msg_id
              limit ?"
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let out = stmt
             .query_map(
-                duckdb::params![dst_ip, dst_port, cursor, fetch],
+                duckdb::params![dst_ip, dst_port, start_us, end_us, cursor, fetch],
                 map_message_row,
             )
             .map_err(|e| e.to_string())?;
@@ -235,12 +245,18 @@ pub fn list_signal_samples(
     conn: &trace_store::Connection,
     signal_id: i64,
     limit: i64,
+    start_us: i64,
+    end_us: i64,
 ) -> Result<Vec<(i64, f64)>, String> {
     let mut stmt = conn
-        .prepare("select timestamp_us, phys_value from signals where signal_id = ? order by timestamp_us limit ?")
+        .prepare(
+            "select timestamp_us, phys_value from signals
+             where signal_id = ? and timestamp_us between ? and ?
+             order by timestamp_us limit ?",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(duckdb::params![signal_id, limit], |row| {
+        .query_map(duckdb::params![signal_id, start_us, end_us, limit], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })
         .map_err(|e| e.to_string())?;
@@ -315,6 +331,8 @@ pub fn run_detector_query(
     conn: &trace_store::Connection,
     sql: &str,
     limit: i64,
+    start_us: i64,
+    end_us: i64,
 ) -> Result<DetectorQueryResult, String> {
     let trimmed = sql.trim();
     let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed).trim();
@@ -324,9 +342,15 @@ pub fn run_detector_query(
     // A trailing `--` line comment in the user's SQL would otherwise swallow
     // the `) as detector_query_result limit N` suffix appended on the same
     // line - the newline before the closing paren keeps that suffix outside
-    // any comment the user's query ends with.
+    // any comment the user's query ends with. start_us/end_us are interpolated
+    // as literals (not bound params) since they're Rust-generated i64 values,
+    // never user text - same trust boundary as the `limit + 1` interpolation
+    // below.
     let wrapped = format!(
-        "select msg_id, timestamp_us from ({trimmed}\n) as detector_query_result limit {}",
+        "select msg_id, timestamp_us from (
+           select * from ({trimmed}\n) as detector_query_user_sql
+           where timestamp_us between {start_us} and {end_us}
+         ) as detector_query_result limit {}",
         limit + 1
     );
     let mut stmt = conn.prepare(&wrapped).map_err(|e| e.to_string())?;
@@ -390,7 +414,7 @@ mod tests {
     #[test]
     fn list_message_groups_aggregates_by_bus_and_id() {
         let conn = setup();
-        let groups = list_message_groups(&conn).unwrap();
+        let groups = list_message_groups(&conn, 0, 10_000).unwrap();
         let named = groups.iter().find(|g| g.key == "can:100").unwrap();
         assert_eq!(named.label, "EngineSpeed");
         assert_eq!(named.count, 2);
@@ -406,12 +430,12 @@ mod tests {
     #[test]
     fn list_messages_paginates_with_keyset_cursor() {
         let conn = setup();
-        let page1 = list_messages(&conn, "can:100", None, 1).unwrap();
+        let page1 = list_messages(&conn, "can:100", None, 1, 0, 10_000).unwrap();
         assert_eq!(page1.rows.len(), 1);
         assert_eq!(page1.rows[0].msg_id, 1);
         assert_eq!(page1.next_cursor, Some(1));
 
-        let page2 = list_messages(&conn, "can:100", page1.next_cursor, 1).unwrap();
+        let page2 = list_messages(&conn, "can:100", page1.next_cursor, 1, 0, 10_000).unwrap();
         assert_eq!(page2.rows.len(), 1);
         assert_eq!(page2.rows[0].msg_id, 2);
         assert_eq!(
@@ -423,7 +447,7 @@ mod tests {
     #[test]
     fn list_messages_rejects_unrecognized_group_key() {
         let conn = setup();
-        assert!(list_messages(&conn, "bogus:1", None, 10).is_err());
+        assert!(list_messages(&conn, "bogus:1", None, 10, 0, 10_000).is_err());
     }
 
     #[test]
@@ -507,12 +531,78 @@ mod tests {
     }
 
     #[test]
+    fn list_message_groups_respects_time_bound() {
+        let conn = setup();
+        let groups = list_message_groups(&conn, 1000, 2000).unwrap();
+        // can:200 is at timestamp_us=3000, outside the bound - must be excluded.
+        assert!(groups.iter().all(|g| g.key != "can:200"));
+        let can100 = groups.iter().find(|g| g.key == "can:100").unwrap();
+        assert_eq!(
+            can100.count, 2,
+            "both can:100 rows (1000, 2000) are inside the bound"
+        );
+    }
+
+    #[test]
+    fn list_messages_respects_time_bound() {
+        let conn = setup();
+        let page = list_messages(&conn, "can:100", None, 10, 1000, 1000).unwrap();
+        assert_eq!(
+            page.rows.len(),
+            1,
+            "only the msg_id=1 row at timestamp_us=1000 is inside [1000,1000]"
+        );
+        assert_eq!(page.rows[0].msg_id, 1);
+    }
+
+    #[test]
+    fn list_signal_samples_respects_time_bound() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 1, 1000, 513, 128.25);
+             INSERT INTO signals VALUES (0, 2, 2000, 600, 150.0);",
+        )
+        .unwrap();
+        let samples = list_signal_samples(&conn, 0, 10, 1500, 2500).unwrap();
+        assert_eq!(
+            samples,
+            vec![(2000, 150.0)],
+            "only the 2000us sample is inside [1500,2500]"
+        );
+    }
+
+    #[test]
+    fn run_detector_query_respects_time_bound() {
+        let conn = setup();
+        let result = run_detector_query(
+            &conn,
+            "select msg_id, timestamp_us from messages",
+            10,
+            1000,
+            2000,
+        )
+        .unwrap();
+        assert_eq!(
+            result.matches.len(),
+            2,
+            "only timestamp_us 1000 and 2000 are inside the bound"
+        );
+        assert!(result
+            .matches
+            .iter()
+            .all(|m| m.timestamp_us >= 1000 && m.timestamp_us <= 2000));
+    }
+
+    #[test]
     fn run_detector_query_returns_matching_rows() {
         let conn = setup();
         let result = run_detector_query(
             &conn,
             "select msg_id, timestamp_us from messages where arb_id = 100",
             10,
+            0,
+            10_000,
         )
         .unwrap();
         assert_eq!(result.matches.len(), 2);
@@ -524,8 +614,14 @@ mod tests {
     #[test]
     fn run_detector_query_truncates_at_limit_and_reports_it() {
         let conn = setup();
-        let result =
-            run_detector_query(&conn, "select msg_id, timestamp_us from messages", 2).unwrap();
+        let result = run_detector_query(
+            &conn,
+            "select msg_id, timestamp_us from messages",
+            2,
+            0,
+            10_000,
+        )
+        .unwrap();
         assert_eq!(
             result.matches.len(),
             2,
@@ -537,8 +633,14 @@ mod tests {
     #[test]
     fn run_detector_query_does_not_truncate_when_exactly_at_limit() {
         let conn = setup();
-        let result =
-            run_detector_query(&conn, "select msg_id, timestamp_us from messages", 4).unwrap();
+        let result = run_detector_query(
+            &conn,
+            "select msg_id, timestamp_us from messages",
+            4,
+            0,
+            10_000,
+        )
+        .unwrap();
         assert_eq!(result.matches.len(), 4);
         assert!(!result.truncated, "exactly `limit` rows is not truncation");
     }
@@ -546,7 +648,8 @@ mod tests {
     #[test]
     fn run_detector_query_errors_when_msg_id_column_missing() {
         let conn = setup();
-        let err = run_detector_query(&conn, "select timestamp_us from messages", 10).unwrap_err();
+        let err = run_detector_query(&conn, "select timestamp_us from messages", 10, 0, 10_000)
+            .unwrap_err();
         assert!(
             err.to_lowercase().contains("msg_id"),
             "error should mention the missing column, got: {err}"
@@ -556,7 +659,8 @@ mod tests {
     #[test]
     fn run_detector_query_errors_when_timestamp_us_column_missing() {
         let conn = setup();
-        let err = run_detector_query(&conn, "select msg_id from messages", 10).unwrap_err();
+        let err =
+            run_detector_query(&conn, "select msg_id from messages", 10, 0, 10_000).unwrap_err();
         assert!(
             err.to_lowercase().contains("timestamp_us"),
             "error should mention the missing column, got: {err}"
@@ -566,7 +670,7 @@ mod tests {
     #[test]
     fn run_detector_query_errors_on_empty_sql() {
         let conn = setup();
-        assert!(run_detector_query(&conn, "   ", 10).is_err());
+        assert!(run_detector_query(&conn, "   ", 10, 0, 10_000).is_err());
     }
 
     #[test]
@@ -576,6 +680,8 @@ mod tests {
             &conn,
             "select msg_id, timestamp_us from messages where arb_id = 100;",
             10,
+            0,
+            10_000,
         )
         .unwrap();
         assert_eq!(result.matches.len(), 2);
@@ -588,6 +694,8 @@ mod tests {
             &conn,
             "select msg_id, timestamp_us from messages where arb_id = 100 -- note",
             10,
+            0,
+            10_000,
         )
         .unwrap();
         assert_eq!(result.matches.len(), 2);
@@ -596,7 +704,7 @@ mod tests {
     #[test]
     fn run_detector_query_surfaces_bad_sql_errors() {
         let conn = setup();
-        assert!(run_detector_query(&conn, "select * from no_such_table", 10).is_err());
+        assert!(run_detector_query(&conn, "select * from no_such_table", 10, 0, 10_000).is_err());
     }
 
     #[test]
@@ -608,7 +716,7 @@ mod tests {
              INSERT INTO signals VALUES (0, 1, 1000, 513, 128.25);",
         )
         .unwrap();
-        let samples = list_signal_samples(&conn, 0, 1).unwrap();
+        let samples = list_signal_samples(&conn, 0, 1, 0, 10_000).unwrap();
         assert_eq!(
             samples,
             vec![(1000, 128.25)],
