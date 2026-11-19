@@ -27,12 +27,18 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
   const setPendingSignalIds = useWorkspaceStore((s) => s.setPendingSignalIds);
   const commitActiveSignalIds = useWorkspaceStore((s) => s.commitActiveSignalIds);
   const autoDisplayFirstIfEmpty = useWorkspaceStore((s) => s.autoDisplayFirstIfEmpty);
+  const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
   const decodeSignals = useDecodeSignals(blfPath);
   const [signalFilter, setSignalFilter] = useState("");
   const [hideNonDecodable, setHideNonDecodable] = useState(true);
   const [hideConstant, setHideConstant] = useState(true);
   const [previewSignalId, setPreviewSignalId] = useState<number | null>(null);
-  const samples = useSignalSamples(blfPath, previewSignalId);
+  const samples = useSignalSamples(
+    blfPath,
+    previewSignalId,
+    trimRange?.start ?? 0,
+    trimRange?.end ?? Number.MAX_SAFE_INTEGER
+  );
 
   const nonDecodableCount = catalog.data?.filter((s) => !s.decodable).length ?? 0;
   const constantCount = catalog.data?.filter((s) => s.decodable && s.changes === 0).length ?? 0;
@@ -66,13 +72,16 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
       .filter((s) => pendingSignalIds.has(s.signalId) && !s.cached && !s.opaque)
       .map((s) => s.signalId);
     const nextActive = new Set(pendingSignalIds);
-    if (toDecode.length > 0) {
-      decodeSignals.mutate(toDecode, {
-        onSuccess: () => {
-          commitActiveSignalIds(nextActive);
-          autoDisplayFirstIfEmpty(toDecode[0]);
-        },
-      });
+    if (toDecode.length > 0 && trimRange) {
+      decodeSignals.mutate(
+        { signalIds: toDecode, startUs: trimRange.start, endUs: trimRange.end },
+        {
+          onSuccess: () => {
+            commitActiveSignalIds(nextActive);
+            autoDisplayFirstIfEmpty(toDecode[0]);
+          },
+        }
+      );
     } else {
       commitActiveSignalIds(nextActive);
     }

@@ -61,7 +61,13 @@ export default function TimelineChart({ blfPath, minTs, maxTs }: TimelineChartPr
   const detectorQueryHasRun = useWorkspaceStore((s) => s.detectorQueryHasRun);
   const setSelectedMessage = useWorkspaceStore((s) => s.setSelectedMessage);
   const catalog = useSignalCatalog(blfPath);
-  const samples = useSignalSamplesList(blfPath, displayedSignalIds);
+  const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
+  const samples = useSignalSamplesList(
+    blfPath,
+    displayedSignalIds,
+    trimRange?.start ?? 0,
+    trimRange?.end ?? Number.MAX_SAFE_INTEGER
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);

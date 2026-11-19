@@ -14,7 +14,8 @@ interface TraceRailProps {
 
 export default function TraceRail({ blfPath }: TraceRailProps) {
   const summary = useTraceSummary(blfPath);
-  const groups = useMessageGroups(blfPath);
+  const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
+  const groups = useMessageGroups(blfPath, trimRange?.start ?? 0, trimRange?.end ?? Number.MAX_SAFE_INTEGER);
   const ecus = useEcus(blfPath);
   // Shares the query cache with SignalsList's own useSignalCatalog call (same
   // queryKey) - cheap, just needed here for the tab trigger's count badge.

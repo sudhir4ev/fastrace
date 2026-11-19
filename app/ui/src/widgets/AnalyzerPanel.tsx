@@ -28,7 +28,8 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
   const matches = useWorkspaceStore((s) => s.detectorMatches);
   const truncated = useWorkspaceStore((s) => s.detectorQueryTruncated);
   const hasRun = useWorkspaceStore((s) => s.detectorQueryHasRun);
-  const mutation = useRunDetectorQuery(blfPath);
+  const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
+  const mutation = useRunDetectorQuery(blfPath, trimRange?.start ?? 0, trimRange?.end ?? Number.MAX_SAFE_INTEGER);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   function run() {
