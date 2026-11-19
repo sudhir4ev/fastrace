@@ -182,24 +182,46 @@ struct TraceSummary {
 }
 
 #[tauri::command]
-fn get_trace_summary(blf_path: String) -> Result<TraceSummary, String> {
+fn get_trace_summary(blf_path: String, start_us: i64, end_us: i64) -> Result<TraceSummary, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
     Ok(TraceSummary {
         can_messages: query::count(
             &conn,
-            &format!("select count(*) from messages where object_type in ({CAN_OBJECT_TYPES})"),
+            &format!(
+                "select count(*) from messages where object_type in ({CAN_OBJECT_TYPES}) and timestamp_us between {start_us} and {end_us}"
+            ),
         )?,
         ethernet_messages: query::count(
             &conn,
             &format!(
-                "select count(*) from messages where object_type in ({ETHERNET_OBJECT_TYPES})"
+                "select count(*) from messages where object_type in ({ETHERNET_OBJECT_TYPES}) and timestamp_us between {start_us} and {end_us}"
             ),
         )?,
-        protocol_pdu: query::count(&conn, "select count(*) from protocol_pdu")?,
-        protocol_someip: query::count(&conn, "select count(*) from protocol_someip")?,
-        protocol_someip_sd: query::count(&conn, "select count(*) from protocol_someip_sd")?,
-        protocol_doip: query::count(&conn, "select count(*) from protocol_doip")?,
+        protocol_pdu: query::count(
+            &conn,
+            &format!(
+                "select count(*) from protocol_pdu p join messages m on m.msg_id = p.msg_id where m.timestamp_us between {start_us} and {end_us}"
+            ),
+        )?,
+        protocol_someip: query::count(
+            &conn,
+            &format!(
+                "select count(*) from protocol_someip p join messages m on m.msg_id = p.msg_id where m.timestamp_us between {start_us} and {end_us}"
+            ),
+        )?,
+        protocol_someip_sd: query::count(
+            &conn,
+            &format!(
+                "select count(*) from protocol_someip_sd p join messages m on m.msg_id = p.msg_id where m.timestamp_us between {start_us} and {end_us}"
+            ),
+        )?,
+        protocol_doip: query::count(
+            &conn,
+            &format!(
+                "select count(*) from protocol_doip p join messages m on m.msg_id = p.msg_id where m.timestamp_us between {start_us} and {end_us}"
+            ),
+        )?,
     })
 }
 
@@ -229,10 +251,24 @@ fn list_messages(
 }
 
 #[tauri::command]
-fn get_message_detail(blf_path: String, msg_id: i64) -> Result<query::MessageRow, String> {
+fn get_message_detail(blf_path: String, msg_id: i64, start_us: i64, end_us: i64) -> Result<query::MessageRow, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::get_message_detail(&conn, msg_id)
+    query::get_message_detail(&conn, msg_id, start_us, end_us)
+}
+
+#[tauri::command]
+fn count_messages(blf_path: String) -> Result<i64, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::count_messages(&conn)
+}
+
+#[tauri::command]
+fn resolve_message_position(blf_path: String, position: i64) -> Result<i64, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::resolve_message_position(&conn, position)
 }
 
 #[tauri::command]
@@ -567,6 +603,8 @@ fn main() {
             get_signal_samples,
             list_ecus,
             get_trace_time_range,
+            count_messages,
+            resolve_message_position,
             run_detector_query,
             get_file_sizes,
             get_path_size,
@@ -585,6 +623,48 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_trace_summary_bounds_protocol_counts_via_join() {
+        let conn = trace_store::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE messages (msg_id BIGINT, timestamp_us BIGINT, object_type INTEGER, arb_id INTEGER, dst_ip VARCHAR, dst_port INTEGER);
+             CREATE TABLE protocol_pdu (msg_id BIGINT, pdu_id BIGINT, length BIGINT);
+             CREATE TABLE protocol_someip (msg_id BIGINT);
+             CREATE TABLE protocol_someip_sd (msg_id BIGINT);
+             CREATE TABLE protocol_doip (msg_id BIGINT);
+             INSERT INTO messages VALUES (1, 1000, 1, 100, NULL, NULL);
+             INSERT INTO messages VALUES (2, 2000, 1, 100, NULL, NULL);
+             INSERT INTO protocol_pdu VALUES (1, 1, 4), (2, 1, 4);",
+        )
+        .unwrap();
+        let bounded = query::count(
+            &conn,
+            "select count(*) from protocol_pdu p join messages m on m.msg_id = p.msg_id where m.timestamp_us between 1000 and 1000",
+        )
+        .unwrap();
+        assert_eq!(bounded, 1, "only msg_id=1's protocol_pdu row is inside [1000,1000]");
+        let unbounded = query::count(
+            &conn,
+            "select count(*) from protocol_pdu p join messages m on m.msg_id = p.msg_id where m.timestamp_us between 0 and 10000",
+        )
+        .unwrap();
+        assert_eq!(unbounded, 2, "both rows are inside the full span - the join doesn't drop/double-count rows");
+    }
+
+    #[test]
+    fn recompute_signal_stats_args_shape_matches_decode_signals_pattern() {
+        let blf_path = "trace.blf".to_string();
+        let start_us: i64 = 100;
+        let end_us: i64 = 200;
+        let args = vec![
+            "signal-stats".to_string(),
+            blf_path,
+            start_us.to_string(),
+            end_us.to_string(),
+        ];
+        assert_eq!(args, vec!["signal-stats", "trace.blf", "100", "200"]);
+    }
 
     #[test]
     fn validate_bin_path_rejects_missing_file() {
