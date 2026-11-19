@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fastrace - Ingestion Pipeline</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --fg: #e6e9ef; --mut: #9aa3b2; --accent: #5aa9ff; --accent2: #7ee0a8;
+    --warn: #ffcc66; --can: #5aa9ff; --eth: #7ee0a8; --idx: #c792ea; --cov: #ff9e64;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 40px 24px 120px; }
+  h1 { font-size: 30px; margin: 0 0 4px; letter-spacing: -0.3px; }
+  h2 { font-size: 21px; margin: 48px 0 12px; padding-top: 16px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 24px 0 8px; color: var(--accent); }
+  p { color: var(--fg); }
+  .lead { color: var(--mut); font-size: 16px; max-width: 760px; }
+  code { font-family: var(--mono); font-size: 0.88em; background: var(--panel2);
+    padding: 1px 5px; border-radius: 4px; color: #d6e2ff; }
+  pre { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-family: var(--mono); font-size: 13px; color: #d6e2ff; }
+  .mut { color: var(--mut); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 20px; margin: 14px 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .tag { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 2px 7px;
+    border-radius: 999px; border: 1px solid var(--line); color: var(--mut); }
+  .tag.new { color: var(--idx); border-color: var(--idx); }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--mut); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; }
+  td code { font-size: 12px; }
+  .note { border-left: 3px solid var(--accent); background: var(--panel2);
+    padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; }
+  .note.warn { border-left-color: var(--warn); }
+  .note.new { border-left-color: var(--idx); }
+  .kpi { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0; }
+  .kpi > div { flex: 1; min-width: 180px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 16px; }
+  .kpi b { display: block; font-size: 22px; }
+  .kpi span { color: var(--mut); font-size: 13px; }
+  .before { color: var(--warn); } .after { color: var(--accent2); }
+  svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; color: var(--mut); font-size: 13px; margin: 8px 0; }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  ol.steps { padding-left: 20px; } ol.steps li { margin: 6px 0; }
+  .foot { color: var(--mut); font-size: 13px; margin-top: 60px; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Fastrace - Ingestion Pipeline</h1>
+  <p class="lead">How a BLF trace becomes a queryable Trace Store, how the Trim Window scopes every read,
+  how signals are decoded on demand, and how the pipeline keeps disk I/O to the minimum. This is the
+  authoritative picture of the target design; vocabulary matches <code>CONTEXT.md</code>, boundaries match
+  <code>docs/adr/0001</code>.</p>
+
+  <!-- ============================================================ -->
+  <h2>1 · The BLF on disk</h2>
+  <p>A BLF file is a <code>LOGG</code> file header followed by a sequence of <b>LOG_CONTAINER</b> objects.
+  Each container is a single <b>zlib-compressed</b> blob (inflated with libdeflate). Inside a container,
+  once inflated, is a run of <b>LOBJ</b> objects - the actual CAN / CAN-FD / Ethernet messages.</p>
+
+  <div class="card">
+  <svg viewBox="0 0 960 220" role="img" aria-label="BLF file layout">
+    <rect x="0" y="0" width="960" height="220" fill="transparent"/>
+    <!-- file strip -->
+    <rect x="10" y="20" width="90" height="46" rx="6" fill="#1e222b" stroke="#2a2f3a"/>
+    <text x="55" y="40" fill="#9aa3b2" font-size="12" text-anchor="middle">LOGG</text>
+    <text x="55" y="56" fill="#9aa3b2" font-size="11" text-anchor="middle">header</text>
+    <g>
+      <rect x="110" y="20" width="160" height="46" rx="6" fill="#20283a" stroke="#5aa9ff"/>
+      <text x="190" y="40" fill="#cfe3ff" font-size="12" text-anchor="middle">LOG_CONTAINER 0</text>
+      <text x="190" y="56" fill="#9aa3b2" font-size="11" text-anchor="middle">zlib blob</text>
+      <rect x="280" y="20" width="160" height="46" rx="6" fill="#20283a" stroke="#5aa9ff"/>
+      <text x="360" y="40" fill="#cfe3ff" font-size="12" text-anchor="middle">LOG_CONTAINER 1</text>
+      <text x="360" y="56" fill="#9aa3b2" font-size="11" text-anchor="middle">zlib blob</text>
+      <rect x="450" y="20" width="160" height="46" rx="6" fill="#20283a" stroke="#5aa9ff"/>
+      <text x="530" y="40" fill="#cfe3ff" font-size="12" text-anchor="middle">LOG_CONTAINER 2</text>
+      <text x="530" y="56" fill="#9aa3b2" font-size="11" text-anchor="middle">zlib blob</text>
+      <text x="660" y="47" fill="#9aa3b2" font-size="18">· · ·</text>
+    </g>
+    <!-- expand container 1 -->
+    <line x1="280" y1="66" x2="150" y2="110" stroke="#2a2f3a"/>
+    <line x1="440" y1="66" x2="820" y2="110" stroke="#2a2f3a"/>
+    <rect x="150" y="110" width="670" height="92" rx="8" fill="#171a21" stroke="#2a2f3a"/>
+    <text x="165" y="130" fill="#9aa3b2" font-size="12">inflated LOG_CONTAINER 1 →</text>
+    <g>
+      <rect x="300" y="140" width="150" height="44" rx="5" fill="#1e222b" stroke="#2a2f3a"/>
+      <rect x="460" y="140" width="150" height="44" rx="5" fill="#1e222b" stroke="#2a2f3a"/>
+      <rect x="620" y="140" width="150" height="44" rx="5" fill="#1e222b" stroke="#2a2f3a"/>
+      <text x="375" y="157" fill="#cfe3ff" font-size="11" text-anchor="middle">LOBJ</text>
+      <text x="375" y="172" fill="#7ee0a8" font-size="10" text-anchor="middle">ts + payload</text>
+      <text x="535" y="157" fill="#cfe3ff" font-size="11" text-anchor="middle">LOBJ</text>
+      <text x="535" y="172" fill="#7ee0a8" font-size="10" text-anchor="middle">ts + payload</text>
+      <text x="695" y="157" fill="#cfe3ff" font-size="11" text-anchor="middle">LOBJ</text>
+      <text x="695" y="172" fill="#7ee0a8" font-size="10" text-anchor="middle">ts + payload</text>
+    </g>
+  </svg>
+  </div>
+
+  <h3>Why you cannot read a timestamp without inflating</h3>
+  <p>Every message carries a <code>uint64_t timestamp</code> in its <code>BlfObjectHeader</code>. But that
+  header lives <em>inside</em> the container's single zlib stream - headers and payloads alike. There is no
+  object-level compression and no time range in the container header. So to learn even one message's
+  timestamp you must inflate the whole container.</p>
+
+  <div class="note warn">
+    <b>Consequence:</b> the dominant cost of ingestion is <b>inflate</b> (zlib + paging bytes off disk),
+    not payload parsing. Any optimization that still inflates a container has already paid the bill.
+    The only way to make a windowed read cheaper is to <b>not inflate out-of-window containers at all</b>.
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>2 · Prepare - the one write pass</h2>
+  <p><code>fastrace_parse prepare &lt;trace.blf&gt; [trace.arxml]</code> runs a single
+  <code>BlfIngestReader::visit</code> pass. Each container is inflated once; its messages flow through the
+  DuckDB Appender into the Trace Store. On any failure the partial <code>.duckdb</code> is deleted (fail-fast).</p>
+
+  <div class="card">
+  <svg viewBox="0 0 960 250" role="img" aria-label="Prepare pass">
+    <rect x="20" y="95" width="150" height="56" rx="8" fill="#20283a" stroke="#5aa9ff"/>
+    <text x="95" y="120" fill="#cfe3ff" font-size="13" text-anchor="middle">BLF file</text>
+    <text x="95" y="138" fill="#9aa3b2" font-size="11" text-anchor="middle">mmap</text>
+
+    <rect x="210" y="85" width="190" height="76" rx="8" fill="#171a21" stroke="#2a2f3a"/>
+    <text x="305" y="110" fill="#e6e9ef" font-size="13" text-anchor="middle">BlfIngestReader</text>
+    <text x="305" y="128" fill="#9aa3b2" font-size="11" text-anchor="middle">inflate → decode</text>
+    <text x="305" y="144" fill="#9aa3b2" font-size="11" text-anchor="middle">stitch split objects</text>
+
+    <line x1="170" y1="123" x2="210" y2="123" stroke="#5aa9ff" stroke-width="2"/>
+    <polygon points="210,123 202,119 202,127" fill="#5aa9ff"/>
+
+    <!-- outputs -->
+    <g font-size="12" text-anchor="middle">
+      <rect x="470" y="10"  width="200" height="34" rx="6" fill="#1e222b" stroke="#2a2f3a"/><text x="570" y="32" fill="#cfe3ff">messages</text>
+      <rect x="470" y="50"  width="200" height="34" rx="6" fill="#1e222b" stroke="#2a2f3a"/><text x="570" y="72" fill="#cfe3ff">protocol_pdu / someip / sd / doip</text>
+      <rect x="470" y="90"  width="200" height="34" rx="6" fill="#1e222b" stroke="#2a2f3a"/><text x="570" y="112" fill="#cfe3ff">arxml_* (from ARXML)</text>
+      <rect x="470" y="130" width="200" height="34" rx="6" fill="#1e222b" stroke="#2a2f3a"/><text x="570" y="152" fill="#cfe3ff">signal_stats (full trace)</text>
+      <rect x="470" y="170" width="200" height="34" rx="6" fill="#201a2b" stroke="#c792ea"/><text x="570" y="192" fill="#e6d6ff">container_index</text>
+    </g>
+    <line x1="400" y1="123" x2="470" y2="27"  stroke="#2a2f3a"/>
+    <line x1="400" y1="123" x2="470" y2="67"  stroke="#2a2f3a"/>
+    <line x1="400" y1="123" x2="470" y2="107" stroke="#2a2f3a"/>
+    <line x1="400" y1="123" x2="470" y2="147" stroke="#2a2f3a"/>
+    <line x1="400" y1="123" x2="470" y2="187" stroke="#c792ea"/>
+
+    <rect x="730" y="95" width="200" height="56" rx="8" fill="#20283a" stroke="#7ee0a8"/>
+    <text x="830" y="120" fill="#d6ffe6" font-size="13" text-anchor="middle">&lt;stem&gt;.duckdb</text>
+    <text x="830" y="138" fill="#9aa3b2" font-size="11" text-anchor="middle">Trace Store</text>
+    <line x1="670" y1="110" x2="730" y2="118" stroke="#7ee0a8"/>
+  </svg>
+  </div>
+
+  <div class="note new">
+    <span class="tag new">new</span>
+    <b>container_index is built for free.</b> Prepare is already inflating every container, so it also records,
+    per container, its <b>byte offset</b>, its <b>first / last message timestamp</b> (coarse), and its
+    <b>first global <code>msg_id</code></b>. One extra Appender, no extra read.
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>3 · The Trace Store tables</h2>
+  <p>The Trace Store is a DuckDB file beside the BLF. The Rust app opens it <b>read-only</b> and checks
+  <code>schema_version</code> (currently <b>4</b>). The C++ sidecar is the only writer.</p>
+
+  <table>
+    <thead><tr><th>Table</th><th>Purpose</th><th>Key columns</th></tr></thead>
+    <tbody>
+      <tr><td><code>messages</code></td><td>One row per decoded BLF message, in file order.</td><td><code>msg_id</code>, <code>timestamp_us</code>, <code>object_type</code>, <code>arb_id</code></td></tr>
+      <tr><td><code>meta</code></td><td>Key/value: schema_version, source_blf, source_arxml, blf_size/mtime, timings.</td><td><code>key</code>, <code>value</code></td></tr>
+      <tr><td><code>protocol_pdu</code> / <code>protocol_someip</code> / <code>protocol_someip_sd</code> / <code>protocol_doip</code></td><td>Peeled protocol fields, joined to <code>messages</code> by <code>msg_id</code>.</td><td><code>msg_id</code> + per-protocol fields</td></tr>
+      <tr><td><code>arxml_pdu</code> / <code>arxml_ecu</code> / <code>arxml_can</code> / <code>arxml_signal</code></td><td>The Signal Database dictionary materialized from the ARXML.</td><td>ids, names, bit layout, factor/offset</td></tr>
+      <tr><td><code>signals</code></td><td>Decoded signal samples (on demand). Grows incrementally as the window expands.</td><td><code>signal_id</code>, <code>msg_id</code>, <code>timestamp_us</code>, <code>raw_value</code>, <code>phys_value</code></td></tr>
+      <tr><td><code>signal_stats</code></td><td>Per-signal summary for the Signal Catalog. Recomputed window-scoped on every Apply.</td><td><code>signal_id</code>, <code>samples</code>, <code>nonzero</code>, <code>changes</code>, <code>min/max_raw</code></td></tr>
+      <tr><td><code>container_index</code> <span class="tag new">new</span></td><td>Coarse per-container time index - the seek map for windowed reads.</td><td><code>container_ord</code>, <code>byte_offset</code>, <code>first_ts_us</code>, <code>last_ts_us</code>, <code>first_msg_id</code></td></tr>
+      <tr><td><code>signal_coverage</code> <span class="tag new">new</span></td><td>The single contiguous window each signal's samples currently cover.</td><td><code>signal_id</code>, <code>start_us</code>, <code>end_us</code></td></tr>
+    </tbody>
+  </table>
+
+  <!-- ============================================================ -->
+  <h2>4 · Trim - scoping every read, non-destructively</h2>
+  <p>The <b>Trim Window</b> is a <code>[start, end]</code> in <code>timestamp_us</code>. It never mutates the
+  BLF or deletes rows - it only bounds what queries return and what gets decoded. The user sets it two ways
+  (a toggle on the header slider):</p>
+  <div class="grid2">
+    <div class="card"><h3 style="margin-top:0">Time-based</h3><p class="mut" style="margin:0">Drag the start/end timestamp handles directly.</p></div>
+    <div class="card"><h3 style="margin-top:0">Message-based</h3><p class="mut" style="margin:0">Pick start/end by ordinal position ("message 30 → 50"); resolved to timestamps at Apply time.</p></div>
+  </div>
+  <p>Internally the window is always <code>[start, end]</code> in <code>timestamp_us</code> - the backend has no
+  notion of "strategy."</p>
+
+  <h3>Turning a window into a byte range</h3>
+  <p>The <code>container_index</code> makes a window a <b>seek</b>, not a scan. Only the containers whose coarse
+  range overlaps <code>[start, end]</code> are inflated; everything before is skipped, everything after triggers
+  an early stop.</p>
+
+  <div class="card">
+  <svg viewBox="0 0 960 150" role="img" aria-label="Windowed seek over containers">
+    <text x="10" y="24" fill="#9aa3b2" font-size="12">containers (chronological):</text>
+    <g font-size="11" text-anchor="middle">
+      <!-- skipped -->
+      <rect x="10"  y="40" width="120" height="44" rx="5" fill="#15181f" stroke="#2a2f3a"/><text x="70"  y="60" fill="#5b6472">C0</text><text x="70" y="76" fill="#5b6472">0–100</text>
+      <rect x="140" y="40" width="120" height="44" rx="5" fill="#15181f" stroke="#2a2f3a"/><text x="200" y="60" fill="#5b6472">C1</text><text x="200" y="76" fill="#5b6472">100–200</text>
+      <!-- in window -->
+      <rect x="270" y="40" width="120" height="44" rx="5" fill="#20283a" stroke="#5aa9ff"/><text x="330" y="60" fill="#cfe3ff">C2</text><text x="330" y="76" fill="#cfe3ff">200–300</text>
+      <rect x="400" y="40" width="120" height="44" rx="5" fill="#20283a" stroke="#5aa9ff"/><text x="460" y="60" fill="#cfe3ff">C3</text><text x="460" y="76" fill="#cfe3ff">300–400</text>
+      <rect x="530" y="40" width="120" height="44" rx="5" fill="#20283a" stroke="#5aa9ff"/><text x="590" y="60" fill="#cfe3ff">C4</text><text x="590" y="76" fill="#cfe3ff">400–500</text>
+      <!-- early stop -->
+      <rect x="660" y="40" width="120" height="44" rx="5" fill="#15181f" stroke="#2a2f3a"/><text x="720" y="60" fill="#5b6472">C5</text><text x="720" y="76" fill="#5b6472">500–600</text>
+      <rect x="790" y="40" width="120" height="44" rx="5" fill="#15181f" stroke="#2a2f3a"/><text x="850" y="60" fill="#5b6472">C6</text><text x="850" y="76" fill="#5b6472">600–700</text>
+    </g>
+    <!-- window bracket -->
+    <line x1="270" y1="100" x2="650" y2="100" stroke="#5aa9ff" stroke-width="2"/>
+    <line x1="270" y1="94" x2="270" y2="106" stroke="#5aa9ff" stroke-width="2"/>
+    <line x1="650" y1="94" x2="650" y2="106" stroke="#5aa9ff" stroke-width="2"/>
+    <text x="460" y="122" fill="#5aa9ff" font-size="12" text-anchor="middle">window [250, 480] → inflate only C2–C4, seek past C0–C1, stop before C5</text>
+  </svg>
+  </div>
+  <div class="note">
+    <code>startOffset = max(byte_offset) where first_ts_us ≤ start</code> ·
+    <code>endOffset = min(byte_offset) where first_ts_us &gt; end</code> (or EOF).
+    A precise per-message <code>ts</code> gate inside the pass trims the partial first/last containers.
+    Coarse container timestamps are enough to decide what to skip - that was the whole point.
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>5 · Signals - decoded on demand, incrementally</h2>
+  <p>Signal values are not decoded at Prepare (<code>docs/adr/0005</code>) - only when the user reads payloads
+  for a signal. Decoding walks the in-window containers, runs <code>decodeAllSignals</code> per message, and
+  appends samples to <code>signals</code>.</p>
+
+  <h3>signal_coverage: never decode the same message twice</h3>
+  <p>Each decoded signal records the single contiguous window its samples cover. On Apply, that window decides
+  what, if anything, to read:</p>
+
+  <div class="card">
+  <svg viewBox="0 0 960 170" role="img" aria-label="coverage transitions">
+    <g font-size="12">
+      <!-- expand -->
+      <text x="20" y="28" fill="#9aa3b2">Expand [100,200] → [50,300]</text>
+      <rect x="20" y="40" width="300" height="26" rx="4" fill="#15181f" stroke="#2a2f3a"/>
+      <rect x="110" y="40" width="120" height="26" rx="4" fill="#20283a" stroke="#5aa9ff"/>
+      <rect x="55" y="40" width="55" height="26" rx="4" fill="#2a1f14" stroke="#ff9e64"/>
+      <rect x="230" y="40" width="80" height="26" rx="4" fill="#2a1f14" stroke="#ff9e64"/>
+      <text x="170" y="57" fill="#cfe3ff" text-anchor="middle" font-size="11">covered</text>
+      <text x="82" y="57" fill="#ffbe8a" text-anchor="middle" font-size="10">read</text>
+      <text x="270" y="57" fill="#ffbe8a" text-anchor="middle" font-size="10">read</text>
+      <text x="330" y="57" fill="#ff9e64" font-size="11">only the two gaps are decoded</text>
+
+      <!-- shrink -->
+      <text x="20" y="100" fill="#9aa3b2">Shrink [50,300] → [120,180]</text>
+      <rect x="20" y="112" width="300" height="26" rx="4" fill="#20283a" stroke="#5aa9ff"/>
+      <text x="170" y="129" fill="#cfe3ff" text-anchor="middle" font-size="11">already covered - zero reads</text>
+      <text x="330" y="129" fill="#7ee0a8" font-size="11">SQL filter only; samples untouched</text>
+    </g>
+  </svg>
+  </div>
+  <ul>
+    <li><b>Expand</b> → decode only the uncovered delta (one or both edges), append, extend coverage to the union.</li>
+    <li><b>Shrink</b> → decode nothing; the existing samples are simply filtered by <code>timestamp_us</code> in SQL.</li>
+    <li><b>Disjoint jump</b> (new window doesn't overlap coverage) → delete the stale samples and re-decode the new window, resetting coverage. (Rare; keeps coverage a single contiguous range.)</li>
+  </ul>
+
+  <h3>One pass does stats + decode together</h3>
+  <p>A single <code>apply-trim</code> subcommand, in one <code>visitRange</code> over the in-window containers,
+  both <b>observes stats for every signal</b> (window-scoped <code>signal_stats</code>, covering even undecoded
+  signals so the Catalog is accurate) and <b>appends the decode delta for the active signals</b>. "Read Payloads"
+  uses the same pass.</p>
+
+  <!-- ============================================================ -->
+  <h2>6 · How we keep I/O minimal</h2>
+  <div class="legend">
+    <span><i style="background:var(--before)"></i>before (per Apply)</span>
+    <span><i style="background:var(--after)"></i>after (per Apply)</span>
+  </div>
+  <div class="kpi">
+    <div><b class="before">2 × full file</b><span>Old: <code>signal-stats</code> then <code>decode-signals</code>, each inflating the entire trace - even on shrink.</span></div>
+    <div><b class="after">1 × window</b><span>New: one <code>apply-trim</code> pass inflating only the containers the window overlaps.</span></div>
+    <div><b class="after">0 re-reads</b><span>Covered ranges are never re-inflated; shrink reads nothing for decode.</span></div>
+  </div>
+
+  <h3>The four levers</h3>
+  <ol class="steps">
+    <li><b>Index, don't scan.</b> <code>container_index</code> turns a window into a seek - out-of-window containers are never inflated.</li>
+    <li><b>One pass, not two.</b> Stats recompute and decode share a single <code>visitRange</code>; the old two-subprocess sequence is gone.</li>
+    <li><b>Incremental decode.</b> <code>signal_coverage</code> means expand reads only the delta and shrink reads nothing.</li>
+    <li><b>Coarse is enough.</b> Container-level timestamps (captured once at Prepare) decide what to skip - no per-message index, no extra read.</li>
+  </ol>
+  <div class="note">
+    <b>Why the counts grew before this work:</b> the trim feature added a dedicated full-file
+    <code>signal-stats</code> pass on <em>every</em> Apply (stats used to be folded into Prepare's single pass),
+    and a second full-file <code>decode-signals</code> pass whenever a signal was active - both inflating the
+    whole file because the window was only a post-inflate skip. The index + single pass remove exactly that.
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>7 · Known gaps &amp; deferred work</h2>
+  <ul>
+    <li><b>decodeAllSignals is CPU-wasteful</b> (KIV): for each message it decodes every signal on the frame,
+      then filters to the requested ones. This is CPU, not I/O, so it doesn't affect read volume - but it is the
+      next optimization after this wave (share the tracker's decode with the append path).</li>
+    <li><b>Leading-edge split objects</b>: a message straddling the boundary into the first inflated container
+      may be dropped (no stitch tail on a mid-file start). Its timestamp is almost always below the window; at
+      most one edge sample is lost. This is the agreed coarse tolerance.</li>
+    <li><b>list_ecus is not trim-scoped</b>: <code>arxml_ecu</code> has no schema link to any frame/PDU/timestamp,
+      so the ECU list always shows the full ARXML dictionary.</li>
+  </ul>
+
+  <div class="foot">
+    Fastrace ingestion pipeline · matches <code>schema/schema.sql</code> (schema_version 4),
+    <code>native/blf</code>, <code>native/cli</code>, and <code>docs/adr/0001</code>, <code>0003</code>, <code>0005</code>.
+    Self-contained - no external assets or network requests.
+  </div>
+
+</div>
+</body>
+</html>
