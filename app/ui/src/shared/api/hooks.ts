@@ -202,6 +202,45 @@ export function useIsRecomputingSignalStats(blfPath: string): boolean {
   return states.length > 0;
 }
 
+const applyTrimMutationKey = (blfPath: string) => ["apply-trim", blfPath];
+
+// One combined pass: window-scoped signal_stats recompute for every signal plus
+// incremental decode of the active signals' uncovered delta (docs/ingestion-pipeline.html).
+// Replaces the old sequenced decode-signals + recompute-signal-stats pair.
+export function useApplyTrim(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationKey: applyTrimMutationKey(blfPath),
+    mutationFn: ({
+      startUs,
+      endUs,
+      activeSignalIds,
+    }: {
+      startUs: number;
+      endUs: number;
+      activeSignalIds: number[];
+    }) => getTraceDataSource().applyTrim(blfPath, startUs, endUs, activeSignalIds),
+    onSuccess: (result, { activeSignalIds }) => {
+      // Catalog stats were just recomputed; samples for the (possibly newly
+      // decoded) signals must refetch against the new window.
+      queryClient.invalidateQueries({ queryKey: SIGNAL_CATALOG_KEY(blfPath) });
+      queryClient.invalidateQueries({ queryKey: ["signal-samples", blfPath] });
+      const detail = `${activeSignalIds.length} signal${activeSignalIds.length === 1 ? "" : "s"}`;
+      getTraceDataSource()
+        .recordActivity(blfPath, "decode", result.elapsedMs, detail)
+        .then(() => queryClient.invalidateQueries({ queryKey: ACTIVITIES_KEY(blfPath) }));
+    },
+    onError: (e) => useToastStore.getState().pushError(String(e)),
+  });
+}
+
+export function useIsApplyingTrim(blfPath: string): boolean {
+  const states = useMutationState({
+    filters: { mutationKey: applyTrimMutationKey(blfPath), status: "pending" },
+  });
+  return states.length > 0;
+}
+
 export function useFileSizes(blfPath: string) {
   return useQuery({
     queryKey: ["file-sizes", blfPath],

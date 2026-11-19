@@ -115,6 +115,7 @@ export interface TraceDataSource {
   runDetectorQuery(blfPath: string, sql: string, startUs: number, endUs: number): Promise<DetectorQueryResult>;
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange>;
   decodeSignals(blfPath: string, signalIds: number[], startUs: number, endUs: number): Promise<DecodeResult>;
+  applyTrim(blfPath: string, startUs: number, endUs: number, activeSignalIds: number[]): Promise<DecodeResult>;
   recordActivity(blfPath: string, kind: string, elapsedMs: number, detail: string): Promise<void>;
   listActivities(blfPath: string): Promise<ActivityEntry[]>;
   getFileSizes(blfPath: string): Promise<FileSizes>;
@@ -200,6 +201,23 @@ export class TauriTraceDataSource implements TraceDataSource {
       signalIds,
       startUs,
       endUs,
+    });
+    return { elapsedMs: tick.elapsed_ms, decodedCount: tick.protocol_rows };
+  }
+
+  async applyTrim(
+    blfPath: string,
+    startUs: number,
+    endUs: number,
+    activeSignalIds: number[]
+  ): Promise<DecodeResult> {
+    // apply-trim's Done tick reuses the sidecar progress shape; protocol_rows
+    // here carries the count of signal rows decoded this pass (the delta).
+    const tick = await invoke<{ elapsed_ms: number; protocol_rows: number }>("apply_trim", {
+      blfPath,
+      startUs,
+      endUs,
+      activeSignalIds,
     });
     return { elapsedMs: tick.elapsed_ms, decodedCount: tick.protocol_rows };
   }

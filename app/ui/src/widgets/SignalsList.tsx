@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Filter } from "lucide-react";
 import { useWorkspaceStore } from "@/app/store";
-import { useDecodeSignals, useSignalCatalog, useSignalSamples } from "@/shared/api/hooks";
+import { useApplyTrim, useSignalCatalog, useSignalSamples } from "@/shared/api/hooks";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
@@ -28,7 +28,7 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
   const commitActiveSignalIds = useWorkspaceStore((s) => s.commitActiveSignalIds);
   const autoDisplayFirstIfEmpty = useWorkspaceStore((s) => s.autoDisplayFirstIfEmpty);
   const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
-  const decodeSignals = useDecodeSignals(blfPath);
+  const applyTrim = useApplyTrim(blfPath);
   const [signalFilter, setSignalFilter] = useState("");
   const [hideNonDecodable, setHideNonDecodable] = useState(true);
   const [hideConstant, setHideConstant] = useState(true);
@@ -73,8 +73,10 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
       .map((s) => s.signalId);
     const nextActive = new Set(pendingSignalIds);
     if (toDecode.length > 0 && trimRange) {
-      decodeSignals.mutate(
-        { signalIds: toDecode, startUs: trimRange.start, endUs: trimRange.end },
+      // One apply-trim pass over the current window decodes the uncovered delta
+      // for the full active set (already-covered signals are skipped natively).
+      applyTrim.mutate(
+        { startUs: trimRange.start, endUs: trimRange.end, activeSignalIds: Array.from(nextActive) },
         {
           onSuccess: () => {
             commitActiveSignalIds(nextActive);
@@ -227,7 +229,7 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
 
       {hasPendingSignalChanges && (
         <div className="shrink-0 border-t border-border p-2">
-          <Button size="sm" className="w-full" onClick={readPayloads} disabled={decodeSignals.isPending}>
+          <Button size="sm" className="w-full" onClick={readPayloads} disabled={applyTrim.isPending}>
             Read Payloads
           </Button>
         </div>
