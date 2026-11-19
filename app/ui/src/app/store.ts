@@ -44,6 +44,13 @@ export interface WorkspaceState {
   setDetectorQueryResult: (matches: DetectorMatch[], truncated: boolean) => void;
   setDetectorQueryError: (error: string) => void;
   resetDetectorQuery: () => void;
+  // Shared dataZoom window (percent, 0-100) for TimelineChart/TimelineZoomControl.
+  // Read/written imperatively via getState()/setTimelineZoomRange from echarts
+  // event handlers, never via the `useWorkspaceStore(s => s.timelineZoomRange)`
+  // hook form - that would re-render (and rebuild the whole chart option)
+  // on every pixel of a drag.
+  timelineZoomRange: { start: number; end: number };
+  setTimelineZoomRange: (range: { start: number; end: number }) => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
@@ -117,4 +124,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       detectorQueryError: null,
       detectorQueryHasRun: false,
     }),
+  timelineZoomRange: { start: 0, end: 100 },
+  setTimelineZoomRange: (range) => set({ timelineZoomRange: range }),
 }));

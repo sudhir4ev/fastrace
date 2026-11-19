@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useMutationState, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToastStore } from "@/app/toast-store";
 import { getTraceDataSource } from "./trace-source";
 
@@ -65,12 +65,25 @@ export function useSignalSamples(blfPath: string, signalId: number | null, limit
   });
 }
 
-// Timeline-scale fetch: each displayed signal's own chart calls
-// useSignalSamples(blfPath, signalId, TIMELINE_SAMPLE_LIMIT) - 200k rows
-// comfortably covers a full drive per docs/adr/0005's real-trace
-// signal_stats numbers, with no server-side windowing - ECharts' own
-// `large`/`sampling: 'lttb'` handles render-time density.
+// Timeline-scale fetch: TimelineChart calls this once for every displayed
+// signal with TIMELINE_SAMPLE_LIMIT - 200k rows comfortably covers a full
+// drive per docs/adr/0005's real-trace signal_stats numbers, with no
+// server-side windowing - ECharts' own `large`/`sampling: 'lttb'` handles
+// render-time density.
 export const TIMELINE_SAMPLE_LIMIT = 200_000;
+
+// useQueries (not a loop of useSignalSamples) because the signal count
+// changes as the user adds/removes pills - a variable number of hook calls
+// would break the rules of hooks, but useQueries itself is a single hook
+// call that internally manages a variable-length query array.
+export function useSignalSamplesList(blfPath: string, signalIds: number[], limit = TIMELINE_SAMPLE_LIMIT) {
+  return useQueries({
+    queries: signalIds.map((signalId) => ({
+      queryKey: ["signal-samples", blfPath, signalId, limit],
+      queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId, limit),
+    })),
+  });
+}
 
 // Same order of magnitude as TIMELINE_SAMPLE_LIMIT - duplicated from the
 // Rust-side query::DETECTOR_QUERY_MATCH_LIMIT because there's no
