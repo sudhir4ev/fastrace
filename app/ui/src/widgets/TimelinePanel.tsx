@@ -1,4 +1,3 @@
-import { useTraceTimeRange } from "@/shared/api/hooks";
 import { useWorkspaceStore } from "@/app/store";
 import SignalPills from "./SignalPills";
 import TimelineChart from "./TimelineChart";
@@ -10,9 +9,9 @@ interface TimelinePanelProps {
 
 export default function TimelinePanel({ blfPath }: TimelinePanelProps) {
   const hasDisplayedSignals = useWorkspaceStore((s) => s.displayedSignalIds.size > 0);
-  const timeRange = useTraceTimeRange(blfPath);
-  const minTs = timeRange.data?.minTimestampUs;
-  const maxTs = timeRange.data?.maxTimestampUs;
+  const appliedTrimRange = useWorkspaceStore((s) => s.appliedTrimRange);
+  const minTs = appliedTrimRange?.start;
+  const maxTs = appliedTrimRange?.end;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
