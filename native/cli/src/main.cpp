@@ -482,7 +482,9 @@ int runPrepare(int argc, char** argv)
         fastrace::Appender someipApp(db.con(), "protocol_someip");
         fastrace::Appender sdApp(db.con(), "protocol_someip_sd");
         fastrace::Appender doipApp(db.con(), "protocol_doip");
-        failed = !msgApp.valid() || !pduApp.valid() || !someipApp.valid() || !sdApp.valid() || !doipApp.valid();
+        fastrace::Appender ciApp(db.con(), "container_index");
+        failed = !msgApp.valid() || !pduApp.valid() || !someipApp.valid() || !sdApp.valid() || !doipApp.valid()
+            || !ciApp.valid();
 
         uint64_t nextMsgId = 0;
         auto lastProgress = Clock::now();
@@ -533,11 +535,26 @@ int runPrepare(int argc, char** argv)
                     std::chrono::duration_cast<std::chrono::milliseconds>(now - wall0).count());
                 lastProgress = now;
             }
+        }, [&](uint64_t ord, uint64_t byteOffset, int64_t firstTsUs, int64_t lastTsUs, uint64_t msgCount) {
+            // container_index: coarse per-container seek map (docs/ingestion-pipeline.html).
+            // nextMsgId has already advanced past this container's messages, so
+            // its first global id is (nextMsgId - msgCount).
+            if (failed) {
+                return;
+            }
+            ciApp.i64(static_cast<int64_t>(ord));
+            ciApp.i64(static_cast<int64_t>(byteOffset));
+            ciApp.i64(firstTsUs);
+            ciApp.i64(lastTsUs);
+            ciApp.i64(static_cast<int64_t>(nextMsgId - msgCount));
+            if (!ciApp.endRow()) {
+                failed = true;
+            }
         });
 
         failed = failed || !ok;
-        failed
-            = !msgApp.close() || !pduApp.close() || !someipApp.close() || !sdApp.close() || !doipApp.close() || failed;
+        failed = !msgApp.close() || !pduApp.close() || !someipApp.close() || !sdApp.close() || !doipApp.close()
+            || !ciApp.close() || failed;
 
         if (!failed && tracker) {
             const auto write0 = Clock::now();
