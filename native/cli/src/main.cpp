@@ -135,13 +135,16 @@ bool queryRequestedSignals(duckdb_connection con, const std::vector<int64_t>& id
 // that owns the DuckDB connection during a decode.
 int runDecodeSignals(int argc, char** argv)
 {
-    if (argc < 4) {
-        printError("usage: fastrace_parse decode-signals <trace.blf> <signal_id> [<signal_id> ...]");
+    if (argc < 6) {
+        printError(
+            "usage: fastrace_parse decode-signals <trace.blf> <start_us> <end_us> <signal_id> [<signal_id> ...]");
         return 1;
     }
     const std::string blfPath = argv[2];
+    const int64_t startUs = std::strtoll(argv[3], nullptr, 10);
+    const int64_t endUs = std::strtoll(argv[4], nullptr, 10);
     std::vector<int64_t> signalIds;
-    for (int i = 3; i < argc; ++i) {
+    for (int i = 5; i < argc; ++i) {
         signalIds.push_back(std::strtoll(argv[i], nullptr, 10));
     }
 
@@ -196,6 +199,18 @@ int runDecodeSignals(int argc, char** argv)
 
     const fastrace::ArDatabase arDb = fastrace::ArxmlParser::parseFile(arxmlPath);
 
+    std::string idList;
+    for (size_t i = 0; i < signalIds.size(); ++i) {
+        if (i != 0) {
+            idList += ",";
+        }
+        idList += std::to_string(signalIds[i]);
+    }
+    if (!db.exec("DELETE FROM signals WHERE signal_id IN (" + idList + ")")) {
+        printError("could not clear previous samples before re-decoding");
+        return 1;
+    }
+
     fastrace::Appender sigApp(db.con(), "signals");
     bool failed = !sigApp.valid();
 
@@ -217,6 +232,9 @@ int runDecodeSignals(int argc, char** argv)
             }
             fastrace::TraceMessage msg = msgIn;
             const uint64_t msgId = nextMsgId++;
+            if (static_cast<int64_t>(msg.timestampUs) < startUs || static_cast<int64_t>(msg.timestampUs) > endUs) {
+                return;
+            }
 
             if (fastrace::isEthernet(msg.objectType) && !msg.data.empty()) {
                 fastrace::indexEthernetPdus(msg);

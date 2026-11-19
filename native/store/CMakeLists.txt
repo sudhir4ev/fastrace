@@ -108,3 +108,17 @@ add_executable(fastrace_fixture_check test/fixture_prepare_check.cpp)
 target_link_libraries(fastrace_fixture_check PRIVATE duckdb::duckdb)
 fastrace_copy_duckdb_runtime(fastrace_fixture_check)
 
+add_executable(fastrace_decode_bounds_check test/decode_bounds_check.cpp)
+target_link_libraries(fastrace_decode_bounds_check PRIVATE duckdb::duckdb)
+fastrace_copy_duckdb_runtime(fastrace_decode_bounds_check)
+
+add_test(NAME fastrace_decode_signals_bounds
+  COMMAND ${CMAKE_COMMAND}
+    -DFASTRACE_PARSE=$<TARGET_FILE:fastrace_parse>
+    -DBOUNDS_CHECK=$<TARGET_FILE:fastrace_decode_bounds_check>
+    -DFIXTURE_BLF=${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.blf
+    -DFIXTURE_ARXML=${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.arxml
+    -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/decode_bounds
+    -P ${PROJECT_SOURCE_DIR}/store/test/run_decode_signals_bounds.cmake
+)
+
