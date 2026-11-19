@@ -137,6 +137,13 @@ export function useDecodeSignals(blfPath: string) {
       getTraceDataSource().decodeSignals(blfPath, signalIds, startUs, endUs),
     onSuccess: (result, { signalIds }) => {
       queryClient.invalidateQueries({ queryKey: SIGNAL_CATALOG_KEY(blfPath) });
+      // Prefix match (no trailing signalId/startUs/endUs/limit) so every
+      // cached signal-samples query for this trace refetches - required for
+      // the Trim Window's widen-then-Apply path: decode-signals just
+      // replaced the `signals` table rows for a wider window, but nothing
+      // else would ever tell an already-fetched useSignalSamplesList query to
+      // go back for the newly-decoded rows outside its old (narrower) range.
+      queryClient.invalidateQueries({ queryKey: ["signal-samples", blfPath] });
       const detail = `${signalIds.length} signal${signalIds.length === 1 ? "" : "s"}`;
       getTraceDataSource()
         .recordActivity(blfPath, "decode", result.elapsedMs, detail)
