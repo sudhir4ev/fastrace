@@ -1,6 +1,6 @@
 -- Trace Store DDL for fastrace_ingest (external duckdb CLI).
 -- Payloads stay in the BLF (source of truth). Signals/detections are on-demand.
--- schema_version: 3
+-- schema_version: 4
 
 CREATE TABLE messages (
   msg_id       BIGINT PRIMARY KEY,
@@ -106,4 +106,26 @@ CREATE TABLE signal_stats (
   first_ts_us  BIGINT,
   last_ts_us   BIGINT,
   opaque       BOOLEAN   -- bit_length > 64: tracked by byte hash only
+);
+
+-- Coarse per-LOG_CONTAINER time index, written during Prepare's inflate loop.
+-- Lets windowed reads (apply-trim) seek to only the containers a [start,end]
+-- window overlaps, instead of inflating the whole file. byte_offset is the file
+-- offset of the container's "LOBJ" signature; one row per non-empty container.
+CREATE TABLE container_index (
+  container_ord BIGINT PRIMARY KEY,  -- 0-based inflate order
+  byte_offset   BIGINT,              -- file offset of the LOBJ signature
+  first_ts_us   BIGINT,              -- min message timestamp in the container
+  last_ts_us    BIGINT,              -- max message timestamp in the container
+  first_msg_id  BIGINT               -- global msg_id of the container's first message
+);
+
+-- Per-signal decoded coverage: the single contiguous [start,end] window a
+-- signal's samples currently cover in the `signals` table. Lets apply-trim
+-- decode only the uncovered delta on expand and skip decoding entirely on
+-- shrink. One row per signal that has been decoded at least once.
+CREATE TABLE signal_coverage (
+  signal_id BIGINT PRIMARY KEY,
+  start_us  BIGINT,
+  end_us    BIGINT
 );
