@@ -68,18 +68,24 @@ fn progress_to_json(p: &sidecar::Progress) -> serde_json::Value {
         sidecar::Progress::Running {
             containers,
             messages,
+            bytes_read,
+            bytes_total,
             elapsed_ms,
         } => serde_json::json!({
-            "done": false, "containers": containers, "messages": messages, "elapsed_ms": elapsed_ms
+            "done": false, "containers": containers, "messages": messages,
+            "bytes_read": bytes_read, "bytes_total": bytes_total, "elapsed_ms": elapsed_ms
         }),
         sidecar::Progress::Done {
             containers,
             messages,
             protocol_rows,
+            bytes_read,
+            bytes_total,
             elapsed_ms,
         } => serde_json::json!({
             "done": true, "containers": containers, "messages": messages,
-            "protocol_rows": protocol_rows, "elapsed_ms": elapsed_ms
+            "protocol_rows": protocol_rows, "bytes_read": bytes_read, "bytes_total": bytes_total,
+            "elapsed_ms": elapsed_ms
         }),
     }
 }
@@ -131,12 +137,19 @@ async fn decode_signals(
     app: tauri::AppHandle,
     blf_path: String,
     signal_ids: Vec<i64>,
+    start_us: i64,
+    end_us: i64,
 ) -> Result<serde_json::Value, String> {
     let bin = begin_prepare(app.state::<PrepareGuard>().inner(), fastrace_parse_bin())?;
     let app_for_task = app.clone();
     let joined: Result<serde_json::Value, String> =
         tauri::async_runtime::spawn_blocking(move || {
-            let mut args = vec!["decode-signals".to_string(), blf_path];
+            let mut args = vec![
+                "decode-signals".to_string(),
+                blf_path,
+                start_us.to_string(),
+                end_us.to_string(),
+            ];
             args.extend(signal_ids.iter().map(|id| id.to_string()));
             let mut ticks = Vec::new();
             sidecar::spawn(&bin, &args, |progress| {
@@ -191,10 +204,14 @@ fn get_trace_summary(blf_path: String) -> Result<TraceSummary, String> {
 }
 
 #[tauri::command]
-fn list_message_groups(blf_path: String) -> Result<Vec<query::MessageGroup>, String> {
+fn list_message_groups(
+    blf_path: String,
+    start_us: i64,
+    end_us: i64,
+) -> Result<Vec<query::MessageGroup>, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::list_message_groups(&conn)
+    query::list_message_groups(&conn, start_us, end_us)
 }
 
 #[tauri::command]
@@ -203,10 +220,12 @@ fn list_messages(
     group_key: String,
     cursor: Option<i64>,
     limit: i64,
+    start_us: i64,
+    end_us: i64,
 ) -> Result<query::MessagePage, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::list_messages(&conn, &group_key, cursor, limit)
+    query::list_messages(&conn, &group_key, cursor, limit, start_us, end_us)
 }
 
 #[tauri::command]
@@ -228,10 +247,12 @@ fn get_signal_samples(
     blf_path: String,
     signal_id: i64,
     limit: i64,
+    start_us: i64,
+    end_us: i64,
 ) -> Result<Vec<(i64, f64)>, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::list_signal_samples(&conn, signal_id, limit)
+    query::list_signal_samples(&conn, signal_id, limit, start_us, end_us)
 }
 
 #[tauri::command]
@@ -249,10 +270,21 @@ fn get_trace_time_range(blf_path: String) -> Result<query::TraceTimeRange, Strin
 }
 
 #[tauri::command]
-fn run_detector_query(blf_path: String, sql: String) -> Result<query::DetectorQueryResult, String> {
+fn run_detector_query(
+    blf_path: String,
+    sql: String,
+    start_us: i64,
+    end_us: i64,
+) -> Result<query::DetectorQueryResult, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::run_detector_query(&conn, &sql, query::DETECTOR_QUERY_MATCH_LIMIT)
+    query::run_detector_query(
+        &conn,
+        &sql,
+        query::DETECTOR_QUERY_MATCH_LIMIT,
+        start_us,
+        end_us,
+    )
 }
 
 #[derive(serde::Serialize)]
@@ -565,17 +597,36 @@ mod tests {
     }
 
     #[test]
+    fn progress_to_json_includes_byte_progress() {
+        let p = sidecar::Progress::Done {
+            containers: 1,
+            messages: 6,
+            protocol_rows: 5,
+            bytes_read: 2000,
+            bytes_total: 2000,
+            elapsed_ms: 78,
+        };
+        let v = progress_to_json(&p);
+        assert_eq!(v["bytes_read"], 2000);
+        assert_eq!(v["bytes_total"], 2000);
+    }
+
+    #[test]
     fn fold_final_done_picks_the_done_tick_not_the_last_running_one() {
         let ticks = vec![
             sidecar::Progress::Running {
                 containers: 1,
                 messages: 10000,
+                bytes_read: 500_000,
+                bytes_total: 1_000_000,
                 elapsed_ms: 50,
             },
             sidecar::Progress::Done {
                 containers: 1,
                 messages: 20000,
                 protocol_rows: 15,
+                bytes_read: 1_000_000,
+                bytes_total: 1_000_000,
                 elapsed_ms: 120,
             },
         ];
@@ -590,6 +641,8 @@ mod tests {
         let ticks = vec![sidecar::Progress::Running {
             containers: 1,
             messages: 10000,
+            bytes_read: 500_000,
+            bytes_total: 1_000_000,
             elapsed_ms: 50,
         }];
         assert!(fold_final_done(&ticks).is_null());
