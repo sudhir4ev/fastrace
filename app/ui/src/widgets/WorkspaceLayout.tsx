@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { useFileSizes, useIsDecodingSignals } from "@/shared/api/hooks";
+import { useWorkspaceStore } from "@/app/store";
+import { useDecodeSignals, useFileSizes, useIsDecodingSignals } from "@/shared/api/hooks";
 import { formatBytes } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 import { Skeleton } from "@/shared/ui/skeleton";
@@ -66,6 +67,18 @@ function StatusBar({
 
 export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotals, onOpenTrace }: WorkspaceLayoutProps) {
   const isDecoding = useIsDecodingSignals(blfPath);
+  const decodeSignals = useDecodeSignals(blfPath);
+
+  function handleApplyTrim() {
+    const { activeSignalIds, appliedTrimRange } = useWorkspaceStore.getState();
+    if (activeSignalIds.size === 0 || !appliedTrimRange) return;
+    decodeSignals.mutate({
+      signalIds: Array.from(activeSignalIds),
+      startUs: appliedTrimRange.start,
+      endUs: appliedTrimRange.end,
+    });
+  }
+
   return (
     <div className="flex h-screen flex-col">
       <TopBar
@@ -74,7 +87,7 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
         preparing={preparing}
         tick={tick}
         onOpenTrace={onOpenTrace}
-        onApplyTrim={() => {}} // replaced with the real handler in Task 12
+        onApplyTrim={handleApplyTrim}
       />
       <div className="min-h-0 flex-1">
         <ResizablePanelGroup direction="horizontal">
