@@ -4,10 +4,10 @@ import { getTraceDataSource } from "./trace-source";
 
 const MESSAGE_PAGE_SIZE = 200;
 
-export function useTraceSummary(blfPath: string) {
+export function useTraceSummary(blfPath: string, startUs: number, endUs: number) {
   return useQuery({
-    queryKey: ["trace-summary", blfPath],
-    queryFn: () => getTraceDataSource().getTraceSummary(blfPath),
+    queryKey: ["trace-summary", blfPath, startUs, endUs],
+    queryFn: () => getTraceDataSource().getTraceSummary(blfPath, startUs, endUs),
   });
 }
 
@@ -40,12 +40,25 @@ export function useMessages(blfPath: string, groupKey: string | null, startUs: n
   });
 }
 
-export function useMessageDetail(blfPath: string, msgId: number | null) {
+export function useMessageDetail(blfPath: string, msgId: number | null, startUs: number, endUs: number) {
   return useQuery({
-    queryKey: ["message-detail", blfPath, msgId],
-    queryFn: () => getTraceDataSource().getMessageDetail(blfPath, msgId as number),
+    queryKey: ["message-detail", blfPath, msgId, startUs, endUs],
+    queryFn: () => getTraceDataSource().getMessageDetail(blfPath, msgId as number, startUs, endUs),
     enabled: msgId !== null,
   });
+}
+
+export function useMessageCount(blfPath: string) {
+  return useQuery({
+    queryKey: ["message-count", blfPath],
+    queryFn: () => getTraceDataSource().countMessages(blfPath),
+  });
+}
+
+// Plain async function, not a hook - called imperatively (twice) from
+// TrimControl's Apply handler in message-ordinal mode, not rendered.
+export function resolveMessagePosition(blfPath: string, position: number): Promise<number> {
+  return getTraceDataSource().resolveMessagePosition(blfPath, position);
 }
 
 const SIGNAL_CATALOG_KEY = (blfPath: string) => ["signal-catalog", blfPath];
@@ -163,6 +176,28 @@ export function useDecodeSignals(blfPath: string) {
 export function useIsDecodingSignals(blfPath: string): boolean {
   const states = useMutationState({
     filters: { mutationKey: decodeSignalsMutationKey(blfPath), status: "pending" },
+  });
+  return states.length > 0;
+}
+
+const recomputeSignalStatsMutationKey = (blfPath: string) => ["recompute-signal-stats", blfPath];
+
+export function useRecomputeSignalStats(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationKey: recomputeSignalStatsMutationKey(blfPath),
+    mutationFn: ({ startUs, endUs }: { startUs: number; endUs: number }) =>
+      getTraceDataSource().recomputeSignalStats(blfPath, startUs, endUs),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: SIGNAL_CATALOG_KEY(blfPath) });
+    },
+    onError: (e) => useToastStore.getState().pushError(String(e)),
+  });
+}
+
+export function useIsRecomputingSignalStats(blfPath: string): boolean {
+  const states = useMutationState({
+    filters: { mutationKey: recomputeSignalStatsMutationKey(blfPath), status: "pending" },
   });
   return states.length > 0;
 }

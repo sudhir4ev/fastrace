@@ -89,7 +89,7 @@ export interface TraceTimeRange {
 }
 
 export interface TraceDataSource {
-  getTraceSummary(blfPath: string): Promise<TraceSummary>;
+  getTraceSummary(blfPath: string, startUs: number, endUs: number): Promise<TraceSummary>;
   listMessageGroups(blfPath: string, startUs: number, endUs: number): Promise<MessageGroup[]>;
   listMessages(
     blfPath: string,
@@ -99,7 +99,10 @@ export interface TraceDataSource {
     startUs: number,
     endUs: number
   ): Promise<MessagePage>;
-  getMessageDetail(blfPath: string, msgId: number): Promise<MessageDetail>;
+  getMessageDetail(blfPath: string, msgId: number, startUs: number, endUs: number): Promise<MessageDetail>;
+  countMessages(blfPath: string): Promise<number>;
+  resolveMessagePosition(blfPath: string, position: number): Promise<number>;
+  recomputeSignalStats(blfPath: string, startUs: number, endUs: number): Promise<{ elapsedMs: number }>;
   listEcus(blfPath: string): Promise<EcuInfo[]>;
   listSignalCatalog(blfPath: string): Promise<SignalCatalogEntry[]>;
   getSignalSamples(
@@ -124,8 +127,8 @@ export interface TraceDataSource {
 }
 
 export class TauriTraceDataSource implements TraceDataSource {
-  getTraceSummary(blfPath: string): Promise<TraceSummary> {
-    return invoke<TraceSummary>("get_trace_summary", { blfPath });
+  getTraceSummary(blfPath: string, startUs: number, endUs: number): Promise<TraceSummary> {
+    return invoke<TraceSummary>("get_trace_summary", { blfPath, startUs, endUs });
   }
 
   listMessageGroups(blfPath: string, startUs: number, endUs: number): Promise<MessageGroup[]> {
@@ -143,8 +146,21 @@ export class TauriTraceDataSource implements TraceDataSource {
     return invoke<MessagePage>("list_messages", { blfPath, groupKey, cursor, limit, startUs, endUs });
   }
 
-  getMessageDetail(blfPath: string, msgId: number): Promise<MessageDetail> {
-    return invoke<MessageDetail>("get_message_detail", { blfPath, msgId });
+  getMessageDetail(blfPath: string, msgId: number, startUs: number, endUs: number): Promise<MessageDetail> {
+    return invoke<MessageDetail>("get_message_detail", { blfPath, msgId, startUs, endUs });
+  }
+
+  countMessages(blfPath: string): Promise<number> {
+    return invoke<number>("count_messages", { blfPath });
+  }
+
+  resolveMessagePosition(blfPath: string, position: number): Promise<number> {
+    return invoke<number>("resolve_message_position", { blfPath, position });
+  }
+
+  async recomputeSignalStats(blfPath: string, startUs: number, endUs: number): Promise<{ elapsedMs: number }> {
+    const tick = await invoke<{ elapsed_ms: number }>("recompute_signal_stats", { blfPath, startUs, endUs });
+    return { elapsedMs: tick.elapsed_ms };
   }
 
   async listEcus(blfPath: string): Promise<EcuInfo[]> {

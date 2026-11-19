@@ -9,7 +9,13 @@ interface MessageDetailsProps {
 
 export default function MessageDetails({ blfPath }: MessageDetailsProps) {
   const selectedMessageId = useWorkspaceStore((s) => s.selectedMessageId);
-  const { data, isPending, isError } = useMessageDetail(blfPath, selectedMessageId);
+  const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
+  const { data, isPending, isError } = useMessageDetail(
+    blfPath,
+    selectedMessageId,
+    trimRange?.start ?? 0,
+    trimRange?.end ?? Number.MAX_SAFE_INTEGER
+  );
 
   if (selectedMessageId === null) {
     return (
