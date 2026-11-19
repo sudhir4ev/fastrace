@@ -8,7 +8,7 @@ interface TopBarProps {
   preparing: boolean;
   tick: ProgressTick | null;
   onOpenTrace: () => void;
-  onApplyTrim: () => void;
+  onApplyTrim: () => void | Promise<void>;
 }
 
 function ByteProgress({ tick }: { tick: ProgressTick | null }) {
