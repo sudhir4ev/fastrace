@@ -136,3 +136,17 @@ add_test(NAME fastrace_signal_stats_bounds
     -P ${PROJECT_SOURCE_DIR}/store/test/run_signal_stats_bounds.cmake
 )
 
+add_executable(fastrace_apply_trim_check test/apply_trim_bounds_check.cpp)
+target_link_libraries(fastrace_apply_trim_check PRIVATE duckdb::duckdb)
+fastrace_copy_duckdb_runtime(fastrace_apply_trim_check)
+
+add_test(NAME fastrace_apply_trim_bounds
+  COMMAND ${CMAKE_COMMAND}
+    -DFASTRACE_PARSE=$<TARGET_FILE:fastrace_parse>
+    -DAPPLY_CHECK=$<TARGET_FILE:fastrace_apply_trim_check>
+    -DFIXTURE_BLF=${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.blf
+    -DFIXTURE_ARXML=${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.arxml
+    -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/apply_trim_bounds
+    -P ${PROJECT_SOURCE_DIR}/store/test/run_apply_trim_bounds.cmake
+)
+

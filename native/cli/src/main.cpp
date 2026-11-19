@@ -81,6 +81,23 @@ bool queryMetaString(duckdb_connection con, const std::string& key, std::string&
     return true;
 }
 
+// Reads a single integer scalar. Returns false when the row set is empty or the
+// value is NULL (e.g. an aggregate over no rows), leaving `out` untouched.
+bool queryOptInt64(duckdb_connection con, const std::string& sql, int64_t& out)
+{
+    duckdb_result res;
+    if (duckdb_query(con, sql.c_str(), &res) != DuckDBSuccess) {
+        duckdb_destroy_result(&res);
+        return false;
+    }
+    const bool ok = duckdb_row_count(&res) > 0 && !duckdb_value_is_null(&res, 0, 0);
+    if (ok) {
+        out = duckdb_value_int64(&res, 0, 0);
+    }
+    duckdb_destroy_result(&res);
+    return ok;
+}
+
 struct RequestedSignal {
     int64_t signalId = 0;
     std::string parentKind;
@@ -432,6 +449,221 @@ int runSignalStats(int argc, char** argv)
     return 0;
 }
 
+// Combined trim-Apply pass (docs/ingestion-pipeline.html). In ONE indexed
+// visitRange over only the containers [start_us,end_us] overlaps, this:
+//   - recomputes window-scoped signal_stats for EVERY arxml_signal (full-table
+//     DELETE-then-rewrite, same as the old signal-stats subcommand), and
+//   - appends decoded samples for the active signals, but only for the part of
+//     the window not already covered (signal_coverage) - shrink appends nothing;
+//     a disjoint window drops the signal's stale rows and re-decodes.
+int runApplyTrim(int argc, char** argv)
+{
+    if (argc < 5) {
+        printError("usage: fastrace_parse apply-trim <trace.blf> <start_us> <end_us> [<signal_id> ...]");
+        return 1;
+    }
+    const std::string blfPath = argv[2];
+    const int64_t startUs = std::strtoll(argv[3], nullptr, 10);
+    const int64_t endUs = std::strtoll(argv[4], nullptr, 10);
+    std::vector<int64_t> activeIds;
+    for (int i = 5; i < argc; ++i) {
+        activeIds.push_back(std::strtoll(argv[i], nullptr, 10));
+    }
+
+    const std::filesystem::path outPath = std::filesystem::path(blfPath).replace_extension(".duckdb");
+    if (!std::filesystem::exists(outPath)) {
+        printError("store not found, run prepare first: " + outPath.string());
+        return 1;
+    }
+    if (!std::filesystem::exists(blfPath)) {
+        printError("BLF not found: " + blfPath);
+        return 1;
+    }
+
+    const auto wall0 = Clock::now();
+
+    fastrace::Db db;
+    if (!db.open(outPath.string())) {
+        printError("could not open store: " + outPath.string());
+        return 1;
+    }
+
+    std::string arxmlPath;
+    if (!queryMetaString(db.con(), "source_arxml", arxmlPath) || arxmlPath.empty()) {
+        printError("store has no ARXML loaded; re-run prepare with an ARXML file");
+        return 1;
+    }
+    std::string blfSizeMeta;
+    std::string blfMtimeMeta;
+    if (!queryMetaString(db.con(), "blf_size", blfSizeMeta) || !queryMetaString(db.con(), "blf_mtime", blfMtimeMeta)) {
+        printError("store is missing blf_size/blf_mtime meta; re-run prepare");
+        return 1;
+    }
+    std::error_code statEc;
+    const uint64_t curSize = std::filesystem::file_size(blfPath, statEc);
+    const int64_t curMtime
+        = static_cast<int64_t>(std::filesystem::last_write_time(blfPath, statEc).time_since_epoch().count());
+    if (std::to_string(curSize) != blfSizeMeta || std::to_string(curMtime) != blfMtimeMeta) {
+        printError("BLF changed since prepare; re-run prepare: " + blfPath);
+        return 1;
+    }
+
+    const fastrace::ArDatabase arDb = fastrace::ArxmlParser::parseFile(arxmlPath);
+    fastrace::SignalStatsTracker tracker(arDb);
+
+    // Resolve the byte range to inflate from container_index: the last container
+    // starting at/before start_us, up to the first container starting after end_us.
+    uint64_t startOffset = 0;
+    uint64_t endOffset = UINT64_MAX;
+    int64_t scratch = 0;
+    if (queryOptInt64(db.con(),
+            "SELECT max(byte_offset) FROM container_index WHERE first_ts_us <= " + std::to_string(startUs), scratch)) {
+        startOffset = static_cast<uint64_t>(scratch);
+    }
+    if (queryOptInt64(db.con(),
+            "SELECT min(byte_offset) FROM container_index WHERE first_ts_us > " + std::to_string(endUs), scratch)) {
+        endOffset = static_cast<uint64_t>(scratch);
+    }
+    // Seed the msg_id counter so appended signals rows stay aligned with Prepare.
+    uint64_t nextMsgId = 0;
+    if (startOffset > 0
+        && queryOptInt64(db.con(),
+            "SELECT first_msg_id FROM container_index WHERE byte_offset = " + std::to_string(startOffset), scratch)) {
+        nextMsgId = static_cast<uint64_t>(scratch);
+    }
+
+    // Per-active-signal coverage decisions, made before the pass.
+    struct Cov {
+        bool has = false;
+        int64_t start = 0;
+        int64_t end = 0;
+    };
+    std::unordered_map<std::string, RequestedSignal> lookup;
+    std::unordered_map<int64_t, Cov> cov;
+    if (!activeIds.empty()) {
+        std::vector<RequestedSignal> requested;
+        if (!queryRequestedSignals(db.con(), activeIds, requested) || requested.size() != activeIds.size()) {
+            printError("one or more requested signal_id not found in arxml_signal");
+            return 1;
+        }
+        for (const auto& r : requested) {
+            lookup[r.parentKind + ":" + std::to_string(r.parentId) + ":" + r.name] = r;
+        }
+        for (int64_t id : activeIds) {
+            Cov c;
+            int64_t cs = 0;
+            int64_t ce = 0;
+            const bool hasCov
+                = queryOptInt64(
+                      db.con(), "SELECT start_us FROM signal_coverage WHERE signal_id = " + std::to_string(id), cs)
+                && queryOptInt64(
+                    db.con(), "SELECT end_us FROM signal_coverage WHERE signal_id = " + std::to_string(id), ce);
+            if (hasCov) {
+                const bool disjoint = startUs > ce || cs > endUs;
+                if (disjoint) {
+                    // Drop stale samples and re-decode the whole new window.
+                    db.exec("DELETE FROM signals WHERE signal_id = " + std::to_string(id));
+                } else {
+                    c = Cov { true, cs, ce };
+                }
+            }
+            cov[id] = c;
+        }
+    }
+
+    if (!db.exec("DELETE FROM signal_stats")) {
+        printError("could not clear signal_stats before recompute");
+        return 1;
+    }
+
+    fastrace::Appender sigApp(db.con(), "signals");
+    bool failed = !sigApp.valid();
+    uint64_t decodedCount = 0;
+    auto lastProgress = Clock::now();
+    constexpr uint64_t kProgressEveryMessages = 10000;
+    constexpr auto kProgressEveryMs = std::chrono::milliseconds(250);
+
+    fastrace::BlfIngestReader reader;
+    const bool ok = reader.visitRange(blfPath, startOffset, endOffset, [&](const fastrace::TraceMessage& msgIn) {
+        if (failed) {
+            return;
+        }
+        fastrace::TraceMessage msg = msgIn;
+        const uint64_t msgId = nextMsgId++;
+        const int64_t ts = static_cast<int64_t>(msg.timestampUs);
+        if (ts < startUs || ts > endUs) {
+            return;
+        }
+        if (fastrace::isEthernet(msg.objectType) && !msg.data.empty()) {
+            fastrace::indexEthernetPdus(msg);
+        }
+
+        tracker.observe(msg);
+
+        if (!lookup.empty()) {
+            for (const auto& ds : fastrace::decodeAllSignals(arDb, msg)) {
+                const std::string key = (ds.parentPduId != 0)
+                    ? ("pdu:" + std::to_string(ds.parentPduId) + ":" + ds.name)
+                    : ("can:" + std::to_string(ds.parentCanId) + ":" + ds.name);
+                auto it = lookup.find(key);
+                if (it == lookup.end()) {
+                    continue;
+                }
+                auto cit = cov.find(it->second.signalId);
+                if (cit != cov.end() && cit->second.has && ts >= cit->second.start && ts <= cit->second.end) {
+                    continue; // already covered - skip the re-decode
+                }
+                const double physValue = static_cast<double>(ds.rawValue) * it->second.factor + it->second.offset;
+                sigApp.i64(it->second.signalId);
+                sigApp.i64(static_cast<int64_t>(msgId));
+                sigApp.i64(ts);
+                sigApp.u64(ds.rawValue);
+                sigApp.f64(physValue);
+                if (!sigApp.endRow()) {
+                    failed = true;
+                    return;
+                }
+                ++decodedCount;
+            }
+        }
+
+        const auto now = Clock::now();
+        if (nextMsgId % kProgressEveryMessages == 0 || now - lastProgress >= kProgressEveryMs) {
+            printProgress(reader.stats().containers, nextMsgId, reader.stats().bytesRead, reader.stats().fileSizeBytes,
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - wall0).count());
+            lastProgress = now;
+        }
+    });
+
+    failed = failed || !ok;
+    failed = !sigApp.close() || failed;
+    if (!failed) {
+        failed = !writeSignalStats(db, tracker);
+    }
+
+    // Update signal_coverage: coverage tracks the decoded extent and only grows
+    // (union), except a disjoint jump which reset it above (c.has == false).
+    if (!failed) {
+        for (int64_t id : activeIds) {
+            const Cov& c = cov[id];
+            const int64_t ns = c.has ? (c.start < startUs ? c.start : startUs) : startUs;
+            const int64_t ne = c.has ? (c.end > endUs ? c.end : endUs) : endUs;
+            db.exec("DELETE FROM signal_coverage WHERE signal_id = " + std::to_string(id));
+            db.exec("INSERT INTO signal_coverage VALUES (" + std::to_string(id) + "," + std::to_string(ns) + ","
+                + std::to_string(ne) + ")");
+        }
+    }
+
+    const int64_t elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - wall0).count();
+    if (failed) {
+        printError("apply-trim failed: " + blfPath);
+        return 1;
+    }
+    printDone(reader.stats().containers, reader.stats().messages, decodedCount, reader.stats().bytesRead,
+        reader.stats().fileSizeBytes, elapsedMs);
+    return 0;
+}
+
 int runPrepare(int argc, char** argv)
 {
     if (argc < 3) {
@@ -605,6 +837,9 @@ int main(int argc, char** argv)
     }
     if (std::strcmp(argv[1], "signal-stats") == 0) {
         return runSignalStats(argc, argv);
+    }
+    if (std::strcmp(argv[1], "apply-trim") == 0) {
+        return runApplyTrim(argc, argv);
     }
     std::fprintf(stderr, "unknown subcommand: %s\n", argv[1]);
     return 1;
