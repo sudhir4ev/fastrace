@@ -17,3 +17,10 @@ target_compile_definitions(fastrace_blf_test PRIVATE
   FASTRACE_FIXTURE_BLF="${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.blf"
 )
 add_test(NAME fastrace_blf_test COMMAND fastrace_blf_test)
+
+add_executable(fastrace_visit_range_test test/visit_range_test.cpp)
+target_link_libraries(fastrace_visit_range_test PRIVATE fastrace_blf)
+target_compile_definitions(fastrace_visit_range_test PRIVATE
+  FASTRACE_FIXTURE_BLF="${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.blf"
+)
+add_test(NAME fastrace_visit_range_test COMMAND fastrace_visit_range_test)
