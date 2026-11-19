@@ -47,8 +47,12 @@ The per-Trace list of every signal the Signal Database declares, each annotated 
 _Avoid_: "signal list" alone (ambiguous with the decoded-samples list for one signal).
 
 **Read Payloads**:
-The user action (Signals tab) that decodes the checked, not-yet-cached signals from the Signal Catalog and writes their samples into the Trace Store. Formerly called "Apply changes"; the product-facing wording is "read"/"reading", not "decode" (that word stays internal - mutation/hook/component names are unaffected).
+The user action (Signals tab) that decodes the checked, not-yet-cached signals from the Signal Catalog and writes their samples into the Trace Store. Formerly called "Apply changes"; the product-facing wording is "read"/"reading", not "decode" (that word stays internal - mutation/hook/component names are unaffected). Scoped to the current Trim Window - narrowing or widening the window re-decodes affected signals' samples for the new range.
 _Avoid_: "Apply changes" in anything user-facing (retired); "decode" in UI copy.
+
+**Trim Window**:
+The `[start, end]` timestamp bound the user sets via the header slider (next to the trace file name), scoping every query against the open Trace - Message List, Detector Query, Signal Catalog samples, Timeline - to that range for the rest of the session. Adjustable at any time via the slider + Apply button; defaults to the full Trace span on open. Non-destructive: never mutates the Trace Store file, only what queries return.
+_Avoid_: confusing with the Timeline's client-side pan/zoom (`timelineZoomRange`) - that only changes what's visible in the chart viewport, not what's queried; "trim" as deleting rows from the Trace Store (it doesn't).
 
 **Active Signal**:
 A Signal Catalog entry that is cached - its samples already exist in the Trace Store because Read Payloads has run for it. Every Active Signal shows as a pill above the Timeline, one-to-one with the catalog's cached signals (not a frozen snapshot - if a signal stops being cached, its pill disappears).
