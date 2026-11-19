@@ -241,13 +241,17 @@ int runApplyTrim(int argc, char** argv)
     const fastrace::ArDatabase arDb = fastrace::ArxmlParser::parseFile(arxmlPath);
     fastrace::SignalStatsTracker tracker(arDb);
 
-    // Resolve the byte range to inflate from container_index: the last container
-    // starting at/before start_us, up to the first container starting after end_us.
+    // Resolve the byte range to inflate from container_index. Lower bound: the
+    // earliest container whose span reaches start_us (last_ts_us >= start_us) -
+    // NOT "max byte_offset where first_ts_us <= start_us", which breaks when a
+    // later container also satisfies first_ts_us <= start_us (e.g. trailing
+    // timestamp-0 messages at EOF would hijack the seek to the end of the file).
+    // Upper bound: the first container starting after end_us.
     uint64_t startOffset = 0;
     uint64_t endOffset = UINT64_MAX;
     int64_t scratch = 0;
     if (queryOptInt64(db.con(),
-            "SELECT max(byte_offset) FROM container_index WHERE first_ts_us <= " + std::to_string(startUs), scratch)) {
+            "SELECT min(byte_offset) FROM container_index WHERE last_ts_us >= " + std::to_string(startUs), scratch)) {
         startOffset = static_cast<uint64_t>(scratch);
     }
     if (queryOptInt64(db.con(),
@@ -292,7 +296,12 @@ int runApplyTrim(int argc, char** argv)
                 const bool disjoint = startUs > ce || cs > endUs;
                 if (disjoint) {
                     // Drop stale samples and re-decode the whole new window.
-                    db.exec("DELETE FROM signals WHERE signal_id = " + std::to_string(id));
+                    // Checked: leaving stale rows while resetting coverage would
+                    // orphan them (future expands never re-touch them).
+                    if (!db.exec("DELETE FROM signals WHERE signal_id = " + std::to_string(id))) {
+                        printError("could not clear stale samples for a disjoint re-decode");
+                        return 1;
+                    }
                 } else {
                     c = Cov { true, cs, ce };
                 }
@@ -378,9 +387,12 @@ int runApplyTrim(int argc, char** argv)
             const Cov& c = cov[id];
             const int64_t ns = c.has ? (c.start < startUs ? c.start : startUs) : startUs;
             const int64_t ne = c.has ? (c.end > endUs ? c.end : endUs) : endUs;
-            db.exec("DELETE FROM signal_coverage WHERE signal_id = " + std::to_string(id));
-            db.exec("INSERT INTO signal_coverage VALUES (" + std::to_string(id) + "," + std::to_string(ns) + ","
-                + std::to_string(ne) + ")");
+            // Checked, like every other exec: a failed coverage upsert must not
+            // report success, or the next incremental decode trusts stale bounds.
+            failed = !db.exec("DELETE FROM signal_coverage WHERE signal_id = " + std::to_string(id))
+                || !db.exec("INSERT INTO signal_coverage VALUES (" + std::to_string(id) + "," + std::to_string(ns)
+                    + "," + std::to_string(ne) + ")")
+                || failed;
         }
     }
 
@@ -497,10 +509,13 @@ int runPrepare(int argc, char** argv)
                     std::chrono::duration_cast<std::chrono::milliseconds>(now - wall0).count());
                 lastProgress = now;
             }
-        }, [&](uint64_t ord, uint64_t byteOffset, int64_t firstTsUs, int64_t lastTsUs, uint64_t msgCount) {
+        }, [&](uint64_t ord, uint64_t byteOffset, int64_t firstTsUs, int64_t lastTsUs, uint64_t ownMsgCount) {
             // container_index: coarse per-container seek map (docs/ingestion-pipeline.html).
-            // nextMsgId has already advanced past this container's messages, so
-            // its first global id is (nextMsgId - msgCount).
+            // first_msg_id must be the id of this container's first OWN (non-stitched)
+            // message - the message a ranged decode starting here reproduces first
+            // (a restart has no pendingTail, so a leading cross-container split is
+            // dropped). nextMsgId has advanced past all of this container's messages,
+            // so that id is (nextMsgId - ownMsgCount).
             if (failed) {
                 return;
             }
@@ -508,7 +523,7 @@ int runPrepare(int argc, char** argv)
             ciApp.i64(static_cast<int64_t>(byteOffset));
             ciApp.i64(firstTsUs);
             ciApp.i64(lastTsUs);
-            ciApp.i64(static_cast<int64_t>(nextMsgId - msgCount));
+            ciApp.i64(static_cast<int64_t>(nextMsgId - ownMsgCount));
             if (!ciApp.endRow()) {
                 failed = true;
             }

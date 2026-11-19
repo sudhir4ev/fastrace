@@ -14,8 +14,11 @@ namespace fastrace {
 class BlfIngestReader {
 public:
     using MessageHandler = std::function<void(const TraceMessage& msg)>;
+    // ownMsgCount is the container's own (non-stitched) message count - the
+    // messages a ranged restart at this container reproduces. firstTsUs/lastTsUs
+    // still span any stitched message too (the bytes belong to this container).
     using ContainerHandler = std::function<void(
-        uint64_t ord, uint64_t byteOffset, int64_t firstTsUs, int64_t lastTsUs, uint64_t msgCount)>;
+        uint64_t ord, uint64_t byteOffset, int64_t firstTsUs, int64_t lastTsUs, uint64_t ownMsgCount)>;
 
     struct Stats {
         uint64_t containers = 0;

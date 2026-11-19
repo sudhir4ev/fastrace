@@ -24,3 +24,7 @@ target_compile_definitions(fastrace_visit_range_test PRIVATE
   FASTRACE_FIXTURE_BLF="${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.blf"
 )
 add_test(NAME fastrace_visit_range_test COMMAND fastrace_visit_range_test)
+
+add_executable(fastrace_visit_range_msgid_test test/visit_range_msgid_test.cpp)
+target_link_libraries(fastrace_visit_range_msgid_test PRIVATE fastrace_blf libdeflate_static)
+add_test(NAME fastrace_visit_range_msgid_test COMMAND fastrace_visit_range_msgid_test)

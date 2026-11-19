@@ -551,7 +551,6 @@ bool BlfIngestReader::visitImpl(const std::string& blfPath, uint64_t startByteOf
         if (onContainer) {
             int64_t firstTs = INT64_MAX;
             int64_t lastTs = INT64_MIN;
-            const uint64_t msgCount = stitchedMsgs.size() + containerMsgs.size();
             for (const auto& m : stitchedMsgs) {
                 firstTs = std::min(firstTs, static_cast<int64_t>(m.timestampUs));
                 lastTs = std::max(lastTs, static_cast<int64_t>(m.timestampUs));
@@ -560,10 +559,15 @@ bool BlfIngestReader::visitImpl(const std::string& blfPath, uint64_t startByteOf
                 firstTs = std::min(firstTs, static_cast<int64_t>(m.timestampUs));
                 lastTs = std::max(lastTs, static_cast<int64_t>(m.timestampUs));
             }
-            if (msgCount > 0) {
+            // ownMsgCount counts only this container's OWN (non-stitched) messages -
+            // the messages a ranged restart at this container reproduces (a restart
+            // has no pendingTail, so the leading stitched message is dropped). The
+            // ts range above still spans both, since the container's bytes cover both.
+            const uint64_t ownMsgCount = containerMsgs.size();
+            if (!stitchedMsgs.empty() || ownMsgCount > 0) {
                 // m_stats.containers was already incremented above, so -1 is
                 // this container's 0-based ord.
-                onContainer(m_stats.containers - 1, lobjOffset, firstTs, lastTs, msgCount);
+                onContainer(m_stats.containers - 1, lobjOffset, firstTs, lastTs, ownMsgCount);
             }
         }
 

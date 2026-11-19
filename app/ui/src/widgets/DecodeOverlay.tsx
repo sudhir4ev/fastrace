@@ -6,10 +6,10 @@ interface DecodeOverlayProps {
   active: boolean;
 }
 
-// Full-screen blurred overlay shown while a decode-signals run holds the
-// store's write lock (docs/adr/0005's accepted MVP blackout, shared with
-// Prepare per docs/adr/0004's amendment). Deliberately not a route swap like
-// Progress.tsx - this sits on top of the existing workspace instead.
+// Full-screen blurred overlay shown while an apply-trim run holds the store's
+// write lock (docs/adr/0005's accepted MVP blackout, shared with Prepare per
+// docs/adr/0004's amendment). Deliberately not a route swap like Progress.tsx -
+// this sits on top of the existing workspace instead.
 export default function DecodeOverlay({ active }: DecodeOverlayProps) {
   const [tick, setTick] = useState<ProgressTick | null>(null);
 
@@ -18,7 +18,9 @@ export default function DecodeOverlay({ active }: DecodeOverlayProps) {
       setTick(null);
       return;
     }
-    const unlisten = listen<ProgressTick>("decode-progress", (event) => {
+    // apply_trim emits "apply-trim-progress" (the old "decode-progress" event
+    // was retired with the decode_signals command).
+    const unlisten = listen<ProgressTick>("apply-trim-progress", (event) => {
       setTick(event.payload);
     });
     return () => {
