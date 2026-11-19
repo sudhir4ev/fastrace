@@ -165,6 +165,40 @@ async fn decode_signals(
     joined
 }
 
+#[tauri::command]
+async fn recompute_signal_stats(
+    app: tauri::AppHandle,
+    blf_path: String,
+    start_us: i64,
+    end_us: i64,
+) -> Result<serde_json::Value, String> {
+    let bin = begin_prepare(app.state::<PrepareGuard>().inner(), fastrace_parse_bin())?;
+    let app_for_task = app.clone();
+    let joined: Result<serde_json::Value, String> =
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut ticks = Vec::new();
+            sidecar::spawn(
+                &bin,
+                &[
+                    "signal-stats".to_string(),
+                    blf_path,
+                    start_us.to_string(),
+                    end_us.to_string(),
+                ],
+                |progress| {
+                    let _ = app_for_task.emit("signal-stats-progress", progress_to_json(&progress));
+                    ticks.push(progress);
+                },
+            )
+            .map(|_| fold_final_done(&ticks))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    app.state::<PrepareGuard>().release();
+    joined
+}
+
 // BLFObjectType values that carry CAN vs Ethernet messages
 // (native/blf/include/BlfTypes.h) - duplicated here because Rust has no
 // visibility into the C++ header; keep in sync if that enum changes.
@@ -595,6 +629,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             prepare_trace,
             decode_signals,
+            recompute_signal_stats,
             get_trace_summary,
             list_message_groups,
             list_messages,
