@@ -13,9 +13,16 @@ execute_process(
   COMMAND "${FASTRACE_PARSE}" prepare "${_blf_name}" "${_arxml_name}"
   WORKING_DIRECTORY "${OUT_DIR}"
   RESULT_VARIABLE _rv
+  OUTPUT_VARIABLE _prepare_stdout
 )
 if(NOT _rv EQUAL 0)
   message(FATAL_ERROR "fastrace_parse prepare exited with ${_rv}")
+endif()
+if(NOT _prepare_stdout MATCHES "\"bytes_total\"")
+  message(FATAL_ERROR "prepare's stdout is missing \"bytes_total\": ${_prepare_stdout}")
+endif()
+if(NOT _prepare_stdout MATCHES "\"bytes_read\"")
+  message(FATAL_ERROR "prepare's stdout is missing \"bytes_read\": ${_prepare_stdout}")
 endif()
 
 execute_process(

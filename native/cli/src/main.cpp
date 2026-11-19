@@ -27,20 +27,25 @@ void removeOutputs(const std::filesystem::path& outPath)
     std::filesystem::remove(outPath.string() + ".wal", ec);
 }
 
-// Hand-rolled: 3-4 fixed numeric fields don't need a JSON library.
-void printProgress(uint64_t containers, uint64_t messages, int64_t elapsedMs)
+// Hand-rolled: a handful of fixed numeric fields don't need a JSON library.
+void printProgress(uint64_t containers, uint64_t messages, uint64_t bytesRead, uint64_t bytesTotal, int64_t elapsedMs)
 {
-    std::printf("{\"containers\":%llu,\"messages\":%llu,\"elapsed_ms\":%lld}\n",
+    std::printf(
+        "{\"containers\":%llu,\"messages\":%llu,\"bytes_read\":%llu,\"bytes_total\":%llu,\"elapsed_ms\":%lld}\n",
         static_cast<unsigned long long>(containers), static_cast<unsigned long long>(messages),
+        static_cast<unsigned long long>(bytesRead), static_cast<unsigned long long>(bytesTotal),
         static_cast<long long>(elapsedMs));
     std::fflush(stdout);
 }
 
-void printDone(uint64_t containers, uint64_t messages, uint64_t protocolRows, int64_t elapsedMs)
+void printDone(uint64_t containers, uint64_t messages, uint64_t protocolRows, uint64_t bytesRead, uint64_t bytesTotal,
+    int64_t elapsedMs)
 {
-    std::printf("{\"done\":true,\"containers\":%llu,\"messages\":%llu,\"protocol_rows\":%llu,\"elapsed_ms\":%lld}\n",
+    std::printf("{\"done\":true,\"containers\":%llu,\"messages\":%llu,\"protocol_rows\":%llu,"
+                "\"bytes_read\":%llu,\"bytes_total\":%llu,\"elapsed_ms\":%lld}\n",
         static_cast<unsigned long long>(containers), static_cast<unsigned long long>(messages),
-        static_cast<unsigned long long>(protocolRows), static_cast<long long>(elapsedMs));
+        static_cast<unsigned long long>(protocolRows), static_cast<unsigned long long>(bytesRead),
+        static_cast<unsigned long long>(bytesTotal), static_cast<long long>(elapsedMs));
     std::fflush(stdout);
 }
 
@@ -196,6 +201,8 @@ int runDecodeSignals(int argc, char** argv)
 
     uint64_t finalContainers = 0;
     uint64_t finalMessages = 0;
+    uint64_t finalBytesRead = 0;
+    uint64_t finalBytesTotal = 0;
     uint64_t decodedCount = 0;
     if (!failed) {
         uint64_t nextMsgId = 0;
@@ -238,7 +245,8 @@ int runDecodeSignals(int argc, char** argv)
 
             const auto now = Clock::now();
             if (nextMsgId % kProgressEveryMessages == 0 || now - lastProgress >= kProgressEveryMs) {
-                printProgress(reader.stats().containers, nextMsgId,
+                printProgress(reader.stats().containers, nextMsgId, reader.stats().bytesRead,
+                    reader.stats().fileSizeBytes,
                     std::chrono::duration_cast<std::chrono::milliseconds>(now - wall0).count());
                 lastProgress = now;
             }
@@ -249,6 +257,8 @@ int runDecodeSignals(int argc, char** argv)
         if (!failed) {
             finalContainers = reader.stats().containers;
             finalMessages = reader.stats().messages;
+            finalBytesRead = reader.stats().bytesRead;
+            finalBytesTotal = reader.stats().fileSizeBytes;
         }
     }
 
@@ -257,7 +267,7 @@ int runDecodeSignals(int argc, char** argv)
         printError("decode-signals failed: " + blfPath);
         return 1;
     }
-    printDone(finalContainers, finalMessages, decodedCount, elapsedMs);
+    printDone(finalContainers, finalMessages, decodedCount, finalBytesRead, finalBytesTotal, elapsedMs);
     return 0;
 }
 
@@ -335,6 +345,8 @@ int runPrepare(int argc, char** argv)
     uint64_t peeled = 0;
     uint64_t finalContainers = 0;
     uint64_t finalMessages = 0;
+    uint64_t finalBytesRead = 0;
+    uint64_t finalBytesTotal = 0;
     int64_t signalStatsUs = 0;
     if (!failed) {
         fastrace::Appender msgApp(db.con(), "messages");
@@ -388,7 +400,8 @@ int runPrepare(int argc, char** argv)
 
             const auto now = Clock::now();
             if (nextMsgId % kProgressEveryMessages == 0 || now - lastProgress >= kProgressEveryMs) {
-                printProgress(reader.stats().containers, nextMsgId,
+                printProgress(reader.stats().containers, nextMsgId, reader.stats().bytesRead,
+                    reader.stats().fileSizeBytes,
                     std::chrono::duration_cast<std::chrono::milliseconds>(now - wall0).count());
                 lastProgress = now;
             }
@@ -410,6 +423,8 @@ int runPrepare(int argc, char** argv)
         if (!failed) {
             finalContainers = reader.stats().containers;
             finalMessages = reader.stats().messages;
+            finalBytesRead = reader.stats().bytesRead;
+            finalBytesTotal = reader.stats().fileSizeBytes;
             db.meta("stage_a_containers", std::to_string(finalContainers));
             db.meta("stage_a_messages", std::to_string(finalMessages));
             db.meta("protocol_rows", std::to_string(peeled));
@@ -425,7 +440,7 @@ int runPrepare(int argc, char** argv)
     }
 
     db.meta("wall_ms", std::to_string(elapsedMs));
-    printDone(finalContainers, finalMessages, peeled, elapsedMs);
+    printDone(finalContainers, finalMessages, peeled, finalBytesRead, finalBytesTotal, elapsedMs);
     return 0;
 }
 
