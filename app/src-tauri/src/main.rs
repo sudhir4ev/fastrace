@@ -25,7 +25,7 @@ fn validate_bin_path(bin: &PathBuf) -> Result<PathBuf, String> {
 }
 
 /// Rejects a second concurrent native write op against the same store.
-/// Shared by `prepare_trace` and `decode_signals` - both spawn
+/// Shared by `prepare_trace` and `apply_trim` - both spawn
 /// `fastrace_parse` holding the store's DuckDB write lock for the duration
 /// (docs/adr/0005), so letting one run while the other starts would corrupt
 /// the file, not just confuse the UI. Shortcut: a JoinError from
@@ -132,39 +132,6 @@ async fn prepare_trace(
     joined
 }
 
-#[tauri::command]
-async fn decode_signals(
-    app: tauri::AppHandle,
-    blf_path: String,
-    signal_ids: Vec<i64>,
-    start_us: i64,
-    end_us: i64,
-) -> Result<serde_json::Value, String> {
-    let bin = begin_prepare(app.state::<PrepareGuard>().inner(), fastrace_parse_bin())?;
-    let app_for_task = app.clone();
-    let joined: Result<serde_json::Value, String> =
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut args = vec![
-                "decode-signals".to_string(),
-                blf_path,
-                start_us.to_string(),
-                end_us.to_string(),
-            ];
-            args.extend(signal_ids.iter().map(|id| id.to_string()));
-            let mut ticks = Vec::new();
-            sidecar::spawn(&bin, &args, |progress| {
-                let _ = app_for_task.emit("decode-progress", progress_to_json(&progress));
-                ticks.push(progress);
-            })
-            .map(|_| fold_final_done(&ticks))
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-
-    app.state::<PrepareGuard>().release();
-    joined
-}
-
 // Builds the apply-trim sidecar argv: the window bound, then every active
 // signal id. An empty id list is a stats-only recompute (still valid).
 fn build_apply_trim_args(
@@ -204,40 +171,6 @@ async fn apply_trim(
                 let _ = app_for_task.emit("apply-trim-progress", progress_to_json(&progress));
                 ticks.push(progress);
             })
-            .map(|_| fold_final_done(&ticks))
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-
-    app.state::<PrepareGuard>().release();
-    joined
-}
-
-#[tauri::command]
-async fn recompute_signal_stats(
-    app: tauri::AppHandle,
-    blf_path: String,
-    start_us: i64,
-    end_us: i64,
-) -> Result<serde_json::Value, String> {
-    let bin = begin_prepare(app.state::<PrepareGuard>().inner(), fastrace_parse_bin())?;
-    let app_for_task = app.clone();
-    let joined: Result<serde_json::Value, String> =
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut ticks = Vec::new();
-            sidecar::spawn(
-                &bin,
-                &[
-                    "signal-stats".to_string(),
-                    blf_path,
-                    start_us.to_string(),
-                    end_us.to_string(),
-                ],
-                |progress| {
-                    let _ = app_for_task.emit("signal-stats-progress", progress_to_json(&progress));
-                    ticks.push(progress);
-                },
-            )
             .map(|_| fold_final_done(&ticks))
         })
         .await
@@ -681,8 +614,6 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             prepare_trace,
-            decode_signals,
-            recompute_signal_stats,
             apply_trim,
             get_trace_summary,
             list_message_groups,
@@ -745,20 +676,6 @@ mod tests {
             unbounded, 2,
             "both rows are inside the full span - the join doesn't drop/double-count rows"
         );
-    }
-
-    #[test]
-    fn recompute_signal_stats_args_shape_matches_decode_signals_pattern() {
-        let blf_path = "trace.blf".to_string();
-        let start_us: i64 = 100;
-        let end_us: i64 = 200;
-        let args = vec![
-            "signal-stats".to_string(),
-            blf_path,
-            start_us.to_string(),
-            end_us.to_string(),
-        ];
-        assert_eq!(args, vec!["signal-stats", "trace.blf", "100", "200"]);
     }
 
     #[test]

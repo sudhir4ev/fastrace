@@ -132,7 +132,6 @@ export function useTraceTimeRange(blfPath: string) {
   });
 }
 
-const decodeSignalsMutationKey = (blfPath: string) => ["decode-signals", blfPath];
 const ACTIVITIES_KEY = (blfPath: string) => ["activities", blfPath];
 
 export function useActivities(blfPath: string) {
@@ -140,66 +139,6 @@ export function useActivities(blfPath: string) {
     queryKey: ACTIVITIES_KEY(blfPath),
     queryFn: () => getTraceDataSource().listActivities(blfPath),
   });
-}
-
-export function useDecodeSignals(blfPath: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationKey: decodeSignalsMutationKey(blfPath),
-    mutationFn: ({ signalIds, startUs, endUs }: { signalIds: number[]; startUs: number; endUs: number }) =>
-      getTraceDataSource().decodeSignals(blfPath, signalIds, startUs, endUs),
-    onSuccess: (result, { signalIds }) => {
-      queryClient.invalidateQueries({ queryKey: SIGNAL_CATALOG_KEY(blfPath) });
-      // Prefix match (no trailing signalId/startUs/endUs/limit) so every
-      // cached signal-samples query for this trace refetches - required for
-      // the Trim Window's widen-then-Apply path: decode-signals just
-      // replaced the `signals` table rows for a wider window, but nothing
-      // else would ever tell an already-fetched useSignalSamplesList query to
-      // go back for the newly-decoded rows outside its old (narrower) range.
-      queryClient.invalidateQueries({ queryKey: ["signal-samples", blfPath] });
-      const detail = `${signalIds.length} signal${signalIds.length === 1 ? "" : "s"}`;
-      getTraceDataSource()
-        .recordActivity(blfPath, "decode", result.elapsedMs, detail)
-        .then(() => queryClient.invalidateQueries({ queryKey: ACTIVITIES_KEY(blfPath) }));
-    },
-    // Mutations aren't covered by query-client.ts's global QueryCache.onError
-    // toast wiring (that only observes queries) - push here directly instead
-    // of adding a second global error-sink for what is, for now, the only
-    // mutation in the app.
-    onError: (e) => useToastStore.getState().pushError(String(e)),
-  });
-}
-
-// Lets a sibling component (DecodeOverlay, mounted from WorkspaceLayout) know
-// whether a decode-signals mutation triggered elsewhere (the Signals tab) is
-// in flight, without lifting the mutation itself or adding store state for it.
-export function useIsDecodingSignals(blfPath: string): boolean {
-  const states = useMutationState({
-    filters: { mutationKey: decodeSignalsMutationKey(blfPath), status: "pending" },
-  });
-  return states.length > 0;
-}
-
-const recomputeSignalStatsMutationKey = (blfPath: string) => ["recompute-signal-stats", blfPath];
-
-export function useRecomputeSignalStats(blfPath: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationKey: recomputeSignalStatsMutationKey(blfPath),
-    mutationFn: ({ startUs, endUs }: { startUs: number; endUs: number }) =>
-      getTraceDataSource().recomputeSignalStats(blfPath, startUs, endUs),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: SIGNAL_CATALOG_KEY(blfPath) });
-    },
-    onError: (e) => useToastStore.getState().pushError(String(e)),
-  });
-}
-
-export function useIsRecomputingSignalStats(blfPath: string): boolean {
-  const states = useMutationState({
-    filters: { mutationKey: recomputeSignalStatsMutationKey(blfPath), status: "pending" },
-  });
-  return states.length > 0;
 }
 
 const applyTrimMutationKey = (blfPath: string) => ["apply-trim", blfPath];

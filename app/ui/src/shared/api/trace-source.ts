@@ -102,7 +102,6 @@ export interface TraceDataSource {
   getMessageDetail(blfPath: string, msgId: number, startUs: number, endUs: number): Promise<MessageDetail>;
   countMessages(blfPath: string): Promise<number>;
   resolveMessagePosition(blfPath: string, position: number): Promise<number>;
-  recomputeSignalStats(blfPath: string, startUs: number, endUs: number): Promise<{ elapsedMs: number }>;
   listEcus(blfPath: string): Promise<EcuInfo[]>;
   listSignalCatalog(blfPath: string): Promise<SignalCatalogEntry[]>;
   getSignalSamples(
@@ -114,7 +113,6 @@ export interface TraceDataSource {
   ): Promise<[number, number][]>;
   runDetectorQuery(blfPath: string, sql: string, startUs: number, endUs: number): Promise<DetectorQueryResult>;
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange>;
-  decodeSignals(blfPath: string, signalIds: number[], startUs: number, endUs: number): Promise<DecodeResult>;
   applyTrim(blfPath: string, startUs: number, endUs: number, activeSignalIds: number[]): Promise<DecodeResult>;
   recordActivity(blfPath: string, kind: string, elapsedMs: number, detail: string): Promise<void>;
   listActivities(blfPath: string): Promise<ActivityEntry[]>;
@@ -159,11 +157,6 @@ export class TauriTraceDataSource implements TraceDataSource {
     return invoke<number>("resolve_message_position", { blfPath, position });
   }
 
-  async recomputeSignalStats(blfPath: string, startUs: number, endUs: number): Promise<{ elapsedMs: number }> {
-    const tick = await invoke<{ elapsed_ms: number }>("recompute_signal_stats", { blfPath, startUs, endUs });
-    return { elapsedMs: tick.elapsed_ms };
-  }
-
   async listEcus(blfPath: string): Promise<EcuInfo[]> {
     const names = await invoke<string[]>("list_ecus", { blfPath });
     return names.map((name) => ({ name }));
@@ -189,20 +182,6 @@ export class TauriTraceDataSource implements TraceDataSource {
 
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange> {
     return invoke<TraceTimeRange>("get_trace_time_range", { blfPath });
-  }
-
-  async decodeSignals(blfPath: string, signalIds: number[], startUs: number, endUs: number): Promise<DecodeResult> {
-    // decode_signals resolves with the run's raw Done tick (same shape as
-    // prepare_trace's), snake_case because it's forwarded as-is from the
-    // sidecar's progress protocol - reused here as "signal rows decoded"
-    // rather than widening the native progress protocol for one new field.
-    const tick = await invoke<{ elapsed_ms: number; protocol_rows: number }>("decode_signals", {
-      blfPath,
-      signalIds,
-      startUs,
-      endUs,
-    });
-    return { elapsedMs: tick.elapsed_ms, decodedCount: tick.protocol_rows };
   }
 
   async applyTrim(
