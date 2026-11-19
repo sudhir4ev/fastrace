@@ -1,6 +1,12 @@
 import type { ReactNode } from "react";
 import { useWorkspaceStore } from "@/app/store";
-import { useDecodeSignals, useFileSizes, useIsDecodingSignals } from "@/shared/api/hooks";
+import {
+  useDecodeSignals,
+  useFileSizes,
+  useIsDecodingSignals,
+  useIsRecomputingSignalStats,
+  useRecomputeSignalStats,
+} from "@/shared/api/hooks";
 import { formatBytes } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 import { Skeleton } from "@/shared/ui/skeleton";
@@ -67,16 +73,27 @@ function StatusBar({
 
 export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotals, onOpenTrace }: WorkspaceLayoutProps) {
   const isDecoding = useIsDecodingSignals(blfPath);
+  const isRecomputingStats = useIsRecomputingSignalStats(blfPath);
   const decodeSignals = useDecodeSignals(blfPath);
+  const recomputeStats = useRecomputeSignalStats(blfPath);
 
-  function handleApplyTrim() {
+  async function handleApplyTrim() {
     const { activeSignalIds, appliedTrimRange } = useWorkspaceStore.getState();
-    if (activeSignalIds.size === 0 || !appliedTrimRange) return;
-    decodeSignals.mutate({
-      signalIds: Array.from(activeSignalIds),
-      startUs: appliedTrimRange.start,
-      endUs: appliedTrimRange.end,
-    });
+    if (!appliedTrimRange) return;
+    // Unconditional: the Signal Catalog's signal_stats must reflect the
+    // current window regardless of what's currently Active/displayed.
+    await recomputeStats.mutateAsync({ startUs: appliedTrimRange.start, endUs: appliedTrimRange.end });
+    // Sequenced, not parallel: both this and the stats recompute hold the
+    // native PrepareGuard write lock - running them concurrently would make
+    // whichever started second spuriously fail with "a Prepare run is
+    // already in progress."
+    if (activeSignalIds.size > 0) {
+      decodeSignals.mutate({
+        signalIds: Array.from(activeSignalIds),
+        startUs: appliedTrimRange.start,
+        endUs: appliedTrimRange.end,
+      });
+    }
   }
 
   return (
@@ -125,7 +142,7 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
       </div>
       <StatusBar blfPath={blfPath} prepareTotals={prepareTotals} />
       <Toaster />
-      <DecodeOverlay active={isDecoding} />
+      <DecodeOverlay active={isDecoding || isRecomputingStats} />
     </div>
   );
 }
