@@ -122,3 +122,17 @@ add_test(NAME fastrace_decode_signals_bounds
     -P ${PROJECT_SOURCE_DIR}/store/test/run_decode_signals_bounds.cmake
 )
 
+add_executable(fastrace_signal_stats_check test/signal_stats_bounds_check.cpp)
+target_link_libraries(fastrace_signal_stats_check PRIVATE duckdb::duckdb)
+fastrace_copy_duckdb_runtime(fastrace_signal_stats_check)
+
+add_test(NAME fastrace_signal_stats_bounds
+  COMMAND ${CMAKE_COMMAND}
+    -DFASTRACE_PARSE=$<TARGET_FILE:fastrace_parse>
+    -DSTATS_CHECK=$<TARGET_FILE:fastrace_signal_stats_check>
+    -DFIXTURE_BLF=${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.blf
+    -DFIXTURE_ARXML=${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.arxml
+    -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/signal_stats_bounds
+    -P ${PROJECT_SOURCE_DIR}/store/test/run_signal_stats_bounds.cmake
+)
+

@@ -322,6 +322,116 @@ bool writeSignalStats(fastrace::Db& db, const fastrace::SignalStatsTracker& trac
     return app.close();
 }
 
+// Recomputes signal_stats for every arxml_signal, bounded to [start_us, end_us]
+// (docs: Trim Window). Unlike decode-signals' per-requested-signal DELETE,
+// this clears the WHOLE table - every signal's aggregate changes on any
+// rewindow, not just a requested subset - then rewrites it via the same
+// writeSignalStats() helper Prepare uses, giving idempotent full-rewrite
+// semantics on repeated Apply calls.
+int runSignalStats(int argc, char** argv)
+{
+    if (argc < 5) {
+        printError("usage: fastrace_parse signal-stats <trace.blf> <start_us> <end_us>");
+        return 1;
+    }
+    const std::string blfPath = argv[2];
+    const int64_t startUs = std::strtoll(argv[3], nullptr, 10);
+    const int64_t endUs = std::strtoll(argv[4], nullptr, 10);
+
+    const std::filesystem::path outPath = std::filesystem::path(blfPath).replace_extension(".duckdb");
+    if (!std::filesystem::exists(outPath)) {
+        printError("store not found, run prepare first: " + outPath.string());
+        return 1;
+    }
+    if (!std::filesystem::exists(blfPath)) {
+        printError("BLF not found: " + blfPath);
+        return 1;
+    }
+
+    const auto wall0 = Clock::now();
+
+    fastrace::Db db;
+    if (!db.open(outPath.string())) {
+        printError("could not open store: " + outPath.string());
+        return 1;
+    }
+
+    std::string arxmlPath;
+    if (!queryMetaString(db.con(), "source_arxml", arxmlPath) || arxmlPath.empty()) {
+        printError("store has no ARXML loaded; re-run prepare with an ARXML file");
+        return 1;
+    }
+    std::string blfSizeMeta;
+    std::string blfMtimeMeta;
+    if (!queryMetaString(db.con(), "blf_size", blfSizeMeta) || !queryMetaString(db.con(), "blf_mtime", blfMtimeMeta)) {
+        printError("store is missing blf_size/blf_mtime meta; re-run prepare");
+        return 1;
+    }
+    std::error_code statEc;
+    const uint64_t curSize = std::filesystem::file_size(blfPath, statEc);
+    const int64_t curMtime
+        = static_cast<int64_t>(std::filesystem::last_write_time(blfPath, statEc).time_since_epoch().count());
+    if (std::to_string(curSize) != blfSizeMeta || std::to_string(curMtime) != blfMtimeMeta) {
+        printError("BLF changed since prepare; re-run prepare: " + blfPath);
+        return 1;
+    }
+
+    const fastrace::ArDatabase arDb = fastrace::ArxmlParser::parseFile(arxmlPath);
+    fastrace::SignalStatsTracker tracker(arDb);
+
+    if (!db.exec("DELETE FROM signal_stats")) {
+        printError("could not clear previous signal_stats before recompute");
+        return 1;
+    }
+
+    uint64_t finalContainers = 0;
+    uint64_t finalMessages = 0;
+    uint64_t finalBytesRead = 0;
+    uint64_t finalBytesTotal = 0;
+    bool failed = false;
+
+    fastrace::BlfIngestReader reader;
+    auto lastProgress = Clock::now();
+    uint64_t nextMsgId = 0;
+    constexpr uint64_t kProgressEveryMessages = 10000;
+    constexpr auto kProgressEveryMs = std::chrono::milliseconds(250);
+    const bool ok = reader.visit(blfPath, [&](const fastrace::TraceMessage& msgIn) {
+        if (failed) {
+            return;
+        }
+        fastrace::TraceMessage msg = msgIn;
+        ++nextMsgId;
+        if (static_cast<int64_t>(msg.timestampUs) < startUs || static_cast<int64_t>(msg.timestampUs) > endUs) {
+            return;
+        }
+        tracker.observe(msg);
+
+        const auto now = Clock::now();
+        if (nextMsgId % kProgressEveryMessages == 0 || now - lastProgress >= kProgressEveryMs) {
+            printProgress(reader.stats().containers, nextMsgId, reader.stats().bytesRead, reader.stats().fileSizeBytes,
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - wall0).count());
+            lastProgress = now;
+        }
+    });
+
+    failed = failed || !ok || !writeSignalStats(db, tracker);
+    if (!failed) {
+        finalContainers = reader.stats().containers;
+        finalMessages = reader.stats().messages;
+        finalBytesRead = reader.stats().bytesRead;
+        finalBytesTotal = reader.stats().fileSizeBytes;
+    }
+
+    const int64_t elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - wall0).count();
+    if (failed) {
+        printError("signal-stats failed: " + blfPath);
+        return 1;
+    }
+    printDone(finalContainers, finalMessages, static_cast<uint64_t>(tracker.slots().size()), finalBytesRead,
+        finalBytesTotal, elapsedMs);
+    return 0;
+}
+
 int runPrepare(int argc, char** argv)
 {
     if (argc < 3) {
@@ -475,6 +585,9 @@ int main(int argc, char** argv)
     }
     if (std::strcmp(argv[1], "decode-signals") == 0) {
         return runDecodeSignals(argc, argv);
+    }
+    if (std::strcmp(argv[1], "signal-stats") == 0) {
+        return runSignalStats(argc, argv);
     }
     std::fprintf(stderr, "unknown subcommand: %s\n", argv[1]);
     return 1;
