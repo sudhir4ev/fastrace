@@ -165,6 +165,54 @@ async fn decode_signals(
     joined
 }
 
+// Builds the apply-trim sidecar argv: the window bound, then every active
+// signal id. An empty id list is a stats-only recompute (still valid).
+fn build_apply_trim_args(
+    blf_path: String,
+    start_us: i64,
+    end_us: i64,
+    active_signal_ids: &[i64],
+) -> Vec<String> {
+    let mut args = vec![
+        "apply-trim".to_string(),
+        blf_path,
+        start_us.to_string(),
+        end_us.to_string(),
+    ];
+    args.extend(active_signal_ids.iter().map(|id| id.to_string()));
+    args
+}
+
+// One combined trim-Apply pass: window-scoped signal_stats recompute for every
+// signal plus incremental decode of the active signals' uncovered delta. Holds
+// the same PrepareGuard write lock as decode/prepare, so it can't overlap them.
+#[tauri::command]
+async fn apply_trim(
+    app: tauri::AppHandle,
+    blf_path: String,
+    start_us: i64,
+    end_us: i64,
+    active_signal_ids: Vec<i64>,
+) -> Result<serde_json::Value, String> {
+    let bin = begin_prepare(app.state::<PrepareGuard>().inner(), fastrace_parse_bin())?;
+    let app_for_task = app.clone();
+    let joined: Result<serde_json::Value, String> =
+        tauri::async_runtime::spawn_blocking(move || {
+            let args = build_apply_trim_args(blf_path, start_us, end_us, &active_signal_ids);
+            let mut ticks = Vec::new();
+            sidecar::spawn(&bin, &args, |progress| {
+                let _ = app_for_task.emit("apply-trim-progress", progress_to_json(&progress));
+                ticks.push(progress);
+            })
+            .map(|_| fold_final_done(&ticks))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    app.state::<PrepareGuard>().release();
+    joined
+}
+
 #[tauri::command]
 async fn recompute_signal_stats(
     app: tauri::AppHandle,
@@ -285,7 +333,12 @@ fn list_messages(
 }
 
 #[tauri::command]
-fn get_message_detail(blf_path: String, msg_id: i64, start_us: i64, end_us: i64) -> Result<query::MessageRow, String> {
+fn get_message_detail(
+    blf_path: String,
+    msg_id: i64,
+    start_us: i64,
+    end_us: i64,
+) -> Result<query::MessageRow, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
     query::get_message_detail(&conn, msg_id, start_us, end_us)
@@ -630,6 +683,7 @@ fn main() {
             prepare_trace,
             decode_signals,
             recompute_signal_stats,
+            apply_trim,
             get_trace_summary,
             list_message_groups,
             list_messages,
@@ -678,13 +732,19 @@ mod tests {
             "select count(*) from protocol_pdu p join messages m on m.msg_id = p.msg_id where m.timestamp_us between 1000 and 1000",
         )
         .unwrap();
-        assert_eq!(bounded, 1, "only msg_id=1's protocol_pdu row is inside [1000,1000]");
+        assert_eq!(
+            bounded, 1,
+            "only msg_id=1's protocol_pdu row is inside [1000,1000]"
+        );
         let unbounded = query::count(
             &conn,
             "select count(*) from protocol_pdu p join messages m on m.msg_id = p.msg_id where m.timestamp_us between 0 and 10000",
         )
         .unwrap();
-        assert_eq!(unbounded, 2, "both rows are inside the full span - the join doesn't drop/double-count rows");
+        assert_eq!(
+            unbounded, 2,
+            "both rows are inside the full span - the join doesn't drop/double-count rows"
+        );
     }
 
     #[test]
@@ -699,6 +759,18 @@ mod tests {
             end_us.to_string(),
         ];
         assert_eq!(args, vec!["signal-stats", "trace.blf", "100", "200"]);
+    }
+
+    #[test]
+    fn apply_trim_args_shape_appends_active_ids() {
+        let args = build_apply_trim_args("trace.blf".to_string(), 100, 200, &[7, 9]);
+        assert_eq!(
+            args,
+            vec!["apply-trim", "trace.blf", "100", "200", "7", "9"]
+        );
+        // No active signals: a stats-only recompute still passes start/end.
+        let none = build_apply_trim_args("t.blf".to_string(), 0, 5, &[]);
+        assert_eq!(none, vec!["apply-trim", "t.blf", "0", "5"]);
     }
 
     #[test]
@@ -980,7 +1052,7 @@ mod tests {
         let conn = trace_store::Connection::open(&duckdb_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE meta (key VARCHAR, value VARCHAR);
-             INSERT INTO meta VALUES ('schema_version', '3');",
+             INSERT INTO meta VALUES ('schema_version', '4');",
         )
         .unwrap();
         drop(conn);
