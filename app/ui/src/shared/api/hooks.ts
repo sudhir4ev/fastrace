@@ -11,10 +11,10 @@ export function useTraceSummary(blfPath: string) {
   });
 }
 
-export function useMessageGroups(blfPath: string) {
+export function useMessageGroups(blfPath: string, startUs: number, endUs: number) {
   return useQuery({
-    queryKey: ["message-groups", blfPath],
-    queryFn: () => getTraceDataSource().listMessageGroups(blfPath),
+    queryKey: ["message-groups", blfPath, startUs, endUs],
+    queryFn: () => getTraceDataSource().listMessageGroups(blfPath, startUs, endUs),
   });
 }
 
@@ -25,11 +25,11 @@ export function useEcus(blfPath: string) {
   });
 }
 
-export function useMessages(blfPath: string, groupKey: string | null) {
+export function useMessages(blfPath: string, groupKey: string | null, startUs: number, endUs: number) {
   return useInfiniteQuery({
-    queryKey: ["messages", blfPath, groupKey],
+    queryKey: ["messages", blfPath, groupKey, startUs, endUs],
     queryFn: ({ pageParam }) =>
-      getTraceDataSource().listMessages(blfPath, groupKey as string, pageParam, MESSAGE_PAGE_SIZE),
+      getTraceDataSource().listMessages(blfPath, groupKey as string, pageParam, MESSAGE_PAGE_SIZE, startUs, endUs),
     initialPageParam: null as number | null,
     // React Query's infinite-query pagination only stops fetching when this
     // returns `undefined` - a `null` passed straight through (the API
@@ -57,10 +57,16 @@ export function useSignalCatalog(blfPath: string) {
   });
 }
 
-export function useSignalSamples(blfPath: string, signalId: number | null, limit = 200) {
+export function useSignalSamples(
+  blfPath: string,
+  signalId: number | null,
+  startUs: number,
+  endUs: number,
+  limit = 200
+) {
   return useQuery({
-    queryKey: ["signal-samples", blfPath, signalId, limit],
-    queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId as number, limit),
+    queryKey: ["signal-samples", blfPath, signalId, startUs, endUs, limit],
+    queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId as number, limit, startUs, endUs),
     enabled: signalId !== null,
   });
 }
@@ -76,11 +82,17 @@ export const TIMELINE_SAMPLE_LIMIT = 200_000;
 // changes as the user adds/removes pills - a variable number of hook calls
 // would break the rules of hooks, but useQueries itself is a single hook
 // call that internally manages a variable-length query array.
-export function useSignalSamplesList(blfPath: string, signalIds: number[], limit = TIMELINE_SAMPLE_LIMIT) {
+export function useSignalSamplesList(
+  blfPath: string,
+  signalIds: number[],
+  startUs: number,
+  endUs: number,
+  limit = TIMELINE_SAMPLE_LIMIT
+) {
   return useQueries({
     queries: signalIds.map((signalId) => ({
-      queryKey: ["signal-samples", blfPath, signalId, limit],
-      queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId, limit),
+      queryKey: ["signal-samples", blfPath, signalId, startUs, endUs, limit],
+      queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId, limit, startUs, endUs),
     })),
   });
 }
@@ -90,9 +102,9 @@ export function useSignalSamplesList(blfPath: string, signalIds: number[], limit
 // shared-constant mechanism across the Tauri IPC boundary.
 export const DETECTOR_QUERY_MATCH_LIMIT = 200_000;
 
-export function useRunDetectorQuery(blfPath: string) {
+export function useRunDetectorQuery(blfPath: string, startUs: number, endUs: number) {
   return useMutation({
-    mutationFn: (sql: string) => getTraceDataSource().runDetectorQuery(blfPath, sql),
+    mutationFn: (sql: string) => getTraceDataSource().runDetectorQuery(blfPath, sql, startUs, endUs),
   });
 }
 
@@ -121,8 +133,9 @@ export function useDecodeSignals(blfPath: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationKey: decodeSignalsMutationKey(blfPath),
-    mutationFn: (signalIds: number[]) => getTraceDataSource().decodeSignals(blfPath, signalIds),
-    onSuccess: (result, signalIds) => {
+    mutationFn: ({ signalIds, startUs, endUs }: { signalIds: number[]; startUs: number; endUs: number }) =>
+      getTraceDataSource().decodeSignals(blfPath, signalIds, startUs, endUs),
+    onSuccess: (result, { signalIds }) => {
       queryClient.invalidateQueries({ queryKey: SIGNAL_CATALOG_KEY(blfPath) });
       const detail = `${signalIds.length} signal${signalIds.length === 1 ? "" : "s"}`;
       getTraceDataSource()
