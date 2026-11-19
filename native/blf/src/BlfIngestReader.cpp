@@ -442,6 +442,7 @@ bool BlfIngestReader::visit(const std::string& blfPath, MessageHandler onMessage
     }
 
     Cursor cursor = mf.cursor();
+    m_stats.fileSizeBytes = mf.size;
     auto hdr = readFileHeader(cursor);
     if (!hdr) {
         spdlog::error("BlfIngestReader: invalid LOGG header");
@@ -498,6 +499,7 @@ bool BlfIngestReader::visit(const std::string& blfPath, MessageHandler onMessage
         }
 
         ++m_stats.containers;
+        m_stats.bytesRead = cursor.tell();
 
         std::vector<TraceMessage> containerMsgs;
         std::vector<char> headFrag;
