@@ -4,13 +4,23 @@ import { useToastStore } from "@/app/toast-store";
 import { useWorkspaceStore, type TrimRange } from "@/app/store";
 import {
   resolveMessageRange,
-  useContainerIndex,
   useMessageCount,
   useMessageCountInRange,
+  useSignalCoverage,
   useTraceTimeRange,
 } from "@/shared/api/hooks";
-import type { ContainerIndexEntry } from "@/shared/api/trace-source";
 import { Button } from "@/shared/ui/button";
+import {
+  TRIM_BINS,
+  binBandsFromCoverageUs,
+  binToPos,
+  binToUs,
+  buildTrimRailOption,
+  clamp,
+  coverageSpansForActive,
+  posToBin,
+  usToBin,
+} from "./trim-rail";
 
 interface TrimControlProps {
   blfPath: string;
@@ -20,8 +30,6 @@ interface TrimControlProps {
 type Strategy = "time" | "message";
 
 const COUNT_THROTTLE_MS = 120;
-const TRIM_BINS = 200;
-const BAND_COLOR = "rgba(37, 99, 235, 0.22)";
 
 /** Absolute wall-clock time-of-day from timestamp_us, UTC (W1). */
 function formatUtcHmsMmm(us: number): string {
@@ -34,99 +42,11 @@ function formatUtcHmsMmm(us: number): string {
   return `${hh}:${mm}:${ss}.${mmm}`;
 }
 
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, n));
-}
-
-function binToUs(bin: number, minUs: number, maxUs: number): number {
-  if (maxUs <= minUs) return minUs;
-  return Math.round(minUs + (clamp(bin, 0, TRIM_BINS) / TRIM_BINS) * (maxUs - minUs));
-}
-
-function usToBin(us: number, minUs: number, maxUs: number): number {
-  if (maxUs <= minUs) return 0;
-  return clamp(Math.round(((us - minUs) / (maxUs - minUs)) * TRIM_BINS), 0, TRIM_BINS);
-}
-
-function binToPos(bin: number, messageCount: number): number {
-  if (messageCount <= 1) return 1;
-  return clamp(
-    Math.round(1 + (clamp(bin, 0, TRIM_BINS) / TRIM_BINS) * (messageCount - 1)),
-    1,
-    messageCount
-  );
-}
-
-function posToBin(pos: number, messageCount: number): number {
-  if (messageCount <= 1) return 0;
-  return clamp(Math.round(((pos - 1) / (messageCount - 1)) * TRIM_BINS), 0, TRIM_BINS);
-}
-
-/** Domain spans (time us or message ordinals) for decoded containers. */
-function decodedDomainSpans(
-  containers: ContainerIndexEntry[],
-  strategy: Strategy,
-  messageCount: number
-): Array<[number, number]> {
-  if (containers.length === 0) return [];
-  if (strategy === "time") {
-    return containers.filter((c) => c.decoded).map((c) => [c.firstTsUs, c.lastTsUs]);
-  }
-  const byOrd = [...containers].sort((a, b) => a.containerOrd - b.containerOrd);
-  return byOrd
-    .filter((c) => c.decoded)
-    .map((c) => {
-      const idx = byOrd.findIndex((x) => x.containerOrd === c.containerOrd);
-      const startPos = c.firstMsgId + 1;
-      const endPos = idx + 1 < byOrd.length ? byOrd[idx + 1].firstMsgId : messageCount;
-      return [startPos, Math.max(startPos, endPos)] as [number, number];
-    });
-}
-
-/** OR domain spans onto TRIM_BINS bins, then merge adjacent occupied bins. */
-function binBandsFromSpans(
-  spans: Array<[number, number]>,
-  strategy: Strategy,
-  minUs: number,
-  maxUs: number,
-  messageCount: number
-): Array<[number, number]> {
-  if (spans.length === 0) return [];
-  const occupied = new Array<boolean>(TRIM_BINS).fill(false);
-  for (let i = 0; i < TRIM_BINS; i++) {
-    const lo =
-      strategy === "time"
-        ? binToUs(i, minUs, maxUs)
-        : binToPos(i, messageCount);
-    const hi =
-      strategy === "time"
-        ? binToUs(i + 1, minUs, maxUs)
-        : binToPos(i + 1, messageCount);
-    for (const [a, b] of spans) {
-      if (a <= hi && b >= lo) {
-        occupied[i] = true;
-        break;
-      }
-    }
-  }
-  const merged: Array<[number, number]> = [];
-  let runStart: number | null = null;
-  for (let i = 0; i < TRIM_BINS; i++) {
-    if (occupied[i]) {
-      if (runStart == null) runStart = i;
-    } else if (runStart != null) {
-      merged.push([runStart, i]);
-      runStart = null;
-    }
-  }
-  if (runStart != null) merged.push([runStart, TRIM_BINS]);
-  return merged;
-}
-
 export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
   const timeRange = useTraceTimeRange(blfPath);
   const messageCount = useMessageCount(blfPath);
-  const containers = useContainerIndex(blfPath);
+  const coverage = useSignalCoverage(blfPath);
+  const activeSignalIds = useWorkspaceStore((s) => s.activeSignalIds);
   const pending = useWorkspaceStore((s) => s.pendingTrimRange);
   const applied = useWorkspaceStore((s) => s.appliedTrimRange);
   const setPendingTrimRange = useWorkspaceStore((s) => s.setPendingTrimRange);
@@ -179,7 +99,6 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
   );
 
   const countReady = messageCount.data != null && messageCount.data >= 1;
-  const containerRows = containers.data ?? [];
   const minUs = timeRange.data?.minTimestampUs ?? 0;
   const maxUs = timeRange.data?.maxTimestampUs ?? 1;
   const nMsgs = messageCount.data ?? 1;
@@ -195,9 +114,9 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
       : posToBin(positionRange?.endPos ?? nMsgs, nMsgs);
 
   const bands = useMemo(() => {
-    const spans = decodedDomainSpans(containerRows, strategy, nMsgs);
-    return binBandsFromSpans(spans, strategy, minUs, maxUs, nMsgs);
-  }, [containerRows, strategy, nMsgs, minUs, maxUs]);
+    const spans = coverageSpansForActive(coverage.data ?? [], activeSignalIds);
+    return binBandsFromCoverageUs(spans, minUs, maxUs);
+  }, [coverage.data, activeSignalIds, minUs, maxUs]);
 
   const railReady = Boolean(timeRange.data && pending);
 
@@ -239,51 +158,7 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !timeRange.data) return;
-
-    const markAreaData = bands.map(([a, b]) => [{ xAxis: a }, { xAxis: b }]);
-
-    chart.setOption({
-      animation: false,
-      grid: { left: 4, right: 4, top: 2, bottom: 22, height: 10 },
-      xAxis: {
-        type: "value",
-        min: 0,
-        max: TRIM_BINS,
-        show: false,
-      },
-      yAxis: { type: "value", min: 0, max: 1, show: false },
-      dataZoom: [
-        {
-          type: "slider",
-          xAxisIndex: 0,
-          height: 18,
-          bottom: 0,
-          filterMode: "none",
-          brushSelect: false,
-          showDetail: false,
-          fillerColor: "rgba(37, 99, 235, 0.35)",
-          borderColor: "rgba(37, 99, 235, 0.5)",
-          handleSize: "110%",
-        },
-      ],
-      series: [
-        {
-          type: "line",
-          data: [
-            [0, 0.5],
-            [TRIM_BINS, 0.5],
-          ],
-          symbol: "none",
-          lineStyle: { opacity: 0 },
-          silent: true,
-          markArea: {
-            silent: true,
-            itemStyle: { color: BAND_COLOR },
-            data: markAreaData,
-          },
-        },
-      ],
-    });
+    chart.setOption(buildTrimRailOption(bands));
     chart.resize();
   }, [bands, timeRange.data]);
 
@@ -415,6 +290,25 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
 
   return (
     <div className="flex w-full min-w-0 items-center gap-3">
+      <div className="flex shrink-0 gap-0.5 rounded-md border border-border p-0.5">
+        <Button
+          size="sm"
+          variant={strategy === "time" ? "secondary" : "ghost"}
+          className="h-6 px-2 text-[10px]"
+          onClick={() => switchStrategy("time")}
+        >
+          Time
+        </Button>
+        <Button
+          size="sm"
+          variant={strategy === "message" ? "secondary" : "ghost"}
+          className="h-6 px-2 text-[10px]"
+          disabled={!countReady}
+          onClick={() => switchStrategy("message")}
+        >
+          Message
+        </Button>
+      </div>
       <div className="flex shrink-0 flex-col items-start gap-0.5 font-mono text-[10px] leading-tight text-muted-foreground">
         <span>
           {formatUtcHmsMmm(readoutTs.start)} → {formatUtcHmsMmm(readoutTs.end)}
@@ -428,25 +322,6 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
       </div>
       <div ref={railRef} className="h-9 min-w-0 flex-1" />
       <div className="flex shrink-0 items-center gap-1.5">
-        <div className="flex gap-0.5 rounded-md border border-border p-0.5">
-          <Button
-            size="sm"
-            variant={strategy === "time" ? "secondary" : "ghost"}
-            className="h-6 px-2 text-[10px]"
-            onClick={() => switchStrategy("time")}
-          >
-            Time
-          </Button>
-          <Button
-            size="sm"
-            variant={strategy === "message" ? "secondary" : "ghost"}
-            className="h-6 px-2 text-[10px]"
-            disabled={!countReady}
-            onClick={() => switchStrategy("message")}
-          >
-            Message
-          </Button>
-        </div>
         <Button
           size="sm"
           variant={hasPendingChange ? "default" : "secondary"}

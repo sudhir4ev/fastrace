@@ -47,7 +47,8 @@ pub struct ContainerIndexEntry {
     pub decoded: bool,
 }
 
-/// Coarse LOG_CONTAINER seek map + sticky `decoded` flag for the trim-rail band.
+/// Coarse LOG_CONTAINER seek map + sticky `decoded` flag (containers that
+/// overlapped a decode fringe). Trim-rail blue bands prefer [`list_signal_coverage`].
 pub fn list_container_index(
     conn: &trace_store::Connection,
 ) -> Result<Vec<ContainerIndexEntry>, String> {
@@ -66,6 +67,34 @@ pub fn list_container_index(
                 last_ts_us: row.get(3)?,
                 first_msg_id: row.get(4)?,
                 decoded: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalCoverageEntry {
+    pub signal_id: i64,
+    pub start_us: i64,
+    pub end_us: i64,
+}
+
+/// Per-signal cached sample extents - source of truth for the trim-rail cache band.
+pub fn list_signal_coverage(
+    conn: &trace_store::Connection,
+) -> Result<Vec<SignalCoverageEntry>, String> {
+    let mut stmt = conn
+        .prepare("select signal_id, start_us, end_us from signal_coverage order by signal_id")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SignalCoverageEntry {
+                signal_id: row.get(0)?,
+                start_us: row.get(1)?,
+                end_us: row.get(2)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -631,6 +660,21 @@ mod tests {
         assert_eq!(rows[1].container_ord, 1);
         assert!(rows[1].decoded);
         assert_eq!(rows[1].first_msg_id, 2);
+    }
+
+    #[test]
+    fn list_signal_coverage_returns_extents() {
+        let conn = setup();
+        conn.execute_batch(
+            "CREATE TABLE signal_coverage (signal_id BIGINT PRIMARY KEY, start_us BIGINT, end_us BIGINT);
+             INSERT INTO signal_coverage VALUES (7, 1000, 2000);
+             INSERT INTO signal_coverage VALUES (3, 3000, 4000);",
+        )
+        .unwrap();
+        let rows = list_signal_coverage(&conn).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].signal_id, 3);
+        assert_eq!(rows[1].end_us, 2000);
     }
 
     #[test]

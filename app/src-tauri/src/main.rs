@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use tauri::menu::{Menu, MenuItemBuilder, MenuItemKind, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{Emitter, Manager};
 
 // Resolves to a locally-built fastrace_parse for now. Real Tauri
@@ -296,6 +297,13 @@ fn list_container_index(blf_path: String) -> Result<Vec<query::ContainerIndexEnt
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
     query::list_container_index(&conn)
+}
+
+#[tauri::command]
+fn list_signal_coverage(blf_path: String) -> Result<Vec<query::SignalCoverageEntry>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::list_signal_coverage(&conn)
 }
 
 #[tauri::command]
@@ -637,6 +645,38 @@ fn main() {
     tauri::Builder::default()
         .manage(PrepareGuard(Mutex::new(false)))
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // Keep Tauri's default menubar (Quit lives in the app menu on macOS)
+            // and put Close Project under a separate File submenu.
+            let menu = Menu::default(app.handle())?;
+            let close_project =
+                MenuItemBuilder::with_id("close-project", "Close Project").build(app)?;
+            let mut file_found = false;
+            for item in menu.items()? {
+                if let MenuItemKind::Submenu(submenu) = item {
+                    if submenu.text()? == "File" {
+                        submenu.prepend(&PredefinedMenuItem::separator(app)?)?;
+                        submenu.prepend(&close_project)?;
+                        file_found = true;
+                        break;
+                    }
+                }
+            }
+            if !file_found {
+                // Linux default menu has no File submenu.
+                let file_menu = SubmenuBuilder::new(app, "File")
+                    .item(&close_project)
+                    .build()?;
+                menu.prepend(&file_menu)?;
+            }
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, event| {
+                if event.id() == "close-project" {
+                    let _ = app.emit("close-project", ());
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             prepare_trace,
             apply_trim,
@@ -651,6 +691,7 @@ fn main() {
             count_messages,
             count_messages_in_range,
             list_container_index,
+            list_signal_coverage,
             resolve_message_position,
             resolve_message_range,
             run_detector_query,

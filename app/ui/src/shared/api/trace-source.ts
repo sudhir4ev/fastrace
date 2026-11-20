@@ -97,6 +97,12 @@ export interface ContainerIndexEntry {
   decoded: boolean;
 }
 
+export interface SignalCoverageEntry {
+  signalId: number;
+  startUs: number;
+  endUs: number;
+}
+
 export interface TraceDataSource {
   getTraceSummary(blfPath: string, startUs: number, endUs: number): Promise<TraceSummary>;
   listMessageGroups(blfPath: string, startUs: number, endUs: number): Promise<MessageGroup[]>;
@@ -112,6 +118,7 @@ export interface TraceDataSource {
   countMessages(blfPath: string): Promise<number>;
   countMessagesInRange(blfPath: string, startUs: number, endUs: number): Promise<number>;
   listContainerIndex(blfPath: string): Promise<ContainerIndexEntry[]>;
+  listSignalCoverage(blfPath: string): Promise<SignalCoverageEntry[]>;
   resolveMessagePosition(blfPath: string, position: number): Promise<number>;
   /** Inclusive 1-based ordinal slice → [min_ts, max_ts] over that msg_id range. */
   resolveMessageRange(blfPath: string, startPos: number, endPos: number): Promise<[number, number]>;
@@ -172,6 +179,10 @@ export class TauriTraceDataSource implements TraceDataSource {
 
   listContainerIndex(blfPath: string): Promise<ContainerIndexEntry[]> {
     return invoke<ContainerIndexEntry[]>("list_container_index", { blfPath });
+  }
+
+  listSignalCoverage(blfPath: string): Promise<SignalCoverageEntry[]> {
+    return invoke<SignalCoverageEntry[]>("list_signal_coverage", { blfPath });
   }
 
   resolveMessagePosition(blfPath: string, position: number): Promise<number> {

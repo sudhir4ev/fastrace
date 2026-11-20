@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -6,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "ArxmlParser.h"
@@ -241,31 +243,6 @@ int runApplyTrim(int argc, char** argv)
         return 1;
     }
 
-    // Resolve the byte range to inflate from container_index. Lower bound: the
-    // earliest container whose span reaches start_us (last_ts_us >= start_us) -
-    // NOT "max byte_offset where first_ts_us <= start_us", which breaks when a
-    // later container also satisfies first_ts_us <= start_us (e.g. trailing
-    // timestamp-0 messages at EOF would hijack the seek to the end of the file).
-    // Upper bound: the first container starting after end_us.
-    uint64_t startOffset = 0;
-    uint64_t endOffset = UINT64_MAX;
-    int64_t scratch = 0;
-    if (queryOptInt64(db.con(),
-            "SELECT min(byte_offset) FROM container_index WHERE last_ts_us >= " + std::to_string(startUs), scratch)) {
-        startOffset = static_cast<uint64_t>(scratch);
-    }
-    if (queryOptInt64(db.con(),
-            "SELECT min(byte_offset) FROM container_index WHERE first_ts_us > " + std::to_string(endUs), scratch)) {
-        endOffset = static_cast<uint64_t>(scratch);
-    }
-    // Seed the msg_id counter so appended signals rows stay aligned with Prepare.
-    uint64_t nextMsgId = 0;
-    if (startOffset > 0
-        && queryOptInt64(db.con(),
-            "SELECT first_msg_id FROM container_index WHERE byte_offset = " + std::to_string(startOffset), scratch)) {
-        nextMsgId = static_cast<uint64_t>(scratch);
-    }
-
     // Per-active-signal coverage decisions, made before the pass.
     struct Cov {
         bool has = false;
@@ -310,23 +287,84 @@ int runApplyTrim(int argc, char** argv)
         }
     }
 
-    // If every active signal's coverage already fully contains [startUs,endUs]
-    // (shrink, re-Apply, or empty active set), there is nothing to append - skip
-    // the BLF walk entirely. signal_stats is not touched here (Prepare only).
-    bool needDecode = false;
+    // Union of uncovered inclusive fringes inside [startUs, endUs]. Expand only
+    // walks these - not the already-covered middle (docs/ingestion-pipeline.html).
+    std::vector<std::pair<int64_t, int64_t>> rawFringes;
     for (int64_t id : activeIds) {
-        const auto it = cov.find(id);
-        const bool fullyCovered = it != cov.end() && it->second.has && it->second.start <= startUs
-            && it->second.end >= endUs;
-        if (!fullyCovered) {
-            needDecode = true;
-            break;
+        const Cov& c = cov[id];
+        if (!c.has) {
+            rawFringes.emplace_back(startUs, endUs);
+            continue;
+        }
+        if (startUs < c.start) {
+            rawFringes.emplace_back(startUs, c.start - 1);
+        }
+        if (endUs > c.end) {
+            rawFringes.emplace_back(c.end + 1, endUs);
         }
     }
-    if (!needDecode) {
+    std::sort(rawFringes.begin(), rawFringes.end());
+    std::vector<std::pair<int64_t, int64_t>> fringes;
+    for (const auto& f : rawFringes) {
+        if (f.first > f.second) {
+            continue;
+        }
+        if (fringes.empty() || f.first > fringes.back().second + 1) {
+            fringes.push_back(f);
+        } else if (f.second > fringes.back().second) {
+            fringes.back().second = f.second;
+        }
+    }
+
+    // Shrink / re-Apply / empty active / already covered: no BLF read.
+    if (fringes.empty()) {
         const int64_t elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - wall0).count();
         printDone(0, 0, 0, 0, 0, elapsedMs);
         return 0;
+    }
+
+    // Resolve container_index seek bounds for one inclusive time fringe.
+    // Lower bound: earliest container whose span reaches fringeLo (last_ts_us >=
+    // fringeLo) - NOT "max byte_offset where first_ts_us <= fringeLo" (trailing
+    // timestamp-0 containers would hijack the seek to EOF).
+    auto resolveOffsets = [&](int64_t fringeLo, int64_t fringeHi, uint64_t& startOffset, uint64_t& endOffset,
+                              uint64_t& nextMsgId) {
+        startOffset = 0;
+        endOffset = UINT64_MAX;
+        nextMsgId = 0;
+        int64_t scratch = 0;
+        if (queryOptInt64(db.con(),
+                "SELECT min(byte_offset) FROM container_index WHERE last_ts_us >= " + std::to_string(fringeLo),
+                scratch)) {
+            startOffset = static_cast<uint64_t>(scratch);
+        }
+        if (queryOptInt64(db.con(),
+                "SELECT min(byte_offset) FROM container_index WHERE first_ts_us > " + std::to_string(fringeHi),
+                scratch)) {
+            endOffset = static_cast<uint64_t>(scratch);
+        }
+        if (startOffset > 0
+            && queryOptInt64(db.con(),
+                "SELECT first_msg_id FROM container_index WHERE byte_offset = " + std::to_string(startOffset),
+                scratch)) {
+            nextMsgId = static_cast<uint64_t>(scratch);
+        }
+    };
+
+    uint64_t bytesTotal = 0;
+    for (const auto& f : fringes) {
+        uint64_t so = 0;
+        uint64_t eo = UINT64_MAX;
+        uint64_t unused = 0;
+        resolveOffsets(f.first, f.second, so, eo, unused);
+        if (eo == UINT64_MAX) {
+            bytesTotal += curSize > so ? curSize - so : 0;
+        } else if (eo > so) {
+            bytesTotal += eo - so;
+        }
+    }
+    if (bytesTotal == 0) {
+        bytesTotal = 1; // avoid div-by-zero in the UI progress bar
     }
 
     const fastrace::ArDatabase arDb = fastrace::ArxmlParser::parseFile(arxmlPath);
@@ -334,65 +372,97 @@ int runApplyTrim(int argc, char** argv)
     fastrace::Appender sigApp(db.con(), "signals");
     bool failed = !sigApp.valid();
     uint64_t decodedCount = 0;
+    uint64_t scannedMessages = 0;
+    uint64_t totalContainers = 0;
+    uint64_t cumulativeBytesRead = 0;
     auto lastProgress = Clock::now();
     constexpr uint64_t kProgressEveryMessages = 10000;
     constexpr auto kProgressEveryMs = std::chrono::milliseconds(250);
 
     fastrace::BlfIngestReader reader;
-    const bool ok = reader.visitRange(blfPath, startOffset, endOffset, [&](const fastrace::TraceMessage& msgIn) {
+    for (const auto& fringe : fringes) {
         if (failed) {
-            return;
+            break;
         }
-        fastrace::TraceMessage msg = msgIn;
-        const uint64_t msgId = nextMsgId++;
-        const int64_t ts = static_cast<int64_t>(msg.timestampUs);
-        if (ts < startUs || ts > endUs) {
-            return;
-        }
-        if (fastrace::isEthernet(msg.objectType) && !msg.data.empty()) {
-            fastrace::indexEthernetPdus(msg);
-        }
+        const int64_t fringeLo = fringe.first;
+        const int64_t fringeHi = fringe.second;
+        uint64_t startOffset = 0;
+        uint64_t endOffset = UINT64_MAX;
+        uint64_t nextMsgId = 0;
+        resolveOffsets(fringeLo, fringeHi, startOffset, endOffset, nextMsgId);
+        const uint64_t bytesBeforeFringe = cumulativeBytesRead;
 
-        for (const auto& ds : fastrace::decodeAllSignals(arDb, msg)) {
-            const std::string key = (ds.parentPduId != 0)
-                ? ("pdu:" + std::to_string(ds.parentPduId) + ":" + ds.name)
-                : ("can:" + std::to_string(ds.parentCanId) + ":" + ds.name);
-            auto it = lookup.find(key);
-            if (it == lookup.end()) {
-                continue;
-            }
-            auto cit = cov.find(it->second.signalId);
-            if (cit != cov.end() && cit->second.has && ts >= cit->second.start && ts <= cit->second.end) {
-                continue; // already covered - skip the re-decode
-            }
-            const double physValue = static_cast<double>(ds.rawValue) * it->second.factor + it->second.offset;
-            sigApp.i64(it->second.signalId);
-            sigApp.i64(static_cast<int64_t>(msgId));
-            sigApp.i64(ts);
-            sigApp.u64(ds.rawValue);
-            sigApp.f64(physValue);
-            if (!sigApp.endRow()) {
-                failed = true;
+        const bool ok = reader.visitRange(blfPath, startOffset, endOffset, [&](const fastrace::TraceMessage& msgIn) {
+            if (failed) {
                 return;
             }
-            ++decodedCount;
+            ++scannedMessages;
+            fastrace::TraceMessage msg = msgIn;
+            const uint64_t msgId = nextMsgId++;
+            const int64_t ts = static_cast<int64_t>(msg.timestampUs);
+            if (ts < fringeLo || ts > fringeHi) {
+                return;
+            }
+            if (fastrace::isEthernet(msg.objectType) && !msg.data.empty()) {
+                fastrace::indexEthernetPdus(msg);
+            }
+
+            for (const auto& ds : fastrace::decodeAllSignals(arDb, msg)) {
+                const std::string key = (ds.parentPduId != 0)
+                    ? ("pdu:" + std::to_string(ds.parentPduId) + ":" + ds.name)
+                    : ("can:" + std::to_string(ds.parentCanId) + ":" + ds.name);
+                auto it = lookup.find(key);
+                if (it == lookup.end()) {
+                    continue;
+                }
+                auto cit = cov.find(it->second.signalId);
+                if (cit != cov.end() && cit->second.has && ts >= cit->second.start && ts <= cit->second.end) {
+                    continue; // already covered - skip the re-decode
+                }
+                const double physValue = static_cast<double>(ds.rawValue) * it->second.factor + it->second.offset;
+                sigApp.i64(it->second.signalId);
+                sigApp.i64(static_cast<int64_t>(msgId));
+                sigApp.i64(ts);
+                sigApp.u64(ds.rawValue);
+                sigApp.f64(physValue);
+                if (!sigApp.endRow()) {
+                    failed = true;
+                    return;
+                }
+                ++decodedCount;
+            }
+
+            const auto now = Clock::now();
+            if (scannedMessages % kProgressEveryMessages == 0 || now - lastProgress >= kProgressEveryMs) {
+                const uint64_t inFringe
+                    = reader.stats().bytesRead > startOffset ? reader.stats().bytesRead - startOffset : 0;
+                printProgress(totalContainers + reader.stats().containers, scannedMessages, bytesBeforeFringe + inFringe,
+                    bytesTotal, std::chrono::duration_cast<std::chrono::milliseconds>(now - wall0).count());
+                lastProgress = now;
+            }
+        });
+
+        failed = failed || !ok;
+        totalContainers += reader.stats().containers;
+        if (reader.stats().bytesRead > startOffset) {
+            cumulativeBytesRead += reader.stats().bytesRead - startOffset;
+        } else if (endOffset != UINT64_MAX && endOffset > startOffset) {
+            cumulativeBytesRead += endOffset - startOffset;
         }
 
-        const auto now = Clock::now();
-        if (nextMsgId % kProgressEveryMessages == 0 || now - lastProgress >= kProgressEveryMs) {
-            printProgress(reader.stats().containers, nextMsgId, reader.stats().bytesRead, reader.stats().fileSizeBytes,
-                std::chrono::duration_cast<std::chrono::milliseconds>(now - wall0).count());
-            lastProgress = now;
+        // Mark containers whose time span overlaps this fringe (not the wider
+        // byte-seek superset - that painted almost the whole rail blue).
+        if (!failed) {
+            const std::string decodedSql = "UPDATE container_index SET decoded = true WHERE last_ts_us >= "
+                + std::to_string(fringeLo) + " AND first_ts_us <= " + std::to_string(fringeHi);
+            failed = !db.exec(decodedSql) || failed;
         }
-    });
+    }
 
-    failed = failed || !ok;
     failed = !sigApp.close() || failed;
 
     // Update signal_coverage: coverage tracks the decoded extent and only grows
     // (union), except a disjoint jump which reset it above (c.has == false).
-    // Mark walked containers decoded for the trim-rail cache band (sticky until
-    // Prepare rewrites container_index).
     if (!failed) {
         for (int64_t id : activeIds) {
             const Cov& c = cov[id];
@@ -405,12 +475,6 @@ int runApplyTrim(int argc, char** argv)
                     + "," + std::to_string(ne) + ")")
                 || failed;
         }
-        std::string decodedSql = "UPDATE container_index SET decoded = true WHERE byte_offset >= "
-            + std::to_string(startOffset);
-        if (endOffset != UINT64_MAX) {
-            decodedSql += " AND byte_offset < " + std::to_string(endOffset);
-        }
-        failed = !db.exec(decodedSql) || failed;
     }
 
     const int64_t elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - wall0).count();
@@ -418,8 +482,7 @@ int runApplyTrim(int argc, char** argv)
         printError("apply-trim failed: " + blfPath);
         return 1;
     }
-    printDone(reader.stats().containers, reader.stats().messages, decodedCount, reader.stats().bytesRead,
-        reader.stats().fileSizeBytes, elapsedMs);
+    printDone(totalContainers, scannedMessages, decodedCount, cumulativeBytesRead, bytesTotal, elapsedMs);
     return 0;
 }
 

@@ -68,6 +68,8 @@ export interface WorkspaceState {
   commitTrimRange: (range: TrimRange) => void;
   initTrimRangeIfUnset: (start: number, end: number) => void;
   resetTrimRange: () => void;
+  /** Clears all workspace UI state (Close Project). Does not touch on-disk stores. */
+  resetWorkspace: () => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
@@ -164,4 +166,21 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         : {}
     ),
   resetTrimRange: () => set({ appliedTrimRange: null, pendingTrimRange: null }),
+  resetWorkspace: () =>
+    set({
+      selectedGroupKey: null,
+      selectedMessageId: null,
+      leftTab: "messages",
+      activeSignalIds: new Set(),
+      pendingSignalIds: new Set(),
+      displayedSignalIds: new Set(),
+      detectorQuerySql: "",
+      detectorMatches: [],
+      detectorQueryTruncated: false,
+      detectorQueryError: null,
+      detectorQueryHasRun: false,
+      timelineZoomRange: { start: 0, end: 100 },
+      appliedTrimRange: null,
+      pendingTrimRange: null,
+    }),
 }));

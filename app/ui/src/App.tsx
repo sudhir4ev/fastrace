@@ -33,11 +33,30 @@ export default function App() {
     };
   }, []);
 
+  function closeProject() {
+    setScreen("welcome");
+    setPreparing(false);
+    setTick(null);
+    setPrepareTotals(null);
+    setBlfPath("");
+    setErrorMessage("");
+    useWorkspaceStore.getState().resetWorkspace();
+    queryClient.clear();
+  }
+
+  useEffect(() => {
+    const unlisten = listen("close-project", () => {
+      closeProject();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
   async function handleStart(startBlfPath: string, arxmlPath: string) {
     setTick(null);
     setBlfPath(startBlfPath);
-    useWorkspaceStore.getState().resetDetectorQuery();
-    useWorkspaceStore.getState().resetTrimRange();
+    useWorkspaceStore.getState().resetWorkspace();
     setPreparing(true);
     setScreen("workspace");
     try {
@@ -72,8 +91,7 @@ export default function App() {
   function handleOpenExisting(openBlfPath: string, meta?: PrepareMeta) {
     getTraceDataSource().recordRecentTrace(openBlfPath);
     setBlfPath(openBlfPath);
-    useWorkspaceStore.getState().resetDetectorQuery();
-    useWorkspaceStore.getState().resetTrimRange();
+    useWorkspaceStore.getState().resetWorkspace();
     setPrepareTotals(
       meta ? { messages: meta.messages, protocol_rows: meta.protocolRows, elapsed_ms: meta.elapsedMs } : null
     );
@@ -81,28 +99,16 @@ export default function App() {
     setScreen("workspace");
   }
 
-  function reset() {
-    setScreen("welcome");
-    setPreparing(false);
-    setTick(null);
-    setPrepareTotals(null);
-    setBlfPath("");
-    useWorkspaceStore.getState().resetDetectorQuery();
-    useWorkspaceStore.getState().resetTrimRange();
-    setErrorMessage("");
-  }
-
   return (
     <QueryClientProvider client={queryClient}>
       {screen === "welcome" && <Welcome onStart={handleStart} onOpenExisting={handleOpenExisting} />}
-      {screen === "error" && <ErrorScreen message={errorMessage} onRetry={reset} />}
+      {screen === "error" && <ErrorScreen message={errorMessage} onRetry={closeProject} />}
       {screen === "workspace" && blfPath && (
         <WorkspaceLayout
           blfPath={blfPath}
           preparing={preparing}
           tick={tick}
           prepareTotals={prepareTotals}
-          onOpenTrace={reset}
         />
       )}
     </QueryClientProvider>

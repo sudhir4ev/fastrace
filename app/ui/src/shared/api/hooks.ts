@@ -56,11 +56,19 @@ export function useMessageCount(blfPath: string) {
 }
 
 export const CONTAINER_INDEX_KEY = (blfPath: string) => ["container-index", blfPath];
+export const SIGNAL_COVERAGE_KEY = (blfPath: string) => ["signal-coverage", blfPath];
 
 export function useContainerIndex(blfPath: string) {
   return useQuery({
     queryKey: CONTAINER_INDEX_KEY(blfPath),
     queryFn: () => getTraceDataSource().listContainerIndex(blfPath),
+  });
+}
+
+export function useSignalCoverage(blfPath: string) {
+  return useQuery({
+    queryKey: SIGNAL_COVERAGE_KEY(blfPath),
+    queryFn: () => getTraceDataSource().listSignalCoverage(blfPath),
   });
 }
 
@@ -191,8 +199,9 @@ export function useApplyTrim(blfPath: string) {
       // Cache flags / samples may have changed for newly decoded signals.
       queryClient.invalidateQueries({ queryKey: SIGNAL_CATALOG_KEY(blfPath) });
       queryClient.invalidateQueries({ queryKey: ["signal-samples", blfPath] });
-      // apply-trim may flip container_index.decoded for the walked byte range.
+      // apply-trim extends signal_coverage and may flip container_index.decoded.
       queryClient.invalidateQueries({ queryKey: CONTAINER_INDEX_KEY(blfPath) });
+      queryClient.invalidateQueries({ queryKey: SIGNAL_COVERAGE_KEY(blfPath) });
       const detail = `${activeSignalIds.length} signal${activeSignalIds.length === 1 ? "" : "s"}`;
       getTraceDataSource()
         .recordActivity(blfPath, "decode", result.elapsedMs, detail)
