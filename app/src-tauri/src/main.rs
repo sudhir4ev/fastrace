@@ -150,9 +150,9 @@ fn build_apply_trim_args(
     args
 }
 
-// One combined trim-Apply pass: window-scoped signal_stats recompute for every
-// signal plus incremental decode of the active signals' uncovered delta. Holds
-// the same PrepareGuard write lock as decode/prepare, so it can't overlap them.
+// Indexed incremental decode of active signals' uncovered delta (and a no-op
+// when nothing needs decoding). Holds the same PrepareGuard write lock as
+// prepare so it can't overlap a store write.
 #[tauri::command]
 async fn apply_trim(
     app: tauri::AppHandle,

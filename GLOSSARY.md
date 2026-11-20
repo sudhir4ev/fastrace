@@ -102,6 +102,7 @@ Domain and product terms as used in Fastrace. Product-pipeline vocabulary is aut
 
 ## Related docs
 
+- [`docs/blf-object-model.md`](docs/blf-object-model.md) — container / LOBJ / message / signal relationship (mermaid).
 - [`CONTEXT.md`](CONTEXT.md) — locked product language (Trace / Parse / Ingest / Store / Shell).
 - [`cpp/doc/query_store_architecture.md`](cpp/doc/query_store_architecture.md) — Trace Store target architecture.
 - [`cpp/doc/blf_batch_ingest_architecture.md`](cpp/doc/blf_batch_ingest_architecture.md) — BLF → batch ingest.

@@ -72,9 +72,8 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
   function handleApplyTrim() {
     const { activeSignalIds, appliedTrimRange } = useWorkspaceStore.getState();
     if (!appliedTrimRange) return;
-    // One pass does both: window-scoped signal_stats recompute (always, so the
-    // Signal Catalog reflects the window) and incremental decode of the active
-    // signals' uncovered delta. No sequencing - it's a single sidecar run.
+    // Incremental decode of active signals' uncovered delta in the new window
+    // (no-op when already covered / empty). signal_stats stay Prepare-time.
     applyTrim.mutate({
       startUs: appliedTrimRange.start,
       endUs: appliedTrimRange.end,

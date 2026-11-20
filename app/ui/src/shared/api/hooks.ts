@@ -143,9 +143,8 @@ export function useActivities(blfPath: string) {
 
 const applyTrimMutationKey = (blfPath: string) => ["apply-trim", blfPath];
 
-// One combined pass: window-scoped signal_stats recompute for every signal plus
-// incremental decode of the active signals' uncovered delta (docs/ingestion-pipeline.html).
-// Replaces the old sequenced decode-signals + recompute-signal-stats pair.
+// Indexed incremental decode of the active signals' uncovered delta
+// (docs/ingestion-pipeline.html). signal_stats stay Prepare-time / full-trace.
 export function useApplyTrim(blfPath: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -160,8 +159,7 @@ export function useApplyTrim(blfPath: string) {
       activeSignalIds: number[];
     }) => getTraceDataSource().applyTrim(blfPath, startUs, endUs, activeSignalIds),
     onSuccess: (result, { activeSignalIds }) => {
-      // Catalog stats were just recomputed; samples for the (possibly newly
-      // decoded) signals must refetch against the new window.
+      // Cache flags / samples may have changed for newly decoded signals.
       queryClient.invalidateQueries({ queryKey: SIGNAL_CATALOG_KEY(blfPath) });
       queryClient.invalidateQueries({ queryKey: ["signal-samples", blfPath] });
       const detail = `${activeSignalIds.length} signal${activeSignalIds.length === 1 ? "" : "s"}`;

@@ -1,7 +1,7 @@
 // Checker for the fastrace_apply_trim_bounds ctest. Asserts, after an
-// `apply-trim` run, the per-signal `signals` row count (decode delta), the
-// window-scoped `signal_stats.samples`, and the `signal_coverage` window.
-// A coverage want of -1 means "no signal_coverage row for this signal".
+// `apply-trim` run, the per-signal `signals` row count (decode delta), that
+// Prepare-time `signal_stats.samples` is unchanged, and the `signal_coverage`
+// window. A coverage want of -1 means "no signal_coverage row for this signal".
 #include <cstdio>
 #include <cstdlib>
 #include <string>

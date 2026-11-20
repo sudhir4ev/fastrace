@@ -179,13 +179,11 @@ bool writeSignalStats(fastrace::Db& db, const fastrace::SignalStatsTracker& trac
     return app.close();
 }
 
-// Combined trim-Apply pass (docs/ingestion-pipeline.html). In ONE indexed
-// visitRange over only the containers [start_us,end_us] overlaps, this:
-//   - recomputes window-scoped signal_stats for EVERY arxml_signal (full-table
-//     DELETE-then-rewrite - every signal's aggregate changes on any rewindow), and
-//   - appends decoded samples for the active signals, but only for the part of
-//     the window not already covered (signal_coverage) - shrink appends nothing;
-//     a disjoint window drops the signal's stale rows and re-decodes.
+// Indexed decode pass (docs/ingestion-pipeline.html). visitRange over containers
+// overlapping [start_us,end_us] appends samples for active signals' uncovered
+// delta only (signal_coverage). signal_stats stays Prepare-time / full-trace
+// (docs/adr/0005) - this path never observes or rewrites them. Shrink / empty
+// active set / already-covered: no BLF read.
 int runApplyTrim(int argc, char** argv)
 {
     if (argc < 5) {
@@ -237,9 +235,6 @@ int runApplyTrim(int argc, char** argv)
         printError("BLF changed since prepare; re-run prepare: " + blfPath);
         return 1;
     }
-
-    const fastrace::ArDatabase arDb = fastrace::ArxmlParser::parseFile(arxmlPath);
-    fastrace::SignalStatsTracker tracker(arDb);
 
     // Resolve the byte range to inflate from container_index. Lower bound: the
     // earliest container whose span reaches start_us (last_ts_us >= start_us) -
@@ -310,13 +305,9 @@ int runApplyTrim(int argc, char** argv)
         }
     }
 
-    // Pass-level short-circuit: if every active signal's coverage already fully
-    // contains [startUs,endUs], there is no possible sample to append (a shrink,
-    // or a re-Apply of an unchanged window) - skip decodeAllSignals entirely for
-    // every message instead of calling it and discarding the result per-message.
-    // decodeAllSignals is expensive (an O(ARXML messages) scan per Ethernet
-    // frame), so this is the difference between re-reading the window and doing
-    // real decode work vs. just the inflate + stats pass every message needs anyway.
+    // If every active signal's coverage already fully contains [startUs,endUs]
+    // (shrink, re-Apply, or empty active set), there is nothing to append - skip
+    // the BLF walk entirely. signal_stats is not touched here (Prepare only).
     bool needDecode = false;
     for (int64_t id : activeIds) {
         const auto it = cov.find(id);
@@ -327,11 +318,13 @@ int runApplyTrim(int argc, char** argv)
             break;
         }
     }
-
-    if (!db.exec("DELETE FROM signal_stats")) {
-        printError("could not clear signal_stats before recompute");
-        return 1;
+    if (!needDecode) {
+        const int64_t elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - wall0).count();
+        printDone(0, 0, 0, 0, 0, elapsedMs);
+        return 0;
     }
+
+    const fastrace::ArDatabase arDb = fastrace::ArxmlParser::parseFile(arxmlPath);
 
     fastrace::Appender sigApp(db.con(), "signals");
     bool failed = !sigApp.valid();
@@ -355,33 +348,29 @@ int runApplyTrim(int argc, char** argv)
             fastrace::indexEthernetPdus(msg);
         }
 
-        tracker.observe(msg);
-
-        if (needDecode) {
-            for (const auto& ds : fastrace::decodeAllSignals(arDb, msg)) {
-                const std::string key = (ds.parentPduId != 0)
-                    ? ("pdu:" + std::to_string(ds.parentPduId) + ":" + ds.name)
-                    : ("can:" + std::to_string(ds.parentCanId) + ":" + ds.name);
-                auto it = lookup.find(key);
-                if (it == lookup.end()) {
-                    continue;
-                }
-                auto cit = cov.find(it->second.signalId);
-                if (cit != cov.end() && cit->second.has && ts >= cit->second.start && ts <= cit->second.end) {
-                    continue; // already covered - skip the re-decode
-                }
-                const double physValue = static_cast<double>(ds.rawValue) * it->second.factor + it->second.offset;
-                sigApp.i64(it->second.signalId);
-                sigApp.i64(static_cast<int64_t>(msgId));
-                sigApp.i64(ts);
-                sigApp.u64(ds.rawValue);
-                sigApp.f64(physValue);
-                if (!sigApp.endRow()) {
-                    failed = true;
-                    return;
-                }
-                ++decodedCount;
+        for (const auto& ds : fastrace::decodeAllSignals(arDb, msg)) {
+            const std::string key = (ds.parentPduId != 0)
+                ? ("pdu:" + std::to_string(ds.parentPduId) + ":" + ds.name)
+                : ("can:" + std::to_string(ds.parentCanId) + ":" + ds.name);
+            auto it = lookup.find(key);
+            if (it == lookup.end()) {
+                continue;
             }
+            auto cit = cov.find(it->second.signalId);
+            if (cit != cov.end() && cit->second.has && ts >= cit->second.start && ts <= cit->second.end) {
+                continue; // already covered - skip the re-decode
+            }
+            const double physValue = static_cast<double>(ds.rawValue) * it->second.factor + it->second.offset;
+            sigApp.i64(it->second.signalId);
+            sigApp.i64(static_cast<int64_t>(msgId));
+            sigApp.i64(ts);
+            sigApp.u64(ds.rawValue);
+            sigApp.f64(physValue);
+            if (!sigApp.endRow()) {
+                failed = true;
+                return;
+            }
+            ++decodedCount;
         }
 
         const auto now = Clock::now();
@@ -394,9 +383,6 @@ int runApplyTrim(int argc, char** argv)
 
     failed = failed || !ok;
     failed = !sigApp.close() || failed;
-    if (!failed) {
-        failed = !writeSignalStats(db, tracker);
-    }
 
     // Update signal_coverage: coverage tracks the decoded extent and only grows
     // (union), except a disjoint jump which reset it above (c.has == false).

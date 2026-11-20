@@ -178,7 +178,7 @@
       <tr><td><code>protocol_pdu</code> / <code>protocol_someip</code> / <code>protocol_someip_sd</code> / <code>protocol_doip</code></td><td>Peeled protocol fields, joined to <code>messages</code> by <code>msg_id</code>.</td><td><code>msg_id</code> + per-protocol fields</td></tr>
       <tr><td><code>arxml_pdu</code> / <code>arxml_ecu</code> / <code>arxml_can</code> / <code>arxml_signal</code></td><td>The Signal Database dictionary materialized from the ARXML.</td><td>ids, names, bit layout, factor/offset</td></tr>
       <tr><td><code>signals</code></td><td>Decoded signal samples (on demand). Grows incrementally as the window expands.</td><td><code>signal_id</code>, <code>msg_id</code>, <code>timestamp_us</code>, <code>raw_value</code>, <code>phys_value</code></td></tr>
-      <tr><td><code>signal_stats</code></td><td>Per-signal summary for the Signal Catalog. Recomputed window-scoped on every Apply.</td><td><code>signal_id</code>, <code>samples</code>, <code>nonzero</code>, <code>changes</code>, <code>min/max_raw</code></td></tr>
+      <tr><td><code>signal_stats</code></td><td>Per-signal summary for the Signal Catalog. Written once at Prepare (full-trace); not recomputed on Apply.</td><td><code>signal_id</code>, <code>samples</code>, <code>nonzero</code>, <code>changes</code>, <code>min/max_raw</code></td></tr>
       <tr><td><code>container_index</code> <span class="tag new">new</span></td><td>Coarse per-container time index - the seek map for windowed reads.</td><td><code>container_ord</code>, <code>byte_offset</code>, <code>first_ts_us</code>, <code>last_ts_us</code>, <code>first_msg_id</code></td></tr>
       <tr><td><code>signal_coverage</code> <span class="tag new">new</span></td><td>The single contiguous window each signal's samples currently cover.</td><td><code>signal_id</code>, <code>start_us</code>, <code>end_us</code></td></tr>
     </tbody>
@@ -268,11 +268,11 @@
     <li><b>Disjoint jump</b> (new window doesn't overlap coverage) → delete the stale samples and re-decode the new window, resetting coverage. (Rare; keeps coverage a single contiguous range.)</li>
   </ul>
 
-  <h3>One pass does stats + decode together</h3>
+  <h3>Decode-only apply-trim</h3>
   <p>A single <code>apply-trim</code> subcommand, in one <code>visitRange</code> over the in-window containers,
-  both <b>observes stats for every signal</b> (window-scoped <code>signal_stats</code>, covering even undecoded
-  signals so the Catalog is accurate) and <b>appends the decode delta for the active signals</b>. "Read Payloads"
-  uses the same pass.</p>
+  <b>appends the decode delta for the active signals</b>. <code>signal_stats</code> stay Prepare-time /
+  full-trace and are not recomputed. Shrink / already-covered / empty active set skips the BLF walk.
+  "Read Payloads" uses the same pass.</p>
 
   <!-- ============================================================ -->
   <h2>6 · How we keep I/O minimal</h2>
@@ -282,22 +282,22 @@
   </div>
   <div class="kpi">
     <div><b class="before">2 × full file</b><span>Old: <code>signal-stats</code> then <code>decode-signals</code>, each inflating the entire trace - even on shrink.</span></div>
-    <div><b class="after">1 × window</b><span>New: one <code>apply-trim</code> pass inflating only the containers the window overlaps.</span></div>
-    <div><b class="after">0 re-reads</b><span>Covered ranges are never re-inflated; shrink reads nothing for decode.</span></div>
+    <div><b class="after">1 × window</b><span>New: one decode-only <code>apply-trim</code> pass inflating only overlapping containers.</span></div>
+    <div><b class="after">0 re-reads</b><span>Covered ranges are never re-inflated; shrink / no active signals read nothing.</span></div>
   </div>
 
   <h3>The four levers</h3>
   <ol class="steps">
     <li><b>Index, don't scan.</b> <code>container_index</code> turns a window into a seek - out-of-window containers are never inflated.</li>
-    <li><b>One pass, not two.</b> Stats recompute and decode share a single <code>visitRange</code>; the old two-subprocess sequence is gone.</li>
+    <li><b>Decode only on Apply.</b> <code>signal_stats</code> stay Prepare-time; Apply never re-observes the catalog.</li>
     <li><b>Incremental decode.</b> <code>signal_coverage</code> means expand reads only the delta and shrink reads nothing.</li>
     <li><b>Coarse is enough.</b> Container-level timestamps (captured once at Prepare) decide what to skip - no per-message index, no extra read.</li>
   </ol>
   <div class="note">
-    <b>Why the counts grew before this work:</b> the trim feature added a dedicated full-file
-    <code>signal-stats</code> pass on <em>every</em> Apply (stats used to be folded into Prepare's single pass),
-    and a second full-file <code>decode-signals</code> pass whenever a signal was active - both inflating the
-    whole file because the window was only a post-inflate skip. The index + single pass remove exactly that.
+    <b>Why Apply got slow mid-migration:</b> trim briefly added a dedicated
+    <code>signal-stats</code> recompute on every Apply (and later folded it into
+    <code>apply-trim</code>), so "Read Payloads" paid catalog-observe cost on top of decode.
+    Stats are Prepare-only again; Apply is decode (+ coverage) only.
   </div>
 
   <!-- ============================================================ -->
