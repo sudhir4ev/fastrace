@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use tauri::menu::{Menu, MenuItemBuilder, MenuItemKind, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{Emitter, Manager};
 
 // Resolves to a locally-built fastrace_parse for now. Real Tauri
@@ -25,7 +26,7 @@ fn validate_bin_path(bin: &PathBuf) -> Result<PathBuf, String> {
 }
 
 /// Rejects a second concurrent native write op against the same store.
-/// Shared by `prepare_trace` and `decode_signals` - both spawn
+/// Shared by `prepare_trace` and `apply_trim` - both spawn
 /// `fastrace_parse` holding the store's DuckDB write lock for the duration
 /// (docs/adr/0005), so letting one run while the other starts would corrupt
 /// the file, not just confuse the UI. Shortcut: a JoinError from
@@ -68,18 +69,24 @@ fn progress_to_json(p: &sidecar::Progress) -> serde_json::Value {
         sidecar::Progress::Running {
             containers,
             messages,
+            bytes_read,
+            bytes_total,
             elapsed_ms,
         } => serde_json::json!({
-            "done": false, "containers": containers, "messages": messages, "elapsed_ms": elapsed_ms
+            "done": false, "containers": containers, "messages": messages,
+            "bytes_read": bytes_read, "bytes_total": bytes_total, "elapsed_ms": elapsed_ms
         }),
         sidecar::Progress::Done {
             containers,
             messages,
             protocol_rows,
+            bytes_read,
+            bytes_total,
             elapsed_ms,
         } => serde_json::json!({
             "done": true, "containers": containers, "messages": messages,
-            "protocol_rows": protocol_rows, "elapsed_ms": elapsed_ms
+            "protocol_rows": protocol_rows, "bytes_read": bytes_read, "bytes_total": bytes_total,
+            "elapsed_ms": elapsed_ms
         }),
     }
 }
@@ -126,21 +133,43 @@ async fn prepare_trace(
     joined
 }
 
+// Builds the apply-trim sidecar argv: the window bound, then every active
+// signal id. An empty id list is a stats-only recompute (still valid).
+fn build_apply_trim_args(
+    blf_path: String,
+    start_us: i64,
+    end_us: i64,
+    active_signal_ids: &[i64],
+) -> Vec<String> {
+    let mut args = vec![
+        "apply-trim".to_string(),
+        blf_path,
+        start_us.to_string(),
+        end_us.to_string(),
+    ];
+    args.extend(active_signal_ids.iter().map(|id| id.to_string()));
+    args
+}
+
+// Indexed incremental decode of active signals' uncovered delta (and a no-op
+// when nothing needs decoding). Holds the same PrepareGuard write lock as
+// prepare so it can't overlap a store write.
 #[tauri::command]
-async fn decode_signals(
+async fn apply_trim(
     app: tauri::AppHandle,
     blf_path: String,
-    signal_ids: Vec<i64>,
+    start_us: i64,
+    end_us: i64,
+    active_signal_ids: Vec<i64>,
 ) -> Result<serde_json::Value, String> {
     let bin = begin_prepare(app.state::<PrepareGuard>().inner(), fastrace_parse_bin())?;
     let app_for_task = app.clone();
     let joined: Result<serde_json::Value, String> =
         tauri::async_runtime::spawn_blocking(move || {
-            let mut args = vec!["decode-signals".to_string(), blf_path];
-            args.extend(signal_ids.iter().map(|id| id.to_string()));
+            let args = build_apply_trim_args(blf_path, start_us, end_us, &active_signal_ids);
             let mut ticks = Vec::new();
             sidecar::spawn(&bin, &args, |progress| {
-                let _ = app_for_task.emit("decode-progress", progress_to_json(&progress));
+                let _ = app_for_task.emit("apply-trim-progress", progress_to_json(&progress));
                 ticks.push(progress);
             })
             .map(|_| fold_final_done(&ticks))
@@ -169,32 +198,58 @@ struct TraceSummary {
 }
 
 #[tauri::command]
-fn get_trace_summary(blf_path: String) -> Result<TraceSummary, String> {
+fn get_trace_summary(blf_path: String, start_us: i64, end_us: i64) -> Result<TraceSummary, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
     Ok(TraceSummary {
         can_messages: query::count(
             &conn,
-            &format!("select count(*) from messages where object_type in ({CAN_OBJECT_TYPES})"),
+            &format!(
+                "select count(*) from messages where object_type in ({CAN_OBJECT_TYPES}) and timestamp_us between {start_us} and {end_us}"
+            ),
         )?,
         ethernet_messages: query::count(
             &conn,
             &format!(
-                "select count(*) from messages where object_type in ({ETHERNET_OBJECT_TYPES})"
+                "select count(*) from messages where object_type in ({ETHERNET_OBJECT_TYPES}) and timestamp_us between {start_us} and {end_us}"
             ),
         )?,
-        protocol_pdu: query::count(&conn, "select count(*) from protocol_pdu")?,
-        protocol_someip: query::count(&conn, "select count(*) from protocol_someip")?,
-        protocol_someip_sd: query::count(&conn, "select count(*) from protocol_someip_sd")?,
-        protocol_doip: query::count(&conn, "select count(*) from protocol_doip")?,
+        protocol_pdu: query::count(
+            &conn,
+            &format!(
+                "select count(*) from protocol_pdu p join messages m on m.msg_id = p.msg_id where m.timestamp_us between {start_us} and {end_us}"
+            ),
+        )?,
+        protocol_someip: query::count(
+            &conn,
+            &format!(
+                "select count(*) from protocol_someip p join messages m on m.msg_id = p.msg_id where m.timestamp_us between {start_us} and {end_us}"
+            ),
+        )?,
+        protocol_someip_sd: query::count(
+            &conn,
+            &format!(
+                "select count(*) from protocol_someip_sd p join messages m on m.msg_id = p.msg_id where m.timestamp_us between {start_us} and {end_us}"
+            ),
+        )?,
+        protocol_doip: query::count(
+            &conn,
+            &format!(
+                "select count(*) from protocol_doip p join messages m on m.msg_id = p.msg_id where m.timestamp_us between {start_us} and {end_us}"
+            ),
+        )?,
     })
 }
 
 #[tauri::command]
-fn list_message_groups(blf_path: String) -> Result<Vec<query::MessageGroup>, String> {
+fn list_message_groups(
+    blf_path: String,
+    start_us: i64,
+    end_us: i64,
+) -> Result<Vec<query::MessageGroup>, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::list_message_groups(&conn)
+    query::list_message_groups(&conn, start_us, end_us)
 }
 
 #[tauri::command]
@@ -203,17 +258,70 @@ fn list_messages(
     group_key: String,
     cursor: Option<i64>,
     limit: i64,
+    start_us: i64,
+    end_us: i64,
 ) -> Result<query::MessagePage, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::list_messages(&conn, &group_key, cursor, limit)
+    query::list_messages(&conn, &group_key, cursor, limit, start_us, end_us)
 }
 
 #[tauri::command]
-fn get_message_detail(blf_path: String, msg_id: i64) -> Result<query::MessageRow, String> {
+fn get_message_detail(
+    blf_path: String,
+    msg_id: i64,
+    start_us: i64,
+    end_us: i64,
+) -> Result<query::MessageRow, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::get_message_detail(&conn, msg_id)
+    query::get_message_detail(&conn, msg_id, start_us, end_us)
+}
+
+#[tauri::command]
+fn count_messages(blf_path: String) -> Result<i64, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::count_messages(&conn)
+}
+
+#[tauri::command]
+fn count_messages_in_range(blf_path: String, start_us: i64, end_us: i64) -> Result<i64, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::count_messages_in_range(&conn, start_us, end_us)
+}
+
+#[tauri::command]
+fn list_container_index(blf_path: String) -> Result<Vec<query::ContainerIndexEntry>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::list_container_index(&conn)
+}
+
+#[tauri::command]
+fn list_signal_coverage(blf_path: String) -> Result<Vec<query::SignalCoverageEntry>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::list_signal_coverage(&conn)
+}
+
+#[tauri::command]
+fn resolve_message_position(blf_path: String, position: i64) -> Result<i64, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::resolve_message_position(&conn, position)
+}
+
+#[tauri::command]
+fn resolve_message_range(
+    blf_path: String,
+    start_pos: i64,
+    end_pos: i64,
+) -> Result<(i64, i64), String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::resolve_message_range(&conn, start_pos, end_pos)
 }
 
 #[tauri::command]
@@ -228,10 +336,12 @@ fn get_signal_samples(
     blf_path: String,
     signal_id: i64,
     limit: i64,
+    start_us: i64,
+    end_us: i64,
 ) -> Result<Vec<(i64, f64)>, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::list_signal_samples(&conn, signal_id, limit)
+    query::list_signal_samples(&conn, signal_id, limit, start_us, end_us)
 }
 
 #[tauri::command]
@@ -249,10 +359,21 @@ fn get_trace_time_range(blf_path: String) -> Result<query::TraceTimeRange, Strin
 }
 
 #[tauri::command]
-fn run_detector_query(blf_path: String, sql: String) -> Result<query::DetectorQueryResult, String> {
+fn run_detector_query(
+    blf_path: String,
+    sql: String,
+    start_us: i64,
+    end_us: i64,
+) -> Result<query::DetectorQueryResult, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::run_detector_query(&conn, &sql, query::DETECTOR_QUERY_MATCH_LIMIT)
+    query::run_detector_query(
+        &conn,
+        &sql,
+        query::DETECTOR_QUERY_MATCH_LIMIT,
+        start_us,
+        end_us,
+    )
 }
 
 #[derive(serde::Serialize)]
@@ -524,9 +645,41 @@ fn main() {
     tauri::Builder::default()
         .manage(PrepareGuard(Mutex::new(false)))
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // Keep Tauri's default menubar (Quit lives in the app menu on macOS)
+            // and put Close Project under a separate File submenu.
+            let menu = Menu::default(app.handle())?;
+            let close_project =
+                MenuItemBuilder::with_id("close-project", "Close Project").build(app)?;
+            let mut file_found = false;
+            for item in menu.items()? {
+                if let MenuItemKind::Submenu(submenu) = item {
+                    if submenu.text()? == "File" {
+                        submenu.prepend(&PredefinedMenuItem::separator(app)?)?;
+                        submenu.prepend(&close_project)?;
+                        file_found = true;
+                        break;
+                    }
+                }
+            }
+            if !file_found {
+                // Linux default menu has no File submenu.
+                let file_menu = SubmenuBuilder::new(app, "File")
+                    .item(&close_project)
+                    .build()?;
+                menu.prepend(&file_menu)?;
+            }
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, event| {
+                if event.id() == "close-project" {
+                    let _ = app.emit("close-project", ());
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             prepare_trace,
-            decode_signals,
+            apply_trim,
             get_trace_summary,
             list_message_groups,
             list_messages,
@@ -535,6 +688,12 @@ fn main() {
             get_signal_samples,
             list_ecus,
             get_trace_time_range,
+            count_messages,
+            count_messages_in_range,
+            list_container_index,
+            list_signal_coverage,
+            resolve_message_position,
+            resolve_message_range,
             run_detector_query,
             get_file_sizes,
             get_path_size,
@@ -555,6 +714,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn get_trace_summary_bounds_protocol_counts_via_join() {
+        let conn = trace_store::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE messages (msg_id BIGINT, timestamp_us BIGINT, object_type INTEGER, arb_id INTEGER, dst_ip VARCHAR, dst_port INTEGER);
+             CREATE TABLE protocol_pdu (msg_id BIGINT, pdu_id BIGINT, length BIGINT);
+             CREATE TABLE protocol_someip (msg_id BIGINT);
+             CREATE TABLE protocol_someip_sd (msg_id BIGINT);
+             CREATE TABLE protocol_doip (msg_id BIGINT);
+             INSERT INTO messages VALUES (1, 1000, 1, 100, NULL, NULL);
+             INSERT INTO messages VALUES (2, 2000, 1, 100, NULL, NULL);
+             INSERT INTO protocol_pdu VALUES (1, 1, 4), (2, 1, 4);",
+        )
+        .unwrap();
+        let bounded = query::count(
+            &conn,
+            "select count(*) from protocol_pdu p join messages m on m.msg_id = p.msg_id where m.timestamp_us between 1000 and 1000",
+        )
+        .unwrap();
+        assert_eq!(
+            bounded, 1,
+            "only msg_id=1's protocol_pdu row is inside [1000,1000]"
+        );
+        let unbounded = query::count(
+            &conn,
+            "select count(*) from protocol_pdu p join messages m on m.msg_id = p.msg_id where m.timestamp_us between 0 and 10000",
+        )
+        .unwrap();
+        assert_eq!(
+            unbounded, 2,
+            "both rows are inside the full span - the join doesn't drop/double-count rows"
+        );
+    }
+
+    #[test]
+    fn apply_trim_args_shape_appends_active_ids() {
+        let args = build_apply_trim_args("trace.blf".to_string(), 100, 200, &[7, 9]);
+        assert_eq!(
+            args,
+            vec!["apply-trim", "trace.blf", "100", "200", "7", "9"]
+        );
+        // No active signals: a stats-only recompute still passes start/end.
+        let none = build_apply_trim_args("t.blf".to_string(), 0, 5, &[]);
+        assert_eq!(none, vec!["apply-trim", "t.blf", "0", "5"]);
+    }
+
+    #[test]
     fn validate_bin_path_rejects_missing_file() {
         let err = validate_bin_path(&PathBuf::from("/nonexistent/fastrace_parse_test_xyz"))
             .expect_err("missing binary should error");
@@ -565,17 +770,36 @@ mod tests {
     }
 
     #[test]
+    fn progress_to_json_includes_byte_progress() {
+        let p = sidecar::Progress::Done {
+            containers: 1,
+            messages: 6,
+            protocol_rows: 5,
+            bytes_read: 2000,
+            bytes_total: 2000,
+            elapsed_ms: 78,
+        };
+        let v = progress_to_json(&p);
+        assert_eq!(v["bytes_read"], 2000);
+        assert_eq!(v["bytes_total"], 2000);
+    }
+
+    #[test]
     fn fold_final_done_picks_the_done_tick_not_the_last_running_one() {
         let ticks = vec![
             sidecar::Progress::Running {
                 containers: 1,
                 messages: 10000,
+                bytes_read: 500_000,
+                bytes_total: 1_000_000,
                 elapsed_ms: 50,
             },
             sidecar::Progress::Done {
                 containers: 1,
                 messages: 20000,
                 protocol_rows: 15,
+                bytes_read: 1_000_000,
+                bytes_total: 1_000_000,
                 elapsed_ms: 120,
             },
         ];
@@ -590,6 +814,8 @@ mod tests {
         let ticks = vec![sidecar::Progress::Running {
             containers: 1,
             messages: 10000,
+            bytes_read: 500_000,
+            bytes_total: 1_000_000,
             elapsed_ms: 50,
         }];
         assert!(fold_final_done(&ticks).is_null());
@@ -812,7 +1038,7 @@ mod tests {
         let conn = trace_store::Connection::open(&duckdb_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE meta (key VARCHAR, value VARCHAR);
-             INSERT INTO meta VALUES ('schema_version', '3');",
+             INSERT INTO meta VALUES ('schema_version', '5');",
         )
         .unwrap();
         drop(conn);

@@ -427,7 +427,19 @@ bool inflateContainer(libdeflate_decompressor* decomp, const char* compData, siz
 
 } // namespace
 
-bool BlfIngestReader::visit(const std::string& blfPath, MessageHandler onMessage)
+bool BlfIngestReader::visit(const std::string& blfPath, MessageHandler onMessage, ContainerHandler onContainer)
+{
+    return visitImpl(blfPath, 0, UINT64_MAX, std::move(onMessage), std::move(onContainer));
+}
+
+bool BlfIngestReader::visitRange(
+    const std::string& blfPath, uint64_t startByteOffset, uint64_t endByteOffset, MessageHandler onMessage)
+{
+    return visitImpl(blfPath, startByteOffset, endByteOffset, std::move(onMessage), nullptr);
+}
+
+bool BlfIngestReader::visitImpl(const std::string& blfPath, uint64_t startByteOffset, uint64_t endByteOffset,
+    MessageHandler onMessage, ContainerHandler onContainer)
 {
     m_stats = Stats {};
     if (!onMessage) {
@@ -442,10 +454,18 @@ bool BlfIngestReader::visit(const std::string& blfPath, MessageHandler onMessage
     }
 
     Cursor cursor = mf.cursor();
+    m_stats.fileSizeBytes = mf.size;
     auto hdr = readFileHeader(cursor);
     if (!hdr) {
         spdlog::error("BlfIngestReader: invalid LOGG header");
         return false;
+    }
+
+    // Seek past the file header to a specific container offset (from
+    // container_index) for a ranged walk; 0 keeps the cursor after the header.
+    if (startByteOffset > 0) {
+        const char* target = cursor.base + startByteOffset;
+        cursor.pos = target < cursor.end ? target : cursor.end;
     }
 
     auto decomp = std::unique_ptr<libdeflate_decompressor, decltype(&libdeflate_free_decompressor)>(
@@ -461,10 +481,11 @@ bool BlfIngestReader::visit(const std::string& blfPath, MessageHandler onMessage
     int64_t inflateDecodeUs = 0;
 
     BlfObjectHeaderBase base;
-    while (!cursor.eof()) {
+    while (!cursor.eof() && cursor.tell() < endByteOffset) {
         if (!findNextLobj(cursor, base.signature)) {
             break;
         }
+        const uint64_t lobjOffset = cursor.tell() - 4;
         if (!cursor.read(reinterpret_cast<char*>(&base) + 4, sizeof(BlfObjectHeaderBase) - 4)) {
             break;
         }
@@ -498,6 +519,7 @@ bool BlfIngestReader::visit(const std::string& blfPath, MessageHandler onMessage
         }
 
         ++m_stats.containers;
+        m_stats.bytesRead = cursor.tell();
 
         std::vector<TraceMessage> containerMsgs;
         std::vector<char> headFrag;
@@ -525,6 +547,30 @@ bool BlfIngestReader::visit(const std::string& blfPath, MessageHandler onMessage
             onMessage(m);
             ++m_stats.messages;
         }
+
+        if (onContainer) {
+            int64_t firstTs = INT64_MAX;
+            int64_t lastTs = INT64_MIN;
+            for (const auto& m : stitchedMsgs) {
+                firstTs = std::min(firstTs, static_cast<int64_t>(m.timestampUs));
+                lastTs = std::max(lastTs, static_cast<int64_t>(m.timestampUs));
+            }
+            for (const auto& m : containerMsgs) {
+                firstTs = std::min(firstTs, static_cast<int64_t>(m.timestampUs));
+                lastTs = std::max(lastTs, static_cast<int64_t>(m.timestampUs));
+            }
+            // ownMsgCount counts only this container's OWN (non-stitched) messages -
+            // the messages a ranged restart at this container reproduces (a restart
+            // has no pendingTail, so the leading stitched message is dropped). The
+            // ts range above still spans both, since the container's bytes cover both.
+            const uint64_t ownMsgCount = containerMsgs.size();
+            if (!stitchedMsgs.empty() || ownMsgCount > 0) {
+                // m_stats.containers was already incremented above, so -1 is
+                // this container's 0-based ord.
+                onContainer(m_stats.containers - 1, lobjOffset, firstTs, lastTs, ownMsgCount);
+            }
+        }
+
         pendingTail = std::move(tailFrag);
     }
 

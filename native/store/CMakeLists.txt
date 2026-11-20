@@ -108,3 +108,32 @@ add_executable(fastrace_fixture_check test/fixture_prepare_check.cpp)
 target_link_libraries(fastrace_fixture_check PRIVATE duckdb::duckdb)
 fastrace_copy_duckdb_runtime(fastrace_fixture_check)
 
+add_executable(fastrace_apply_trim_check test/apply_trim_bounds_check.cpp)
+target_link_libraries(fastrace_apply_trim_check PRIVATE duckdb::duckdb)
+fastrace_copy_duckdb_runtime(fastrace_apply_trim_check)
+
+add_executable(fastrace_apply_trim_hijack_seed test/container_index_hijack_seed.cpp)
+target_link_libraries(fastrace_apply_trim_hijack_seed PRIVATE duckdb::duckdb)
+fastrace_copy_duckdb_runtime(fastrace_apply_trim_hijack_seed)
+
+add_test(NAME fastrace_apply_trim_hijack
+  COMMAND ${CMAKE_COMMAND}
+    -DFASTRACE_PARSE=$<TARGET_FILE:fastrace_parse>
+    -DHIJACK_SEED=$<TARGET_FILE:fastrace_apply_trim_hijack_seed>
+    -DAPPLY_CHECK=$<TARGET_FILE:fastrace_apply_trim_check>
+    -DFIXTURE_BLF=${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.blf
+    -DFIXTURE_ARXML=${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.arxml
+    -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/apply_trim_hijack
+    -P ${PROJECT_SOURCE_DIR}/store/test/run_apply_trim_hijack.cmake
+)
+
+add_test(NAME fastrace_apply_trim_bounds
+  COMMAND ${CMAKE_COMMAND}
+    -DFASTRACE_PARSE=$<TARGET_FILE:fastrace_parse>
+    -DAPPLY_CHECK=$<TARGET_FILE:fastrace_apply_trim_check>
+    -DFIXTURE_BLF=${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.blf
+    -DFIXTURE_ARXML=${PROJECT_SOURCE_DIR}/store/test/fixtures/fixture.arxml
+    -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/apply_trim_bounds
+    -P ${PROJECT_SOURCE_DIR}/store/test/run_apply_trim_bounds.cmake
+)
+

@@ -88,17 +88,52 @@ export interface TraceTimeRange {
   maxTimestampUs: number;
 }
 
+export interface ContainerIndexEntry {
+  containerOrd: number;
+  byteOffset: number;
+  firstTsUs: number;
+  lastTsUs: number;
+  firstMsgId: number;
+  decoded: boolean;
+}
+
+export interface SignalCoverageEntry {
+  signalId: number;
+  startUs: number;
+  endUs: number;
+}
+
 export interface TraceDataSource {
-  getTraceSummary(blfPath: string): Promise<TraceSummary>;
-  listMessageGroups(blfPath: string): Promise<MessageGroup[]>;
-  listMessages(blfPath: string, groupKey: string, cursor: number | null, limit: number): Promise<MessagePage>;
-  getMessageDetail(blfPath: string, msgId: number): Promise<MessageDetail>;
+  getTraceSummary(blfPath: string, startUs: number, endUs: number): Promise<TraceSummary>;
+  listMessageGroups(blfPath: string, startUs: number, endUs: number): Promise<MessageGroup[]>;
+  listMessages(
+    blfPath: string,
+    groupKey: string,
+    cursor: number | null,
+    limit: number,
+    startUs: number,
+    endUs: number
+  ): Promise<MessagePage>;
+  getMessageDetail(blfPath: string, msgId: number, startUs: number, endUs: number): Promise<MessageDetail>;
+  countMessages(blfPath: string): Promise<number>;
+  countMessagesInRange(blfPath: string, startUs: number, endUs: number): Promise<number>;
+  listContainerIndex(blfPath: string): Promise<ContainerIndexEntry[]>;
+  listSignalCoverage(blfPath: string): Promise<SignalCoverageEntry[]>;
+  resolveMessagePosition(blfPath: string, position: number): Promise<number>;
+  /** Inclusive 1-based ordinal slice → [min_ts, max_ts] over that msg_id range. */
+  resolveMessageRange(blfPath: string, startPos: number, endPos: number): Promise<[number, number]>;
   listEcus(blfPath: string): Promise<EcuInfo[]>;
   listSignalCatalog(blfPath: string): Promise<SignalCatalogEntry[]>;
-  getSignalSamples(blfPath: string, signalId: number, limit: number): Promise<[number, number][]>;
-  runDetectorQuery(blfPath: string, sql: string): Promise<DetectorQueryResult>;
+  getSignalSamples(
+    blfPath: string,
+    signalId: number,
+    limit: number,
+    startUs: number,
+    endUs: number
+  ): Promise<[number, number][]>;
+  runDetectorQuery(blfPath: string, sql: string, startUs: number, endUs: number): Promise<DetectorQueryResult>;
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange>;
-  decodeSignals(blfPath: string, signalIds: number[]): Promise<DecodeResult>;
+  applyTrim(blfPath: string, startUs: number, endUs: number, activeSignalIds: number[]): Promise<DecodeResult>;
   recordActivity(blfPath: string, kind: string, elapsedMs: number, detail: string): Promise<void>;
   listActivities(blfPath: string): Promise<ActivityEntry[]>;
   getFileSizes(blfPath: string): Promise<FileSizes>;
@@ -111,20 +146,51 @@ export interface TraceDataSource {
 }
 
 export class TauriTraceDataSource implements TraceDataSource {
-  getTraceSummary(blfPath: string): Promise<TraceSummary> {
-    return invoke<TraceSummary>("get_trace_summary", { blfPath });
+  getTraceSummary(blfPath: string, startUs: number, endUs: number): Promise<TraceSummary> {
+    return invoke<TraceSummary>("get_trace_summary", { blfPath, startUs, endUs });
   }
 
-  listMessageGroups(blfPath: string): Promise<MessageGroup[]> {
-    return invoke<MessageGroup[]>("list_message_groups", { blfPath });
+  listMessageGroups(blfPath: string, startUs: number, endUs: number): Promise<MessageGroup[]> {
+    return invoke<MessageGroup[]>("list_message_groups", { blfPath, startUs, endUs });
   }
 
-  listMessages(blfPath: string, groupKey: string, cursor: number | null, limit: number): Promise<MessagePage> {
-    return invoke<MessagePage>("list_messages", { blfPath, groupKey, cursor, limit });
+  listMessages(
+    blfPath: string,
+    groupKey: string,
+    cursor: number | null,
+    limit: number,
+    startUs: number,
+    endUs: number
+  ): Promise<MessagePage> {
+    return invoke<MessagePage>("list_messages", { blfPath, groupKey, cursor, limit, startUs, endUs });
   }
 
-  getMessageDetail(blfPath: string, msgId: number): Promise<MessageDetail> {
-    return invoke<MessageDetail>("get_message_detail", { blfPath, msgId });
+  getMessageDetail(blfPath: string, msgId: number, startUs: number, endUs: number): Promise<MessageDetail> {
+    return invoke<MessageDetail>("get_message_detail", { blfPath, msgId, startUs, endUs });
+  }
+
+  countMessages(blfPath: string): Promise<number> {
+    return invoke<number>("count_messages", { blfPath });
+  }
+
+  countMessagesInRange(blfPath: string, startUs: number, endUs: number): Promise<number> {
+    return invoke<number>("count_messages_in_range", { blfPath, startUs, endUs });
+  }
+
+  listContainerIndex(blfPath: string): Promise<ContainerIndexEntry[]> {
+    return invoke<ContainerIndexEntry[]>("list_container_index", { blfPath });
+  }
+
+  listSignalCoverage(blfPath: string): Promise<SignalCoverageEntry[]> {
+    return invoke<SignalCoverageEntry[]>("list_signal_coverage", { blfPath });
+  }
+
+  resolveMessagePosition(blfPath: string, position: number): Promise<number> {
+    return invoke<number>("resolve_message_position", { blfPath, position });
+  }
+
+  resolveMessageRange(blfPath: string, startPos: number, endPos: number): Promise<[number, number]> {
+    return invoke<[number, number]>("resolve_message_range", { blfPath, startPos, endPos });
   }
 
   async listEcus(blfPath: string): Promise<EcuInfo[]> {
@@ -136,26 +202,37 @@ export class TauriTraceDataSource implements TraceDataSource {
     return invoke<SignalCatalogEntry[]>("list_signal_catalog", { blfPath });
   }
 
-  getSignalSamples(blfPath: string, signalId: number, limit: number): Promise<[number, number][]> {
-    return invoke<[number, number][]>("get_signal_samples", { blfPath, signalId, limit });
+  getSignalSamples(
+    blfPath: string,
+    signalId: number,
+    limit: number,
+    startUs: number,
+    endUs: number
+  ): Promise<[number, number][]> {
+    return invoke<[number, number][]>("get_signal_samples", { blfPath, signalId, limit, startUs, endUs });
   }
 
-  runDetectorQuery(blfPath: string, sql: string): Promise<DetectorQueryResult> {
-    return invoke<DetectorQueryResult>("run_detector_query", { blfPath, sql });
+  runDetectorQuery(blfPath: string, sql: string, startUs: number, endUs: number): Promise<DetectorQueryResult> {
+    return invoke<DetectorQueryResult>("run_detector_query", { blfPath, sql, startUs, endUs });
   }
 
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange> {
     return invoke<TraceTimeRange>("get_trace_time_range", { blfPath });
   }
 
-  async decodeSignals(blfPath: string, signalIds: number[]): Promise<DecodeResult> {
-    // decode_signals resolves with the run's raw Done tick (same shape as
-    // prepare_trace's), snake_case because it's forwarded as-is from the
-    // sidecar's progress protocol - reused here as "signal rows decoded"
-    // rather than widening the native progress protocol for one new field.
-    const tick = await invoke<{ elapsed_ms: number; protocol_rows: number }>("decode_signals", {
+  async applyTrim(
+    blfPath: string,
+    startUs: number,
+    endUs: number,
+    activeSignalIds: number[]
+  ): Promise<DecodeResult> {
+    // apply-trim's Done tick reuses the sidecar progress shape; protocol_rows
+    // here carries the count of signal rows decoded this pass (the delta).
+    const tick = await invoke<{ elapsed_ms: number; protocol_rows: number }>("apply_trim", {
       blfPath,
-      signalIds,
+      startUs,
+      endUs,
+      activeSignalIds,
     });
     return { elapsedMs: tick.elapsed_ms, decodedCount: tick.protocol_rows };
   }

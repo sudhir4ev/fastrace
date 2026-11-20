@@ -14,6 +14,8 @@ fn spawn_parses_fake_progress() {
         Progress::Running {
             containers: 1,
             messages: 10000,
+            bytes_read: 500,
+            bytes_total: 1000,
             elapsed_ms: 50
         }
     );
@@ -23,6 +25,8 @@ fn spawn_parses_fake_progress() {
             containers: 1,
             messages: 20000,
             protocol_rows: 15,
+            bytes_read: 1000,
+            bytes_total: 1000,
             elapsed_ms: 120
         }
     );

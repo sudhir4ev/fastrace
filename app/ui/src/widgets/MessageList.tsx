@@ -12,9 +12,12 @@ export default function MessageList({ blfPath }: MessageListProps) {
   const selectedGroupKey = useWorkspaceStore((s) => s.selectedGroupKey);
   const selectedMessageId = useWorkspaceStore((s) => s.selectedMessageId);
   const setSelectedMessage = useWorkspaceStore((s) => s.setSelectedMessage);
+  const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
   const { data, isPending, isError, fetchNextPage, hasNextPage, isFetchingNextPage } = useMessages(
     blfPath,
-    selectedGroupKey
+    selectedGroupKey,
+    trimRange?.start ?? 0,
+    trimRange?.end ?? Number.MAX_SAFE_INTEGER
   );
 
   const rows = data ? data.pages.flatMap((p) => p.rows) : [];

@@ -4,17 +4,17 @@ import { getTraceDataSource } from "./trace-source";
 
 const MESSAGE_PAGE_SIZE = 200;
 
-export function useTraceSummary(blfPath: string) {
+export function useTraceSummary(blfPath: string, startUs: number, endUs: number) {
   return useQuery({
-    queryKey: ["trace-summary", blfPath],
-    queryFn: () => getTraceDataSource().getTraceSummary(blfPath),
+    queryKey: ["trace-summary", blfPath, startUs, endUs],
+    queryFn: () => getTraceDataSource().getTraceSummary(blfPath, startUs, endUs),
   });
 }
 
-export function useMessageGroups(blfPath: string) {
+export function useMessageGroups(blfPath: string, startUs: number, endUs: number) {
   return useQuery({
-    queryKey: ["message-groups", blfPath],
-    queryFn: () => getTraceDataSource().listMessageGroups(blfPath),
+    queryKey: ["message-groups", blfPath, startUs, endUs],
+    queryFn: () => getTraceDataSource().listMessageGroups(blfPath, startUs, endUs),
   });
 }
 
@@ -25,11 +25,11 @@ export function useEcus(blfPath: string) {
   });
 }
 
-export function useMessages(blfPath: string, groupKey: string | null) {
+export function useMessages(blfPath: string, groupKey: string | null, startUs: number, endUs: number) {
   return useInfiniteQuery({
-    queryKey: ["messages", blfPath, groupKey],
+    queryKey: ["messages", blfPath, groupKey, startUs, endUs],
     queryFn: ({ pageParam }) =>
-      getTraceDataSource().listMessages(blfPath, groupKey as string, pageParam, MESSAGE_PAGE_SIZE),
+      getTraceDataSource().listMessages(blfPath, groupKey as string, pageParam, MESSAGE_PAGE_SIZE, startUs, endUs),
     initialPageParam: null as number | null,
     // React Query's infinite-query pagination only stops fetching when this
     // returns `undefined` - a `null` passed straight through (the API
@@ -40,12 +40,62 @@ export function useMessages(blfPath: string, groupKey: string | null) {
   });
 }
 
-export function useMessageDetail(blfPath: string, msgId: number | null) {
+export function useMessageDetail(blfPath: string, msgId: number | null, startUs: number, endUs: number) {
   return useQuery({
-    queryKey: ["message-detail", blfPath, msgId],
-    queryFn: () => getTraceDataSource().getMessageDetail(blfPath, msgId as number),
+    queryKey: ["message-detail", blfPath, msgId, startUs, endUs],
+    queryFn: () => getTraceDataSource().getMessageDetail(blfPath, msgId as number, startUs, endUs),
     enabled: msgId !== null,
   });
+}
+
+export function useMessageCount(blfPath: string) {
+  return useQuery({
+    queryKey: ["message-count", blfPath],
+    queryFn: () => getTraceDataSource().countMessages(blfPath),
+  });
+}
+
+export const CONTAINER_INDEX_KEY = (blfPath: string) => ["container-index", blfPath];
+export const SIGNAL_COVERAGE_KEY = (blfPath: string) => ["signal-coverage", blfPath];
+
+export function useContainerIndex(blfPath: string) {
+  return useQuery({
+    queryKey: CONTAINER_INDEX_KEY(blfPath),
+    queryFn: () => getTraceDataSource().listContainerIndex(blfPath),
+  });
+}
+
+export function useSignalCoverage(blfPath: string) {
+  return useQuery({
+    queryKey: SIGNAL_COVERAGE_KEY(blfPath),
+    queryFn: () => getTraceDataSource().listSignalCoverage(blfPath),
+  });
+}
+
+export function useMessageCountInRange(
+  blfPath: string,
+  startUs: number | null,
+  endUs: number | null,
+  enabled: boolean
+) {
+  return useQuery({
+    queryKey: ["message-count-in-range", blfPath, startUs, endUs],
+    queryFn: () => getTraceDataSource().countMessagesInRange(blfPath, startUs as number, endUs as number),
+    enabled: enabled && startUs != null && endUs != null,
+  });
+}
+
+// Plain async helpers for TrimControl's message-ordinal Apply (not hooks).
+export function resolveMessagePosition(blfPath: string, position: number): Promise<number> {
+  return getTraceDataSource().resolveMessagePosition(blfPath, position);
+}
+
+export function resolveMessageRange(
+  blfPath: string,
+  startPos: number,
+  endPos: number
+): Promise<[number, number]> {
+  return getTraceDataSource().resolveMessageRange(blfPath, startPos, endPos);
 }
 
 const SIGNAL_CATALOG_KEY = (blfPath: string) => ["signal-catalog", blfPath];
@@ -57,10 +107,16 @@ export function useSignalCatalog(blfPath: string) {
   });
 }
 
-export function useSignalSamples(blfPath: string, signalId: number | null, limit = 200) {
+export function useSignalSamples(
+  blfPath: string,
+  signalId: number | null,
+  startUs: number,
+  endUs: number,
+  limit = 200
+) {
   return useQuery({
-    queryKey: ["signal-samples", blfPath, signalId, limit],
-    queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId as number, limit),
+    queryKey: ["signal-samples", blfPath, signalId, startUs, endUs, limit],
+    queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId as number, limit, startUs, endUs),
     enabled: signalId !== null,
   });
 }
@@ -76,11 +132,17 @@ export const TIMELINE_SAMPLE_LIMIT = 200_000;
 // changes as the user adds/removes pills - a variable number of hook calls
 // would break the rules of hooks, but useQueries itself is a single hook
 // call that internally manages a variable-length query array.
-export function useSignalSamplesList(blfPath: string, signalIds: number[], limit = TIMELINE_SAMPLE_LIMIT) {
+export function useSignalSamplesList(
+  blfPath: string,
+  signalIds: number[],
+  startUs: number,
+  endUs: number,
+  limit = TIMELINE_SAMPLE_LIMIT
+) {
   return useQueries({
     queries: signalIds.map((signalId) => ({
-      queryKey: ["signal-samples", blfPath, signalId, limit],
-      queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId, limit),
+      queryKey: ["signal-samples", blfPath, signalId, startUs, endUs, limit],
+      queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId, limit, startUs, endUs),
     })),
   });
 }
@@ -90,9 +152,9 @@ export function useSignalSamplesList(blfPath: string, signalIds: number[], limit
 // shared-constant mechanism across the Tauri IPC boundary.
 export const DETECTOR_QUERY_MATCH_LIMIT = 200_000;
 
-export function useRunDetectorQuery(blfPath: string) {
+export function useRunDetectorQuery(blfPath: string, startUs: number, endUs: number) {
   return useMutation({
-    mutationFn: (sql: string) => getTraceDataSource().runDetectorQuery(blfPath, sql),
+    mutationFn: (sql: string) => getTraceDataSource().runDetectorQuery(blfPath, sql, startUs, endUs),
   });
 }
 
@@ -107,7 +169,6 @@ export function useTraceTimeRange(blfPath: string) {
   });
 }
 
-const decodeSignalsMutationKey = (blfPath: string) => ["decode-signals", blfPath];
 const ACTIVITIES_KEY = (blfPath: string) => ["activities", blfPath];
 
 export function useActivities(blfPath: string) {
@@ -117,32 +178,42 @@ export function useActivities(blfPath: string) {
   });
 }
 
-export function useDecodeSignals(blfPath: string) {
+const applyTrimMutationKey = (blfPath: string) => ["apply-trim", blfPath];
+
+// Indexed incremental decode of the active signals' uncovered delta
+// (docs/ingestion-pipeline.html). signal_stats stay Prepare-time / full-trace.
+export function useApplyTrim(blfPath: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationKey: decodeSignalsMutationKey(blfPath),
-    mutationFn: (signalIds: number[]) => getTraceDataSource().decodeSignals(blfPath, signalIds),
-    onSuccess: (result, signalIds) => {
+    mutationKey: applyTrimMutationKey(blfPath),
+    mutationFn: ({
+      startUs,
+      endUs,
+      activeSignalIds,
+    }: {
+      startUs: number;
+      endUs: number;
+      activeSignalIds: number[];
+    }) => getTraceDataSource().applyTrim(blfPath, startUs, endUs, activeSignalIds),
+    onSuccess: (result, { activeSignalIds }) => {
+      // Cache flags / samples may have changed for newly decoded signals.
       queryClient.invalidateQueries({ queryKey: SIGNAL_CATALOG_KEY(blfPath) });
-      const detail = `${signalIds.length} signal${signalIds.length === 1 ? "" : "s"}`;
+      queryClient.invalidateQueries({ queryKey: ["signal-samples", blfPath] });
+      // apply-trim extends signal_coverage and may flip container_index.decoded.
+      queryClient.invalidateQueries({ queryKey: CONTAINER_INDEX_KEY(blfPath) });
+      queryClient.invalidateQueries({ queryKey: SIGNAL_COVERAGE_KEY(blfPath) });
+      const detail = `${activeSignalIds.length} signal${activeSignalIds.length === 1 ? "" : "s"}`;
       getTraceDataSource()
         .recordActivity(blfPath, "decode", result.elapsedMs, detail)
         .then(() => queryClient.invalidateQueries({ queryKey: ACTIVITIES_KEY(blfPath) }));
     },
-    // Mutations aren't covered by query-client.ts's global QueryCache.onError
-    // toast wiring (that only observes queries) - push here directly instead
-    // of adding a second global error-sink for what is, for now, the only
-    // mutation in the app.
     onError: (e) => useToastStore.getState().pushError(String(e)),
   });
 }
 
-// Lets a sibling component (DecodeOverlay, mounted from WorkspaceLayout) know
-// whether a decode-signals mutation triggered elsewhere (the Signals tab) is
-// in flight, without lifting the mutation itself or adding store state for it.
-export function useIsDecodingSignals(blfPath: string): boolean {
+export function useIsApplyingTrim(blfPath: string): boolean {
   const states = useMutationState({
-    filters: { mutationKey: decodeSignalsMutationKey(blfPath), status: "pending" },
+    filters: { mutationKey: applyTrimMutationKey(blfPath), status: "pending" },
   });
   return states.length > 0;
 }

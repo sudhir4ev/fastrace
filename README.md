@@ -10,8 +10,13 @@ Desktop app to analyze automotive network traces (CAN and Ethernet) via SQL-base
 ## Build
 
 ```bash
-# C++ sidecar
+# C++ sidecar (incremental)
 cmake -S . -B build && cmake --build build
+
+# Clean rebuild (reconfigures SchemaEmbed after schema_version / branch switches)
+./scripts/clean-build.sh
+./scripts/clean-build.sh --wipe-duckdb   # also drop stale .duckdb under .source/
+./scripts/clean-build.sh --rust          # also cargo clean + test crates/
 
 # Rust crates
 cargo test --manifest-path crates/Cargo.toml

@@ -1,19 +1,43 @@
-import { Button } from "@/shared/ui/button";
+import type { TrimRange } from "@/app/store";
+import type { ProgressTick } from "@/types";
+import DecodeProgressBar from "./DecodeProgressBar";
+import TrimControl from "./TrimControl";
 
 interface TopBarProps {
-  traceName: string;
-  onOpenTrace: () => void;
+  blfPath: string;
+  preparing: boolean;
+  tick: ProgressTick | null;
+  onApplyTrim: (range: TrimRange) => void | Promise<void>;
 }
 
-export default function TopBar({ traceName, onOpenTrace }: TopBarProps) {
+function ByteProgress({ tick }: { tick: ProgressTick | null }) {
+  const pct =
+    tick && tick.bytes_total > 0
+      ? Math.min(100, Math.round((tick.bytes_read / tick.bytes_total) * 100))
+      : 0;
   return (
-    <header className="flex h-[50px] shrink-0 items-center justify-between border-b border-border bg-card px-4">
-      <span className="truncate text-sm font-semibold">{traceName}</span>
-      <div className="flex items-center gap-2">
-        <Button variant="secondary" size="sm" onClick={onOpenTrace}>
-          Open Trace
-        </Button>
+    <div className="flex items-center gap-2 px-4 py-2">
+      <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
+        <div className="h-full bg-primary transition-[width]" style={{ width: `${pct}%` }} />
       </div>
+      <span className="font-mono text-[10px] text-muted-foreground">{pct}%</span>
+    </div>
+  );
+}
+
+export default function TopBar({ blfPath, preparing, tick, onApplyTrim }: TopBarProps) {
+  return (
+    <header className="shrink-0 border-b border-border bg-card">
+      {preparing ? (
+        <ByteProgress tick={tick} />
+      ) : (
+        <>
+          <div className="px-4 py-2">
+            <TrimControl blfPath={blfPath} onApply={onApplyTrim} />
+          </div>
+          <DecodeProgressBar blfPath={blfPath} />
+        </>
+      )}
     </header>
   );
 }

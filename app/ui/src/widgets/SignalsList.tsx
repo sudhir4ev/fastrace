@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Filter } from "lucide-react";
 import { useWorkspaceStore } from "@/app/store";
-import { useDecodeSignals, useSignalCatalog, useSignalSamples } from "@/shared/api/hooks";
+import { useApplyTrim, useSignalCatalog, useSignalSamples } from "@/shared/api/hooks";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
@@ -27,12 +27,18 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
   const setPendingSignalIds = useWorkspaceStore((s) => s.setPendingSignalIds);
   const commitActiveSignalIds = useWorkspaceStore((s) => s.commitActiveSignalIds);
   const autoDisplayFirstIfEmpty = useWorkspaceStore((s) => s.autoDisplayFirstIfEmpty);
-  const decodeSignals = useDecodeSignals(blfPath);
+  const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
+  const applyTrim = useApplyTrim(blfPath);
   const [signalFilter, setSignalFilter] = useState("");
   const [hideNonDecodable, setHideNonDecodable] = useState(true);
   const [hideConstant, setHideConstant] = useState(true);
   const [previewSignalId, setPreviewSignalId] = useState<number | null>(null);
-  const samples = useSignalSamples(blfPath, previewSignalId);
+  const samples = useSignalSamples(
+    blfPath,
+    previewSignalId,
+    trimRange?.start ?? 0,
+    trimRange?.end ?? Number.MAX_SAFE_INTEGER
+  );
 
   const nonDecodableCount = catalog.data?.filter((s) => !s.decodable).length ?? 0;
   const constantCount = catalog.data?.filter((s) => s.decodable && s.changes === 0).length ?? 0;
@@ -66,13 +72,18 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
       .filter((s) => pendingSignalIds.has(s.signalId) && !s.cached && !s.opaque)
       .map((s) => s.signalId);
     const nextActive = new Set(pendingSignalIds);
-    if (toDecode.length > 0) {
-      decodeSignals.mutate(toDecode, {
-        onSuccess: () => {
-          commitActiveSignalIds(nextActive);
-          autoDisplayFirstIfEmpty(toDecode[0]);
-        },
-      });
+    if (toDecode.length > 0 && trimRange) {
+      // One apply-trim pass over the current window decodes the uncovered delta
+      // for the full active set (already-covered signals are skipped natively).
+      applyTrim.mutate(
+        { startUs: trimRange.start, endUs: trimRange.end, activeSignalIds: Array.from(nextActive) },
+        {
+          onSuccess: () => {
+            commitActiveSignalIds(nextActive);
+            autoDisplayFirstIfEmpty(toDecode[0]);
+          },
+        }
+      );
     } else {
       commitActiveSignalIds(nextActive);
     }
@@ -218,7 +229,7 @@ export default function SignalsList({ blfPath }: SignalsListProps) {
 
       {hasPendingSignalChanges && (
         <div className="shrink-0 border-t border-border p-2">
-          <Button size="sm" className="w-full" onClick={readPayloads} disabled={decodeSignals.isPending}>
+          <Button size="sm" className="w-full" onClick={readPayloads} disabled={applyTrim.isPending}>
             Read Payloads
           </Button>
         </div>

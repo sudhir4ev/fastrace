@@ -79,6 +79,14 @@ int main(int argc, char** argv)
     expectScalar(con, "arxml_signal.offset", "select \"offset\" from arxml_signal where name = 'EngineRpm'", 0.0);
     expectScalar(con, "signal_stats.samples", "select samples from signal_stats where signal_id = 0", 1);
 
+    // container_index: the fixture is a single LOG_CONTAINER, so exactly one
+    // row, its first message is global id 0, and its coarse range + offset are sane.
+    expectCount(con, "container_index", 1);
+    expectScalar(
+        con, "container_index.first_msg_id", "select first_msg_id from container_index where container_ord = 0", 0);
+    expectScalar(con, "container_index.sane",
+        "select cast(count(*) as double) from container_index where last_ts_us >= first_ts_us and byte_offset > 0", 1);
+
     duckdb_disconnect(&con);
     duckdb_close(&db);
 

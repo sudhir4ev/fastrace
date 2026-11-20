@@ -1,6 +1,14 @@
 export type ProgressTick =
-  | { done: false; containers: number; messages: number; elapsed_ms: number }
-  | { done: true; containers: number; messages: number; protocol_rows: number; elapsed_ms: number };
+  | { done: false; containers: number; messages: number; bytes_read: number; bytes_total: number; elapsed_ms: number }
+  | {
+      done: true;
+      containers: number;
+      messages: number;
+      protocol_rows: number;
+      bytes_read: number;
+      bytes_total: number;
+      elapsed_ms: number;
+    };
 
 export interface TraceSummary {
   can_messages: number;

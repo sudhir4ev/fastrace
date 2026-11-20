@@ -11,12 +11,16 @@ pub enum Progress {
     Running {
         containers: u64,
         messages: u64,
+        bytes_read: u64,
+        bytes_total: u64,
         elapsed_ms: u64,
     },
     Done {
         containers: u64,
         messages: u64,
         protocol_rows: u64,
+        bytes_read: u64,
+        bytes_total: u64,
         elapsed_ms: u64,
     },
 }
@@ -31,12 +35,16 @@ impl Progress {
                 containers: v.get("containers")?.as_u64()?,
                 messages: v.get("messages")?.as_u64()?,
                 protocol_rows: v.get("protocol_rows")?.as_u64()?,
+                bytes_read: v.get("bytes_read")?.as_u64()?,
+                bytes_total: v.get("bytes_total")?.as_u64()?,
                 elapsed_ms: v.get("elapsed_ms")?.as_u64()?,
             })
         } else {
             Some(Progress::Running {
                 containers: v.get("containers")?.as_u64()?,
                 messages: v.get("messages")?.as_u64()?,
+                bytes_read: v.get("bytes_read")?.as_u64()?,
+                bytes_total: v.get("bytes_total")?.as_u64()?,
                 elapsed_ms: v.get("elapsed_ms")?.as_u64()?,
             })
         }
@@ -88,12 +96,17 @@ mod tests {
 
     #[test]
     fn parse_running_line() {
-        let p = Progress::parse(r#"{"containers":1,"messages":10000,"elapsed_ms":42}"#).unwrap();
+        let p = Progress::parse(
+            r#"{"containers":1,"messages":10000,"bytes_read":500,"bytes_total":2000,"elapsed_ms":42}"#,
+        )
+        .unwrap();
         assert_eq!(
             p,
             Progress::Running {
                 containers: 1,
                 messages: 10000,
+                bytes_read: 500,
+                bytes_total: 2000,
                 elapsed_ms: 42
             }
         );
@@ -102,7 +115,7 @@ mod tests {
     #[test]
     fn parse_done_line() {
         let p = Progress::parse(
-            r#"{"done":true,"containers":1,"messages":6,"protocol_rows":5,"elapsed_ms":78}"#,
+            r#"{"done":true,"containers":1,"messages":6,"protocol_rows":5,"bytes_read":2000,"bytes_total":2000,"elapsed_ms":78}"#,
         )
         .unwrap();
         assert_eq!(
@@ -111,6 +124,8 @@ mod tests {
                 containers: 1,
                 messages: 6,
                 protocol_rows: 5,
+                bytes_read: 2000,
+                bytes_total: 2000,
                 elapsed_ms: 78
             }
         );
