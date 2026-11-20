@@ -20,6 +20,7 @@ interface TrimControlProps {
 type Strategy = "time" | "message";
 
 const COUNT_THROTTLE_MS = 120;
+const TRIM_BINS = 200;
 const BAND_COLOR = "rgba(37, 99, 235, 0.22)";
 
 /** Absolute wall-clock time-of-day from timestamp_us, UTC (W1). */
@@ -33,7 +34,36 @@ function formatUtcHmsMmm(us: number): string {
   return `${hh}:${mm}:${ss}.${mmm}`;
 }
 
-function bandSpans(
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, n));
+}
+
+function binToUs(bin: number, minUs: number, maxUs: number): number {
+  if (maxUs <= minUs) return minUs;
+  return Math.round(minUs + (clamp(bin, 0, TRIM_BINS) / TRIM_BINS) * (maxUs - minUs));
+}
+
+function usToBin(us: number, minUs: number, maxUs: number): number {
+  if (maxUs <= minUs) return 0;
+  return clamp(Math.round(((us - minUs) / (maxUs - minUs)) * TRIM_BINS), 0, TRIM_BINS);
+}
+
+function binToPos(bin: number, messageCount: number): number {
+  if (messageCount <= 1) return 1;
+  return clamp(
+    Math.round(1 + (clamp(bin, 0, TRIM_BINS) / TRIM_BINS) * (messageCount - 1)),
+    1,
+    messageCount
+  );
+}
+
+function posToBin(pos: number, messageCount: number): number {
+  if (messageCount <= 1) return 0;
+  return clamp(Math.round(((pos - 1) / (messageCount - 1)) * TRIM_BINS), 0, TRIM_BINS);
+}
+
+/** Domain spans (time us or message ordinals) for decoded containers. */
+function decodedDomainSpans(
   containers: ContainerIndexEntry[],
   strategy: Strategy,
   messageCount: number
@@ -51,6 +81,46 @@ function bandSpans(
       const endPos = idx + 1 < byOrd.length ? byOrd[idx + 1].firstMsgId : messageCount;
       return [startPos, Math.max(startPos, endPos)] as [number, number];
     });
+}
+
+/** OR domain spans onto TRIM_BINS bins, then merge adjacent occupied bins. */
+function binBandsFromSpans(
+  spans: Array<[number, number]>,
+  strategy: Strategy,
+  minUs: number,
+  maxUs: number,
+  messageCount: number
+): Array<[number, number]> {
+  if (spans.length === 0) return [];
+  const occupied = new Array<boolean>(TRIM_BINS).fill(false);
+  for (let i = 0; i < TRIM_BINS; i++) {
+    const lo =
+      strategy === "time"
+        ? binToUs(i, minUs, maxUs)
+        : binToPos(i, messageCount);
+    const hi =
+      strategy === "time"
+        ? binToUs(i + 1, minUs, maxUs)
+        : binToPos(i + 1, messageCount);
+    for (const [a, b] of spans) {
+      if (a <= hi && b >= lo) {
+        occupied[i] = true;
+        break;
+      }
+    }
+  }
+  const merged: Array<[number, number]> = [];
+  let runStart: number | null = null;
+  for (let i = 0; i < TRIM_BINS; i++) {
+    if (occupied[i]) {
+      if (runStart == null) runStart = i;
+    } else if (runStart != null) {
+      merged.push([runStart, i]);
+      runStart = null;
+    }
+  }
+  if (runStart != null) merged.push([runStart, TRIM_BINS]);
+  return merged;
 }
 
 export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
@@ -75,7 +145,7 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
   const railRef = useRef<HTMLDivElement>(null);
   const strategyRef = useRef(strategy);
   strategyRef.current = strategy;
-  // Skip pushing startValue/endValue when the change came from the chart itself.
+  const domainRef = useRef({ minUs: 0, maxUs: 1, messageCount: 1 });
   const brushFromChartRef = useRef(false);
 
   useEffect(() => {
@@ -110,23 +180,29 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
 
   const countReady = messageCount.data != null && messageCount.data >= 1;
   const containerRows = containers.data ?? [];
-
-  const axisMin = strategy === "time" ? (timeRange.data?.minTimestampUs ?? 0) : 1;
-  const axisMax =
-    strategy === "time" ? (timeRange.data?.maxTimestampUs ?? 1) : (messageCount.data ?? 1);
+  const minUs = timeRange.data?.minTimestampUs ?? 0;
+  const maxUs = timeRange.data?.maxTimestampUs ?? 1;
+  const nMsgs = messageCount.data ?? 1;
+  domainRef.current = { minUs, maxUs, messageCount: nMsgs };
 
   const brushStart =
-    strategy === "time" ? (pending?.start ?? axisMin) : (positionRange?.startPos ?? 1);
+    strategy === "time"
+      ? usToBin(pending?.start ?? minUs, minUs, maxUs)
+      : posToBin(positionRange?.startPos ?? 1, nMsgs);
   const brushEnd =
-    strategy === "time" ? (pending?.end ?? axisMax) : (positionRange?.endPos ?? axisMax);
+    strategy === "time"
+      ? usToBin(pending?.end ?? maxUs, minUs, maxUs)
+      : posToBin(positionRange?.endPos ?? nMsgs, nMsgs);
 
-  const bands = useMemo(
-    () => bandSpans(containerRows, strategy, messageCount.data ?? 0),
-    [containerRows, strategy, messageCount.data]
-  );
+  const bands = useMemo(() => {
+    const spans = decodedDomainSpans(containerRows, strategy, nMsgs);
+    return binBandsFromSpans(spans, strategy, minUs, maxUs, nMsgs);
+  }, [containerRows, strategy, nMsgs, minUs, maxUs]);
+
+  const railReady = Boolean(timeRange.data && pending);
 
   useEffect(() => {
-    if (!railRef.current) return;
+    if (!railReady || !railRef.current) return;
     const chart = echarts.init(railRef.current, undefined, { renderer: "canvas" });
     chartRef.current = chart;
     const onZoom = () => {
@@ -138,26 +214,28 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
       let a = Math.round(Number(dz.startValue));
       let b = Math.round(Number(dz.endValue));
       if (a > b) [a, b] = [b, a];
+      a = clamp(a, 0, TRIM_BINS);
+      b = clamp(b, 0, TRIM_BINS);
       brushFromChartRef.current = true;
+      const { minUs: lo, maxUs: hi, messageCount: n } = domainRef.current;
       if (strategyRef.current === "time") {
-        setPendingTrimRange({ start: a, end: b });
+        setPendingTrimRange({ start: binToUs(a, lo, hi), end: binToUs(b, lo, hi) });
       } else {
-        setPositionRange({ startPos: Math.max(1, a), endPos: Math.max(1, b) });
+        setPositionRange({ startPos: binToPos(a, n), endPos: binToPos(b, n) });
       }
     };
     chart.on("datazoom", onZoom);
     const resize = () => chart.resize();
     window.addEventListener("resize", resize);
+    requestAnimationFrame(() => chart.resize());
     return () => {
       window.removeEventListener("resize", resize);
       chart.off("datazoom", onZoom);
       chart.dispose();
       chartRef.current = null;
     };
-  }, [setPendingTrimRange]);
+  }, [railReady, setPendingTrimRange]);
 
-  // Domain + decoded bands. Do not push startValue/endValue here - that fights
-  // the in-progress dataZoom drag (pending updates on every move).
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !timeRange.data) return;
@@ -166,11 +244,11 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
 
     chart.setOption({
       animation: false,
-      grid: { left: 8, right: 8, top: 2, bottom: 26, height: 12 },
+      grid: { left: 4, right: 4, top: 2, bottom: 22, height: 10 },
       xAxis: {
         type: "value",
-        min: axisMin,
-        max: axisMax,
+        min: 0,
+        max: TRIM_BINS,
         show: false,
       },
       yAxis: { type: "value", min: 0, max: 1, show: false },
@@ -178,8 +256,8 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
         {
           type: "slider",
           xAxisIndex: 0,
-          height: 20,
-          bottom: 2,
+          height: 18,
+          bottom: 0,
           filterMode: "none",
           brushSelect: false,
           showDetail: false,
@@ -192,8 +270,8 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
         {
           type: "line",
           data: [
-            [axisMin, 0.5],
-            [axisMax, 0.5],
+            [0, 0.5],
+            [TRIM_BINS, 0.5],
           ],
           symbol: "none",
           lineStyle: { opacity: 0 },
@@ -206,9 +284,9 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
         },
       ],
     });
-  }, [axisMin, axisMax, bands, timeRange.data]);
+    chart.resize();
+  }, [bands, timeRange.data]);
 
-  // Push brush from React → chart only when we didn't just read it from the chart.
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !timeRange.data) return;
@@ -221,8 +299,22 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
     });
   }, [brushStart, brushEnd, timeRange.data]);
 
+  if (timeRange.isError) {
+    return (
+      <div className="w-full">
+        <p className="text-center text-[11px] text-destructive">
+          Trim unavailable: {String(timeRange.error)}
+        </p>
+      </div>
+    );
+  }
+
   if (!timeRange.data || !pending) {
-    return null;
+    return (
+      <div className="w-full">
+        <p className="text-center font-mono text-[11px] text-muted-foreground">Loading trim…</p>
+      </div>
+    );
   }
   const pendingRange: TrimRange = pending;
 
@@ -252,6 +344,13 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
     strategy === "time"
       ? !applied || applied.start !== pendingRange.start || applied.end !== pendingRange.end
       : true;
+
+  const isFullApplied =
+    applied != null &&
+    applied.start === minUs &&
+    applied.end === maxUs &&
+    (strategy === "time" ||
+      (positionRange != null && positionRange.startPos === 1 && positionRange.endPos === nMsgs));
 
   const readoutTs =
     strategy === "time"
@@ -289,23 +388,46 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
     onApply(pendingRange);
   }
 
+  async function handleReset() {
+    const full = { start: minUs, end: maxUs };
+    if (strategy === "message") {
+      if (!countReady) return;
+      setIsResolving(true);
+      try {
+        setPositionRange({ startPos: 1, endPos: nMsgs });
+        const [start, end] = await resolveMessageRange(blfPath, 1, nMsgs);
+        const range = { start, end };
+        setMsgTsReadout(range);
+        commitTrimRange(range);
+        onApply(range);
+      } catch (e) {
+        useToastStore.getState().pushError(String(e));
+      } finally {
+        setIsResolving(false);
+      }
+      return;
+    }
+    setPendingTrimRange(full);
+    setThrottledTimeRange(full);
+    commitTrimRange(full);
+    onApply(full);
+  }
+
   return (
-    <div className="mx-auto w-[80%] min-w-[min(100%,640px)] max-w-[1200px]">
-      <div className="mb-1 flex items-center justify-center gap-3 font-mono text-[11px] text-muted-foreground">
-        <span>{formatUtcHmsMmm(readoutTs.start)}</span>
-        <span aria-hidden>→</span>
-        <span>{formatUtcHmsMmm(readoutTs.end)}</span>
+    <div className="flex w-full min-w-0 items-center gap-3">
+      <div className="flex shrink-0 flex-col items-start gap-0.5 font-mono text-[10px] leading-tight text-muted-foreground">
+        <span>
+          {formatUtcHmsMmm(readoutTs.start)} → {formatUtcHmsMmm(readoutTs.end)}
+        </span>
         <span className="text-foreground/80">
           {messageCountLabel == null ? "…" : `${messageCountLabel.toLocaleString()} msgs`}
+          {strategy === "message" && positionRange
+            ? ` · #${positionRange.startPos.toLocaleString()}–#${positionRange.endPos.toLocaleString()}`
+            : null}
         </span>
-        {strategy === "message" && positionRange && (
-          <span className="text-[10px]">
-            #{positionRange.startPos.toLocaleString()}–#{positionRange.endPos.toLocaleString()}
-          </span>
-        )}
       </div>
-      <div ref={railRef} className="h-10 w-full" />
-      <div className="mt-1 flex items-center justify-center gap-2">
+      <div ref={railRef} className="h-9 min-w-0 flex-1" />
+      <div className="flex shrink-0 items-center gap-1.5">
         <div className="flex gap-0.5 rounded-md border border-border p-0.5">
           <Button
             size="sm"
@@ -332,6 +454,14 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
           onClick={handleApply}
         >
           {isResolving ? "Resolving..." : "Apply"}
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={isFullApplied || isResolving || (strategy === "message" && !countReady)}
+          onClick={handleReset}
+        >
+          Reset
         </Button>
       </div>
     </div>
