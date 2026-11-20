@@ -193,6 +193,11 @@ int runApplyTrim(int argc, char** argv)
     const std::string blfPath = argv[2];
     const int64_t startUs = std::strtoll(argv[3], nullptr, 10);
     const int64_t endUs = std::strtoll(argv[4], nullptr, 10);
+    if (startUs > endUs) {
+        printError("invalid window: start_us (" + std::to_string(startUs) + ") > end_us ("
+            + std::to_string(endUs) + ")");
+        return 1;
+    }
     std::vector<int64_t> activeIds;
     for (int i = 5; i < argc; ++i) {
         activeIds.push_back(std::strtoll(argv[i], nullptr, 10));
@@ -386,6 +391,8 @@ int runApplyTrim(int argc, char** argv)
 
     // Update signal_coverage: coverage tracks the decoded extent and only grows
     // (union), except a disjoint jump which reset it above (c.has == false).
+    // Mark walked containers decoded for the trim-rail cache band (sticky until
+    // Prepare rewrites container_index).
     if (!failed) {
         for (int64_t id : activeIds) {
             const Cov& c = cov[id];
@@ -398,6 +405,12 @@ int runApplyTrim(int argc, char** argv)
                     + "," + std::to_string(ne) + ")")
                 || failed;
         }
+        std::string decodedSql = "UPDATE container_index SET decoded = true WHERE byte_offset >= "
+            + std::to_string(startOffset);
+        if (endOffset != UINT64_MAX) {
+            decodedSql += " AND byte_offset < " + std::to_string(endOffset);
+        }
+        failed = !db.exec(decodedSql) || failed;
     }
 
     const int64_t elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - wall0).count();
@@ -528,6 +541,7 @@ int runPrepare(int argc, char** argv)
             ciApp.i64(firstTsUs);
             ciApp.i64(lastTsUs);
             ciApp.i64(static_cast<int64_t>(nextMsgId - ownMsgCount));
+            ciApp.b(false); // decoded: flipped true by apply-trim after a successful inflate
             if (!ciApp.endRow()) {
                 failed = true;
             }

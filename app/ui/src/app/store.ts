@@ -59,11 +59,13 @@ export interface WorkspaceState {
   // Global Trim Window (CONTEXT.md) - the [start, end] timestamp_us bound
   // scoping every trace-wide read for the session. `pendingTrimRange` is the
   // slider's local draft state; `appliedTrimRange` is what queries actually
-  // use, committed by applyTrim().
+  // use. Prefer commitTrimRange() on Apply so pending+applied update atomically
+  // and timeline zoom resets for the new domain.
   appliedTrimRange: TrimRange | null;
   pendingTrimRange: TrimRange | null;
   setPendingTrimRange: (range: TrimRange) => void;
   applyTrim: () => void;
+  commitTrimRange: (range: TrimRange) => void;
   initTrimRangeIfUnset: (start: number, end: number) => void;
   resetTrimRange: () => void;
 }
@@ -146,6 +148,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setPendingTrimRange: (range) => set({ pendingTrimRange: range }),
   applyTrim: () =>
     set((s) => (s.pendingTrimRange ? { appliedTrimRange: s.pendingTrimRange } : {})),
+  commitTrimRange: (range) =>
+    set({
+      pendingTrimRange: range,
+      appliedTrimRange: range,
+      timelineZoomRange: { start: 0, end: 100 },
+    }),
   // Only seeds the full-span default once per trace - re-opening the Signals
   // tab or re-fetching the time range must not stomp a user's in-progress
   // narrower trim back to full span.

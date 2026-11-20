@@ -16,10 +16,71 @@ pub fn count_messages(conn: &trace_store::Connection) -> Result<i64, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Messages whose `timestamp_us` falls in the inclusive trim window - backs
+/// the trim-rail live readout (throttled from the UI while dragging).
+pub fn count_messages_in_range(
+    conn: &trace_store::Connection,
+    start_us: i64,
+    end_us: i64,
+) -> Result<i64, String> {
+    let (lo, hi) = if start_us <= end_us {
+        (start_us, end_us)
+    } else {
+        (end_us, start_us)
+    };
+    conn.query_row(
+        "select count(*) from messages where timestamp_us between ? and ?",
+        duckdb::params![lo, hi],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerIndexEntry {
+    pub container_ord: i64,
+    pub byte_offset: i64,
+    pub first_ts_us: i64,
+    pub last_ts_us: i64,
+    pub first_msg_id: i64,
+    pub decoded: bool,
+}
+
+/// Coarse LOG_CONTAINER seek map + sticky `decoded` flag for the trim-rail band.
+pub fn list_container_index(
+    conn: &trace_store::Connection,
+) -> Result<Vec<ContainerIndexEntry>, String> {
+    let mut stmt = conn
+        .prepare(
+            "select container_ord, byte_offset, first_ts_us, last_ts_us, first_msg_id, decoded
+             from container_index order by container_ord",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ContainerIndexEntry {
+                container_ord: row.get(0)?,
+                byte_offset: row.get(1)?,
+                first_ts_us: row.get(2)?,
+                last_ts_us: row.get(3)?,
+                first_msg_id: row.get(4)?,
+                decoded: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
 /// Resolves a 1-based ordinal position (1..=count_messages) to that message's
 /// timestamp_us, by msg_id order (msg_id assignment order matches time order -
 /// Prepare assigns ids sequentially while iterating the BLF in time order).
 /// position 1 maps to the earliest message's timestamp.
+///
+/// Prefer [`resolve_message_range`] for Trim Window bounds: endpoint timestamps
+/// alone are wrong when the first/last messages have timestamp 0 (common on
+/// merged traces) - the time window must be min/max over the whole ordinal slice.
 pub fn resolve_message_position(
     conn: &trace_store::Connection,
     position: i64,
@@ -33,6 +94,34 @@ pub fn resolve_message_position(
         |row| row.get(0),
     )
     .map_err(|e| format!("position {position} not found: {e}"))
+}
+
+/// Resolves an inclusive 1-based message-ordinal slice to a `[start_us, end_us]`
+/// time window = min/max `timestamp_us` over that slice. Swapped endpoints are
+/// normalized. Prepare assigns contiguous `msg_id` values `0..n-1` in iteration
+/// order, so position `p` maps to `msg_id = p - 1` (BETWEEN, not LIMIT/OFFSET).
+/// Endpoint-only timestamps fail when a leading/trailing LOBJ has timestamp 0.
+pub fn resolve_message_range(
+    conn: &trace_store::Connection,
+    start_pos: i64,
+    end_pos: i64,
+) -> Result<(i64, i64), String> {
+    let (lo, hi) = if start_pos <= end_pos {
+        (start_pos, end_pos)
+    } else {
+        (end_pos, start_pos)
+    };
+    if lo < 1 {
+        return Err(format!("message position must be >= 1, got {lo}"));
+    }
+    let lo_id = lo - 1;
+    let hi_id = hi - 1;
+    conn.query_row(
+        "select min(timestamp_us), max(timestamp_us) from messages where msg_id between ? and ?",
+        duckdb::params![lo_id, hi_id],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+    )
+    .map_err(|e| format!("message range {lo}..={hi} not found: {e}"))
 }
 
 // CAN vs Ethernet object_type values (native/blf/include/BlfTypes.h),
@@ -435,10 +524,11 @@ mod tests {
              CREATE TABLE signals (signal_id BIGINT, msg_id BIGINT, timestamp_us BIGINT, raw_value UBIGINT, phys_value DOUBLE);
              CREATE TABLE signal_stats (signal_id BIGINT PRIMARY KEY, samples BIGINT, nonzero BIGINT, changes BIGINT, min_raw UBIGINT, max_raw UBIGINT, first_ts_us BIGINT, last_ts_us BIGINT, opaque BOOLEAN);
              INSERT INTO arxml_can VALUES (100, 'EngineSpeed');
-             INSERT INTO messages VALUES (1, 1000, 1, 100, NULL, NULL, 8, 8);
-             INSERT INTO messages VALUES (2, 2000, 1, 100, NULL, NULL, 8, 8);
-             INSERT INTO messages VALUES (3, 3000, 1, 200, NULL, NULL, 4, 4);
-             INSERT INTO messages VALUES (4, 4000, 71, NULL, '10.0.0.1', 30509, NULL, 64);",
+             -- Contiguous msg_id 0..n-1 matches Prepare (resolve_message_range uses BETWEEN).
+             INSERT INTO messages VALUES (0, 1000, 1, 100, NULL, NULL, 8, 8);
+             INSERT INTO messages VALUES (1, 2000, 1, 100, NULL, NULL, 8, 8);
+             INSERT INTO messages VALUES (2, 3000, 1, 200, NULL, NULL, 4, 4);
+             INSERT INTO messages VALUES (3, 4000, 71, NULL, '10.0.0.1', 30509, NULL, 64);",
         )
         .unwrap();
         conn
@@ -465,12 +555,12 @@ mod tests {
         let conn = setup();
         let page1 = list_messages(&conn, "can:100", None, 1, 0, 10_000).unwrap();
         assert_eq!(page1.rows.len(), 1);
-        assert_eq!(page1.rows[0].msg_id, 1);
-        assert_eq!(page1.next_cursor, Some(1));
+        assert_eq!(page1.rows[0].msg_id, 0);
+        assert_eq!(page1.next_cursor, Some(0));
 
         let page2 = list_messages(&conn, "can:100", page1.next_cursor, 1, 0, 10_000).unwrap();
         assert_eq!(page2.rows.len(), 1);
-        assert_eq!(page2.rows[0].msg_id, 2);
+        assert_eq!(page2.rows[0].msg_id, 1);
         assert_eq!(
             page2.next_cursor, None,
             "last page must not return a cursor"
@@ -486,7 +576,7 @@ mod tests {
     #[test]
     fn get_message_detail_returns_row_by_id() {
         let conn = setup();
-        let detail = get_message_detail(&conn, 1, 0, 10_000).unwrap();
+        let detail = get_message_detail(&conn, 0, 0, 10_000).unwrap();
         assert_eq!(detail.bus_label, "CAN");
         assert_eq!(detail.id_or_src, "100");
     }
@@ -500,14 +590,47 @@ mod tests {
     #[test]
     fn get_message_detail_errors_when_outside_trim_bound() {
         let conn = setup();
-        // msg_id 1 is at timestamp_us 1000 - a bound of [2000, 4000] excludes it.
-        assert!(get_message_detail(&conn, 1, 2000, 4000).is_err());
+        // msg_id 0 is at timestamp_us 1000 - a bound of [2000, 4000] excludes it.
+        assert!(get_message_detail(&conn, 0, 2000, 4000).is_err());
     }
 
     #[test]
     fn count_messages_returns_total_row_count() {
         let conn = setup();
         assert_eq!(count_messages(&conn).unwrap(), 4);
+    }
+
+    #[test]
+    fn count_messages_in_range_counts_inclusive_window() {
+        let conn = setup();
+        assert_eq!(count_messages_in_range(&conn, 2000, 3000).unwrap(), 2);
+        assert_eq!(count_messages_in_range(&conn, 3000, 1000).unwrap(), 3);
+        assert_eq!(count_messages_in_range(&conn, 5000, 6000).unwrap(), 0);
+    }
+
+    #[test]
+    fn list_container_index_returns_rows_in_ord_order() {
+        let conn = setup();
+        conn.execute_batch(
+            "CREATE TABLE container_index (
+               container_ord BIGINT PRIMARY KEY,
+               byte_offset BIGINT,
+               first_ts_us BIGINT,
+               last_ts_us BIGINT,
+               first_msg_id BIGINT,
+               decoded BOOLEAN DEFAULT false
+             );
+             INSERT INTO container_index VALUES (1, 200, 3000, 4000, 2, true);
+             INSERT INTO container_index VALUES (0, 100, 1000, 2000, 0, false);",
+        )
+        .unwrap();
+        let rows = list_container_index(&conn).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].container_ord, 0);
+        assert!(!rows[0].decoded);
+        assert_eq!(rows[1].container_ord, 1);
+        assert!(rows[1].decoded);
+        assert_eq!(rows[1].first_msg_id, 2);
     }
 
     #[test]
@@ -538,6 +661,40 @@ mod tests {
     }
 
     #[test]
+    fn resolve_message_range_uses_min_max_over_slice() {
+        let conn = setup();
+        assert_eq!(resolve_message_range(&conn, 1, 4).unwrap(), (1000, 4000));
+        assert_eq!(resolve_message_range(&conn, 2, 3).unwrap(), (2000, 3000));
+        assert_eq!(
+            resolve_message_range(&conn, 3, 2).unwrap(),
+            (2000, 3000),
+            "swapped endpoints normalize"
+        );
+    }
+
+    #[test]
+    fn resolve_message_range_survives_trailing_zero_timestamp() {
+        let conn = setup();
+        // MFK5-style: last LOBJ is timestamp 0. Endpoint-only resolve of 1..=5
+        // would yield (1000, 0) inverted; min/max over the slice stays sane.
+        conn.execute(
+            "INSERT INTO messages VALUES (4, 0, 1, 100, NULL, NULL, 8, 8)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(resolve_message_position(&conn, 5).unwrap(), 0);
+        assert_eq!(resolve_message_range(&conn, 1, 5).unwrap(), (0, 4000));
+        // Endpoint-only would be (1000, 0); min/max over the slice is correct.
+        assert_ne!(
+            (
+                resolve_message_position(&conn, 1).unwrap(),
+                resolve_message_position(&conn, 5).unwrap()
+            ),
+            resolve_message_range(&conn, 1, 5).unwrap()
+        );
+    }
+
+    #[test]
     fn list_ecus_returns_sorted_names() {
         let conn = setup();
         conn.execute_batch("INSERT INTO arxml_ecu VALUES ('Gateway'), ('BodyControl');")
@@ -558,9 +715,9 @@ mod tests {
         conn.execute_batch(
             "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
              INSERT INTO arxml_signal VALUES (1, 'GhostSignal', 'can', 999, 0, 8, false, 1.0, 0.0);
-             INSERT INTO protocol_pdu VALUES (4, 42, 64);
+             INSERT INTO protocol_pdu VALUES (3, 42, 64);
              INSERT INTO arxml_signal VALUES (2, 'PduSignal', 'pdu', 42, 0, 8, false, 1.0, 0.0);
-             INSERT INTO signals VALUES (0, 1, 1000, 513, 128.25);
+             INSERT INTO signals VALUES (0, 0, 1000, 513, 128.25);
              INSERT INTO signal_stats VALUES (0, 10, 8, 3, 1, 99, 1000, 9000, false);
              INSERT INTO signal_stats VALUES (1, 0, 0, 0, NULL, NULL, NULL, NULL, false);
              INSERT INTO signal_stats VALUES (2, 5, 5, 4, 1, 7, 4000, 8000, false);",
@@ -623,9 +780,9 @@ mod tests {
         assert_eq!(
             page.rows.len(),
             1,
-            "only the msg_id=1 row at timestamp_us=1000 is inside [1000,1000]"
+            "only the msg_id=0 row at timestamp_us=1000 is inside [1000,1000]"
         );
-        assert_eq!(page.rows[0].msg_id, 1);
+        assert_eq!(page.rows[0].msg_id, 0);
     }
 
     #[test]
@@ -633,8 +790,8 @@ mod tests {
         let conn = setup();
         conn.execute_batch(
             "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
-             INSERT INTO signals VALUES (0, 1, 1000, 513, 128.25);
-             INSERT INTO signals VALUES (0, 2, 2000, 600, 150.0);",
+             INSERT INTO signals VALUES (0, 0, 1000, 513, 128.25);
+             INSERT INTO signals VALUES (0, 1, 2000, 600, 150.0);",
         )
         .unwrap();
         let samples = list_signal_samples(&conn, 0, 10, 1500, 2500).unwrap();
@@ -679,7 +836,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.matches.len(), 2);
-        assert_eq!(result.matches[0].msg_id, 1);
+        assert_eq!(result.matches[0].msg_id, 0);
         assert_eq!(result.matches[0].timestamp_us, 1000);
         assert!(!result.truncated);
     }

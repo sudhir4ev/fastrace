@@ -285,10 +285,35 @@ fn count_messages(blf_path: String) -> Result<i64, String> {
 }
 
 #[tauri::command]
+fn count_messages_in_range(blf_path: String, start_us: i64, end_us: i64) -> Result<i64, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::count_messages_in_range(&conn, start_us, end_us)
+}
+
+#[tauri::command]
+fn list_container_index(blf_path: String) -> Result<Vec<query::ContainerIndexEntry>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::list_container_index(&conn)
+}
+
+#[tauri::command]
 fn resolve_message_position(blf_path: String, position: i64) -> Result<i64, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
     query::resolve_message_position(&conn, position)
+}
+
+#[tauri::command]
+fn resolve_message_range(
+    blf_path: String,
+    start_pos: i64,
+    end_pos: i64,
+) -> Result<(i64, i64), String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::resolve_message_range(&conn, start_pos, end_pos)
 }
 
 #[tauri::command]
@@ -624,7 +649,10 @@ fn main() {
             list_ecus,
             get_trace_time_range,
             count_messages,
+            count_messages_in_range,
+            list_container_index,
             resolve_message_position,
+            resolve_message_range,
             run_detector_query,
             get_file_sizes,
             get_path_size,
@@ -969,7 +997,7 @@ mod tests {
         let conn = trace_store::Connection::open(&duckdb_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE meta (key VARCHAR, value VARCHAR);
-             INSERT INTO meta VALUES ('schema_version', '4');",
+             INSERT INTO meta VALUES ('schema_version', '5');",
         )
         .unwrap();
         drop(conn);

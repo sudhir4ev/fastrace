@@ -1,6 +1,6 @@
 -- Trace Store DDL for fastrace_ingest (external duckdb CLI).
 -- Payloads stay in the BLF (source of truth). Signals/detections are on-demand.
--- schema_version: 4
+-- schema_version: 5
 
 CREATE TABLE messages (
   msg_id       BIGINT PRIMARY KEY,
@@ -117,7 +117,8 @@ CREATE TABLE container_index (
   byte_offset   BIGINT,              -- file offset of the LOBJ signature
   first_ts_us   BIGINT,              -- min message timestamp in the container
   last_ts_us    BIGINT,              -- max message timestamp in the container
-  first_msg_id  BIGINT               -- global msg_id of the container's first message
+  first_msg_id  BIGINT,              -- global msg_id of the container's first message
+  decoded       BOOLEAN DEFAULT false -- true after apply-trim inflated this container for signal decode
 );
 
 -- Per-signal decoded coverage: the single contiguous [start,end] window a

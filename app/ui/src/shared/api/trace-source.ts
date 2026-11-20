@@ -88,6 +88,15 @@ export interface TraceTimeRange {
   maxTimestampUs: number;
 }
 
+export interface ContainerIndexEntry {
+  containerOrd: number;
+  byteOffset: number;
+  firstTsUs: number;
+  lastTsUs: number;
+  firstMsgId: number;
+  decoded: boolean;
+}
+
 export interface TraceDataSource {
   getTraceSummary(blfPath: string, startUs: number, endUs: number): Promise<TraceSummary>;
   listMessageGroups(blfPath: string, startUs: number, endUs: number): Promise<MessageGroup[]>;
@@ -101,7 +110,11 @@ export interface TraceDataSource {
   ): Promise<MessagePage>;
   getMessageDetail(blfPath: string, msgId: number, startUs: number, endUs: number): Promise<MessageDetail>;
   countMessages(blfPath: string): Promise<number>;
+  countMessagesInRange(blfPath: string, startUs: number, endUs: number): Promise<number>;
+  listContainerIndex(blfPath: string): Promise<ContainerIndexEntry[]>;
   resolveMessagePosition(blfPath: string, position: number): Promise<number>;
+  /** Inclusive 1-based ordinal slice → [min_ts, max_ts] over that msg_id range. */
+  resolveMessageRange(blfPath: string, startPos: number, endPos: number): Promise<[number, number]>;
   listEcus(blfPath: string): Promise<EcuInfo[]>;
   listSignalCatalog(blfPath: string): Promise<SignalCatalogEntry[]>;
   getSignalSamples(
@@ -153,8 +166,20 @@ export class TauriTraceDataSource implements TraceDataSource {
     return invoke<number>("count_messages", { blfPath });
   }
 
+  countMessagesInRange(blfPath: string, startUs: number, endUs: number): Promise<number> {
+    return invoke<number>("count_messages_in_range", { blfPath, startUs, endUs });
+  }
+
+  listContainerIndex(blfPath: string): Promise<ContainerIndexEntry[]> {
+    return invoke<ContainerIndexEntry[]>("list_container_index", { blfPath });
+  }
+
   resolveMessagePosition(blfPath: string, position: number): Promise<number> {
     return invoke<number>("resolve_message_position", { blfPath, position });
+  }
+
+  resolveMessageRange(blfPath: string, startPos: number, endPos: number): Promise<[number, number]> {
+    return invoke<[number, number]>("resolve_message_range", { blfPath, startPos, endPos });
   }
 
   async listEcus(blfPath: string): Promise<EcuInfo[]> {

@@ -69,14 +69,15 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
   const isApplying = useIsApplyingTrim(blfPath);
   const applyTrim = useApplyTrim(blfPath);
 
-  function handleApplyTrim() {
-    const { activeSignalIds, appliedTrimRange } = useWorkspaceStore.getState();
-    if (!appliedTrimRange) return;
-    // Incremental decode of active signals' uncovered delta in the new window
-    // (no-op when already covered / empty). signal_stats stay Prepare-time.
+  function handleApplyTrim(range: { start: number; end: number }) {
+    const { activeSignalIds } = useWorkspaceStore.getState();
+    // Use the range Apply just committed - do not re-read the store (message
+    // mode resolves timestamps async; the explicit arg is the source of truth).
+    // Incremental decode of active signals' uncovered delta (no-op when already
+    // covered / empty). signal_stats stay Prepare-time.
     applyTrim.mutate({
-      startUs: appliedTrimRange.start,
-      endUs: appliedTrimRange.end,
+      startUs: range.start,
+      endUs: range.end,
       activeSignalIds: Array.from(activeSignalIds),
     });
   }

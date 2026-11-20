@@ -5,7 +5,7 @@ pub use duckdb::Connection;
 /// Must match `schema/schema.sql`'s `-- schema_version: N` comment and the
 /// C++ side's embedded `kSchemaVersion` (docs/adr/0001 rule 1). Bump both
 /// together when the DDL changes.
-const EXPECTED_SCHEMA_VERSION: &str = "4";
+const EXPECTED_SCHEMA_VERSION: &str = "5";
 
 /// Opens an existing Trace Store (`<stem>.duckdb`) read-only and checks
 /// `meta.schema_version` against `EXPECTED_SCHEMA_VERSION`.

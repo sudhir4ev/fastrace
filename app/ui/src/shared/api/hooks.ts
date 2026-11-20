@@ -55,10 +55,39 @@ export function useMessageCount(blfPath: string) {
   });
 }
 
-// Plain async function, not a hook - called imperatively (twice) from
-// TrimControl's Apply handler in message-ordinal mode, not rendered.
+export const CONTAINER_INDEX_KEY = (blfPath: string) => ["container-index", blfPath];
+
+export function useContainerIndex(blfPath: string) {
+  return useQuery({
+    queryKey: CONTAINER_INDEX_KEY(blfPath),
+    queryFn: () => getTraceDataSource().listContainerIndex(blfPath),
+  });
+}
+
+export function useMessageCountInRange(
+  blfPath: string,
+  startUs: number | null,
+  endUs: number | null,
+  enabled: boolean
+) {
+  return useQuery({
+    queryKey: ["message-count-in-range", blfPath, startUs, endUs],
+    queryFn: () => getTraceDataSource().countMessagesInRange(blfPath, startUs as number, endUs as number),
+    enabled: enabled && startUs != null && endUs != null,
+  });
+}
+
+// Plain async helpers for TrimControl's message-ordinal Apply (not hooks).
 export function resolveMessagePosition(blfPath: string, position: number): Promise<number> {
   return getTraceDataSource().resolveMessagePosition(blfPath, position);
+}
+
+export function resolveMessageRange(
+  blfPath: string,
+  startPos: number,
+  endPos: number
+): Promise<[number, number]> {
+  return getTraceDataSource().resolveMessageRange(blfPath, startPos, endPos);
 }
 
 const SIGNAL_CATALOG_KEY = (blfPath: string) => ["signal-catalog", blfPath];
@@ -162,6 +191,8 @@ export function useApplyTrim(blfPath: string) {
       // Cache flags / samples may have changed for newly decoded signals.
       queryClient.invalidateQueries({ queryKey: SIGNAL_CATALOG_KEY(blfPath) });
       queryClient.invalidateQueries({ queryKey: ["signal-samples", blfPath] });
+      // apply-trim may flip container_index.decoded for the walked byte range.
+      queryClient.invalidateQueries({ queryKey: CONTAINER_INDEX_KEY(blfPath) });
       const detail = `${activeSignalIds.length} signal${activeSignalIds.length === 1 ? "" : "s"}`;
       getTraceDataSource()
         .recordActivity(blfPath, "decode", result.elapsedMs, detail)

@@ -168,7 +168,7 @@
   <!-- ============================================================ -->
   <h2>3 · The Trace Store tables</h2>
   <p>The Trace Store is a DuckDB file beside the BLF. The Rust app opens it <b>read-only</b> and checks
-  <code>schema_version</code> (currently <b>4</b>). The C++ sidecar is the only writer.</p>
+  <code>schema_version</code> (currently <b>5</b>). The C++ sidecar is the only writer.</p>
 
   <table>
     <thead><tr><th>Table</th><th>Purpose</th><th>Key columns</th></tr></thead>
@@ -179,7 +179,7 @@
       <tr><td><code>arxml_pdu</code> / <code>arxml_ecu</code> / <code>arxml_can</code> / <code>arxml_signal</code></td><td>The Signal Database dictionary materialized from the ARXML.</td><td>ids, names, bit layout, factor/offset</td></tr>
       <tr><td><code>signals</code></td><td>Decoded signal samples (on demand). Grows incrementally as the window expands.</td><td><code>signal_id</code>, <code>msg_id</code>, <code>timestamp_us</code>, <code>raw_value</code>, <code>phys_value</code></td></tr>
       <tr><td><code>signal_stats</code></td><td>Per-signal summary for the Signal Catalog. Written once at Prepare (full-trace); not recomputed on Apply.</td><td><code>signal_id</code>, <code>samples</code>, <code>nonzero</code>, <code>changes</code>, <code>min/max_raw</code></td></tr>
-      <tr><td><code>container_index</code> <span class="tag new">new</span></td><td>Coarse per-container time index - the seek map for windowed reads.</td><td><code>container_ord</code>, <code>byte_offset</code>, <code>first_ts_us</code>, <code>last_ts_us</code>, <code>first_msg_id</code></td></tr>
+      <tr><td><code>container_index</code></td><td>Coarse per-container time index - the seek map for windowed reads; <code>decoded</code> marks containers inflate/decode has paid for.</td><td><code>container_ord</code>, <code>byte_offset</code>, <code>first_ts_us</code>, <code>last_ts_us</code>, <code>first_msg_id</code>, <code>decoded</code></td></tr>
       <tr><td><code>signal_coverage</code> <span class="tag new">new</span></td><td>The single contiguous window each signal's samples currently cover.</td><td><code>signal_id</code>, <code>start_us</code>, <code>end_us</code></td></tr>
     </tbody>
   </table>
@@ -314,7 +314,7 @@
   </ul>
 
   <div class="foot">
-    Fastrace ingestion pipeline · matches <code>schema/schema.sql</code> (schema_version 4),
+    Fastrace ingestion pipeline · matches <code>schema/schema.sql</code> (schema_version 5),
     <code>native/blf</code>, <code>native/cli</code>, and <code>docs/adr/0001</code>, <code>0003</code>, <code>0005</code>.
     Self-contained - no external assets or network requests.
   </div>

@@ -23,7 +23,7 @@ int main(int argc, char** argv)
     duckdb_result res;
     // ord/first_msg_id are arbitrary; byte_offset is far past the tiny fixture's
     // real containers, first_ts_us=last_ts_us=0 mimics trailing ts=0 messages.
-    if (duckdb_query(con, "INSERT INTO container_index VALUES (999999, 10000000, 0, 0, 999999);", &res)
+    if (duckdb_query(con, "INSERT INTO container_index VALUES (999999, 10000000, 0, 0, 999999, false);", &res)
         != DuckDBSuccess) {
         std::fprintf(stderr, "FAIL: insert failed: %s\n", duckdb_result_error(&res));
         duckdb_destroy_result(&res);
