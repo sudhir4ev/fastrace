@@ -309,15 +309,17 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
           Message
         </Button>
       </div>
-      <div className="flex shrink-0 flex-col items-start gap-0.5 font-mono text-[10px] leading-tight text-muted-foreground">
+      <div className="flex shrink-0 flex-col items-start gap-0.5 font-mono text-[10px] leading-tight text-muted-foreground w-[300px]">
         <span>
           {formatUtcHmsMmm(readoutTs.start)} → {formatUtcHmsMmm(readoutTs.end)}
         </span>
         <span className="text-foreground/80">
-          {messageCountLabel == null ? "…" : `${messageCountLabel.toLocaleString()} msgs`}
+          <span className="whitespace-nowrap inline-block">{messageCountLabel == null ? "…" : `${messageCountLabel.toLocaleString()} msgs`}</span>
+          <span className="whitespace-nowrap inline-block">
           {strategy === "message" && positionRange
             ? ` · #${positionRange.startPos.toLocaleString()}–#${positionRange.endPos.toLocaleString()}`
             : null}
+          </span>
         </span>
       </div>
       <div ref={railRef} className="h-9 min-w-0 flex-1" />
