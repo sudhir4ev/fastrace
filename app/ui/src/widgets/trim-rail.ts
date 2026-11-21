@@ -1,7 +1,7 @@
 import type { SignalCoverageEntry } from "@/shared/api/trace-source";
 
 export const TRIM_BINS = 500;
-export const DECODED_BAND = "#3b82f6"; // blue - bins overlapping signal_coverage
+export const DECODED_BAND = "#93c5fd"; // light blue - bins overlapping signal_coverage
 export const UNREAD_BAND = "#d1d5db"; // grey - no cached samples in bin
 
 export function clamp(n: number, lo: number, hi: number): number {
