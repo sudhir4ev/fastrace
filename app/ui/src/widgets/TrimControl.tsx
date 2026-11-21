@@ -71,7 +71,11 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
   const strategyRef = useRef(strategy);
   strategyRef.current = strategy;
   const domainRef = useRef({ minUs: 0, maxUs: 1, messageCount: 1 });
-  const brushFromChartRef = useRef(false);
+  // True while we push brushStart/brushEnd into the chart so the resulting
+  // datazoom event does not write the same values back into React state.
+  const syncingBrushFromPropsRef = useRef(false);
+  const brushStartRef = useRef(0);
+  const brushEndRef = useRef(TRIM_BINS);
 
   useEffect(() => {
     if (timeRange.data) {
@@ -117,6 +121,8 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
     strategy === "time"
       ? usToBin(pending?.end ?? maxUs, minUs, maxUs)
       : posToBin(positionRange?.endPos ?? nMsgs, nMsgs);
+  brushStartRef.current = brushStart;
+  brushEndRef.current = brushEnd;
 
   const bands = useMemo(() => {
     const spans = coverageSpansForActive(coverage.data ?? [], activeSignalIds);
@@ -125,11 +131,27 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
 
   const railReady = Boolean(timeRange.data && pending);
 
+  function applyBrushToChart(chart: echarts.ECharts, start: number, end: number) {
+    syncingBrushFromPropsRef.current = true;
+    chart.dispatchAction({
+      type: "dataZoom",
+      dataZoomIndex: 0,
+      startValue: start,
+      endValue: end,
+    });
+    // datazoom is sync for dispatchAction; clear on next frame in case echarts
+    // also queues a follow-up event.
+    requestAnimationFrame(() => {
+      syncingBrushFromPropsRef.current = false;
+    });
+  }
+
   useEffect(() => {
     if (!railReady || !railRef.current) return;
     const chart = echarts.init(railRef.current, undefined, { renderer: "canvas" });
     chartRef.current = chart;
     const onZoom = () => {
+      if (syncingBrushFromPropsRef.current) return;
       const option = chart.getOption() as {
         dataZoom?: Array<{ startValue?: number; endValue?: number }>;
       };
@@ -140,12 +162,21 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
       if (a > b) [a, b] = [b, a];
       a = clamp(a, 0, TRIM_BINS);
       b = clamp(b, 0, TRIM_BINS);
-      brushFromChartRef.current = true;
       const { minUs: lo, maxUs: hi, messageCount: n } = domainRef.current;
       if (strategyRef.current === "time") {
-        setPendingTrimRange({ start: binToUs(a, lo, hi), end: binToUs(b, lo, hi) });
+        const start = binToUs(a, lo, hi);
+        const end = binToUs(b, lo, hi);
+        const cur = useWorkspaceStore.getState().pendingTrimRange;
+        if (cur && cur.start === start && cur.end === end) return;
+        setPendingTrimRange({ start, end });
       } else {
-        setPositionRange({ startPos: binToPos(a, n), endPos: binToPos(b, n) });
+        const startPos = binToPos(a, n);
+        const endPos = binToPos(b, n);
+        setPositionRange((prev) =>
+          prev && prev.startPos === startPos && prev.endPos === endPos
+            ? prev
+            : { startPos, endPos }
+        );
       }
     };
     chart.on("datazoom", onZoom);
@@ -164,19 +195,15 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
     const chart = chartRef.current;
     if (!chart || !timeRange.data) return;
     chart.setOption(buildTrimRailOption(bands));
+    // Full option rebuild drops slider extent - re-apply the React brush.
+    applyBrushToChart(chart, brushStartRef.current, brushEndRef.current);
     chart.resize();
   }, [bands, timeRange.data]);
 
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !timeRange.data) return;
-    if (brushFromChartRef.current) {
-      brushFromChartRef.current = false;
-      return;
-    }
-    chart.setOption({
-      dataZoom: [{ startValue: brushStart, endValue: brushEnd }],
-    });
+    applyBrushToChart(chart, brushStart, brushEnd);
   }, [brushStart, brushEnd, timeRange.data]);
 
   // Only treat as fatal when we have nothing to show. A failed refetch (e.g.

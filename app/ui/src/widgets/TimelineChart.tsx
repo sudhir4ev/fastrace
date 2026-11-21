@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as echarts from "echarts";
+import { Plus, XIcon } from "lucide-react";
 import { useWorkspaceStore } from "@/app/store";
 import { getSignalColor } from "@/app/signalColors";
 import { useSignalCatalog, useSignalSamplesList } from "@/shared/api/hooks";
+import { Button } from "@/shared/ui/button";
 
 const MATCH_COLOR = "#e34948"; // PALETTE[5] - red, distinct from signal colors, reads as "flagged"
 const MATCH_SERIES_NAME = "Matches";
@@ -28,6 +30,8 @@ interface TimelineChartProps {
   // slider meaningful across lanes of very different signals.
   minTs?: number;
   maxTs?: number;
+  onChartRemove?: (signalId: number) => void;
+  onAddCharts?: () => void;
 }
 
 // Spreading into Math.min/max blows V8's call-stack limit well before real
@@ -55,7 +59,13 @@ type Lane =
   | { kind: "match"; top: number; height: number }
   | { kind: "signal"; top: number; height: number; signalId: number; name: string; color: string };
 
-export default function TimelineChart({ blfPath, minTs, maxTs }: TimelineChartProps) {
+export default function TimelineChart({
+  blfPath,
+  minTs,
+  maxTs,
+  onChartRemove,
+  onAddCharts,
+}: TimelineChartProps) {
   const activeSignalIds = Array.from(useWorkspaceStore((s) => s.activeSignalIds));
   const detectorMatches = useWorkspaceStore((s) => s.detectorMatches);
   const detectorQueryHasRun = useWorkspaceStore((s) => s.detectorQueryHasRun);
@@ -128,7 +138,13 @@ export default function TimelineChart({ blfPath, minTs, maxTs }: TimelineChartPr
 
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chart || lanes.length === 0) return;
+    if (!chart) return;
+    // Must clear the previous option when the last signal is removed - an
+    // early return here left the old series painted on the canvas.
+    if (lanes.length === 0) {
+      chart.clear();
+      return;
+    }
 
     // `setOption(..., true)` below is a full replace, which would otherwise
     // reset the zoom window to 0-100% on every signal add/remove - preferring
@@ -245,25 +261,50 @@ export default function TimelineChart({ blfPath, minTs, maxTs }: TimelineChartPr
   // placeholder element when empty (and back when signals get added) would
   // leave echarts never initialized.
   return (
-    <div className="h-full min-h-0 overflow-y-auto bg-slate-100">
-      <div className="relative" style={{ height: lanes.length === 0 ? "100%" : totalHeight }}>
-        <div ref={containerRef} className="absolute inset-0" />
-        {lanes.length === 0 && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
-            No signals displayed - click a pill above to plot a decoded signal.
-          </div>
-        )}
-        {lanes
-          .filter((l): l is Extract<Lane, { kind: "signal" }> => l.kind === "signal")
-          .map((lane) => (
-            <div
-              key={lane.signalId}
-              className="pointer-events-none absolute whitespace-normal break-words px-2 text-xs underline font-medium font-mono capitalize tracking-wide"
-              style={{ top: lane.top, left: 20, color: lane.color }}
-            >
-              {lane.name}
+    <div className="flex h-full min-h-0 flex-col bg-slate-100">
+      {onAddCharts && (
+        <div className="flex shrink-0 items-center border-b border-border bg-background px-2 py-1.5">
+          <Button type="button" size="sm" variant="outline" className="h-7 gap-1.5" onClick={onAddCharts}>
+            <Plus className="size-3.5" />
+            Add Signal
+          </Button>
+        </div>
+      )}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="relative" style={{ height: lanes.length === 0 ? "100%" : totalHeight }}>
+          <div ref={containerRef} className="absolute inset-0" />
+          {lanes.length === 0 && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+              No signals displayed - click Add Signal to plot.
             </div>
-          ))}
+          )}
+          {lanes
+            .filter((l): l is Extract<Lane, { kind: "signal" }> => l.kind === "signal")
+            .map((lane) => (
+              <div
+                key={lane.signalId}
+                className="absolute z-[1] flex items-start gap-1 px-2"
+                style={{ top: lane.top + 4, left: 20 }}
+              >
+                <span
+                  className="whitespace-normal break-words text-xs font-medium font-mono capitalize tracking-wide underline"
+                  style={{ color: lane.color }}
+                >
+                  {lane.name}
+                </span>
+                {onChartRemove && (
+                  <button
+                    type="button"
+                    className="mt-0.5 rounded-sm text-muted-foreground opacity-70 hover:bg-background/80 hover:opacity-100"
+                    aria-label={`Remove ${lane.name}`}
+                    onClick={() => onChartRemove(lane.signalId)}
+                  >
+                    <XIcon className="size-3.5" />
+                  </button>
+                )}
+              </div>
+            ))}
+        </div>
       </div>
     </div>
   );
