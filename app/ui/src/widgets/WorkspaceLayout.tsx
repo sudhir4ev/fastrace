@@ -1,9 +1,10 @@
+import { Activity, List } from "lucide-react";
 import { useWorkspaceStore, type WorkspaceTab } from "@/app/store";
 import { useApplyTrim, useFileSizes } from "@/shared/api/hooks";
-import { formatBytes } from "@/shared/ui/lib/utils";
+import { Button } from "@/shared/ui/button";
+import { cn, formatBytes } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 import { Skeleton } from "@/shared/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import ActivityLog from "./ActivityLog";
 import AnalyzerPanel from "./AnalyzerPanel";
 import MessageDetails from "./MessageDetails";
@@ -13,6 +14,11 @@ import TimelinePanel from "./TimelinePanel";
 import Toaster from "./Toaster";
 import TopBar from "./TopBar";
 import type { ProgressTick } from "@/types";
+
+const NAV_ITEMS: { id: WorkspaceTab; label: string; icon: typeof Activity }[] = [
+  { id: "signals", label: "Signals", icon: Activity },
+  { id: "messages", label: "Messages", icon: List },
+];
 
 interface WorkspaceLayoutProps {
   blfPath: string;
@@ -124,37 +130,44 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
   return (
     <div className="flex h-screen flex-col">
       <TopBar blfPath={blfPath} preparing={preparing} tick={tick} onApplyTrim={handleApplyTrim} />
-      <Tabs
-        value={workspaceTab}
-        onValueChange={(v) => setWorkspaceTab(v as WorkspaceTab)}
-        className="flex min-h-0 flex-1 flex-col overflow-hidden"
-      >
-        <div className="shrink-0 border-b border-border px-3 py-1.5">
-          <TabsList>
-            <TabsTrigger value="signals">Signals</TabsTrigger>
-            <TabsTrigger value="messages">Messages</TabsTrigger>
-          </TabsList>
-        </div>
-        {/* Keep height via h-full/flex-1; avoid a bare `flex` on TabsContent —
-            Radix hides inactive panels with `hidden`, and a display utility on
-            the same node can defeat that. Active panel uses data-state flex. */}
-        <TabsContent
-          value="signals"
-          className="mt-0 min-h-0 flex-1 overflow-hidden data-[state=active]:flex data-[state=active]:flex-col"
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <nav
+          className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-border py-2"
+          aria-label="Workspace"
         >
-          <div className="h-full min-h-0 flex-1 overflow-hidden">
+          {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
+            const active = workspaceTab === id;
+            return (
+              <Button
+                key={id}
+                type="button"
+                variant="ghost"
+                size="icon"
+                title={label}
+                aria-label={label}
+                aria-current={active ? "page" : undefined}
+                onClick={() => setWorkspaceTab(id)}
+                className={cn(
+                  "h-9 w-9 text-muted-foreground",
+                  active && "bg-muted text-foreground"
+                )}
+              >
+                <Icon className="h-4 w-4" />
+              </Button>
+            );
+          })}
+        </nav>
+        {/* Keep both views mounted (hidden when inactive) so timeline chart
+            state survives nav switches; ResizeObserver handles re-show. */}
+        <main className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div className={cn("absolute inset-0", workspaceTab !== "signals" && "hidden")} aria-hidden={workspaceTab !== "signals"}>
             <SignalsTab blfPath={blfPath} preparing={preparing} />
           </div>
-        </TabsContent>
-        <TabsContent
-          value="messages"
-          className="mt-0 min-h-0 flex-1 overflow-hidden data-[state=active]:flex data-[state=active]:flex-col"
-        >
-          <div className="h-full min-h-0 flex-1 overflow-hidden">
+          <div className={cn("absolute inset-0", workspaceTab !== "messages" && "hidden")} aria-hidden={workspaceTab !== "messages"}>
             <MessagesTab blfPath={blfPath} preparing={preparing} />
           </div>
-        </TabsContent>
-      </Tabs>
+        </main>
+      </div>
       <StatusBar blfPath={blfPath} prepareTotals={prepareTotals} />
       <Toaster />
     </div>

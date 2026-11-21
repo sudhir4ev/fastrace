@@ -127,8 +127,12 @@ export default function TimelineChart({
       if (dz) useWorkspaceStore.getState().setTimelineZoomRange(dz);
     });
     const resize = () => chart.resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(containerRef.current);
     window.addEventListener("resize", resize);
+    requestAnimationFrame(resize);
     return () => {
+      ro.disconnect();
       window.removeEventListener("resize", resize);
       chart.dispose();
       chartRef.current = null;

@@ -148,7 +148,8 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
 
   useEffect(() => {
     if (!railReady || !railRef.current) return;
-    const chart = echarts.init(railRef.current, undefined, { renderer: "canvas" });
+    const el = railRef.current;
+    const chart = echarts.init(el, undefined, { renderer: "canvas" });
     chartRef.current = chart;
     const onZoom = () => {
       if (syncingBrushFromPropsRef.current) return;
@@ -180,15 +181,25 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
       }
     };
     chart.on("datazoom", onZoom);
+    // Paint immediately - the setOption effect may not re-run after StrictMode
+    // remount or when railReady flips while bands/timeRange deps are unchanged.
+    chart.setOption(buildTrimRailOption(bands));
+    applyBrushToChart(chart, brushStartRef.current, brushEndRef.current);
     const resize = () => chart.resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(el);
     window.addEventListener("resize", resize);
-    requestAnimationFrame(() => chart.resize());
+    requestAnimationFrame(resize);
     return () => {
+      ro.disconnect();
       window.removeEventListener("resize", resize);
       chart.off("datazoom", onZoom);
       chart.dispose();
       chartRef.current = null;
     };
+    // bands intentionally omitted - coverage updates go through the setOption effect;
+    // init only needs a first paint for remount / railReady transitions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [railReady, setPendingTrimRange]);
 
   useEffect(() => {
