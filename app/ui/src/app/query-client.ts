@@ -8,7 +8,12 @@ export const queryClient = new QueryClient({
   // widgets don't each need their own error-banner rendering.
   queryCache: new QueryCache({
     onError: (error) => {
-      useToastStore.getState().pushError(String(error));
+      const message = String(error);
+      // apply-trim / prepare hold an exclusive DuckDB write lock in the
+      // sidecar - concurrent read-only opens fail with this. Callers pause or
+      // keep last-good data; don't toast every conflict as a hard failure.
+      if (message.includes("Conflicting lock")) return;
+      useToastStore.getState().pushError(message);
     },
   }),
   defaultOptions: {

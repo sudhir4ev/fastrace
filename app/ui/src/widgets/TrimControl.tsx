@@ -4,6 +4,7 @@ import { useToastStore } from "@/app/toast-store";
 import { useWorkspaceStore, type TrimRange } from "@/app/store";
 import {
   resolveMessageRange,
+  useIsApplyingTrim,
   useMessageCount,
   useMessageCountInRange,
   useSignalCoverage,
@@ -43,9 +44,13 @@ function formatUtcHmsMmm(us: number): string {
 }
 
 export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
-  const timeRange = useTraceTimeRange(blfPath);
-  const messageCount = useMessageCount(blfPath);
-  const coverage = useSignalCoverage(blfPath);
+  // apply-trim holds an exclusive DuckDB write lock in fastrace_parse - pause
+  // TrimControl store reads for that window so they don't fail and sticky-error
+  // the rail (read-only open conflicts with the sidecar lock).
+  const storeReadable = !useIsApplyingTrim(blfPath);
+  const timeRange = useTraceTimeRange(blfPath, storeReadable);
+  const messageCount = useMessageCount(blfPath, storeReadable);
+  const coverage = useSignalCoverage(blfPath, storeReadable);
   const activeSignalIds = useWorkspaceStore((s) => s.activeSignalIds);
   const pending = useWorkspaceStore((s) => s.pendingTrimRange);
   const applied = useWorkspaceStore((s) => s.appliedTrimRange);
@@ -75,7 +80,7 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
   }, [timeRange.data, initTrimRangeIfUnset]);
 
   useEffect(() => {
-    if (!pending) return;
+    if (!pending || !storeReadable) return;
     if (strategy === "time") {
       const t = window.setTimeout(() => setThrottledTimeRange(pending), COUNT_THROTTLE_MS);
       return () => window.clearTimeout(t);
@@ -89,13 +94,13 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
         });
     }, COUNT_THROTTLE_MS);
     return () => window.clearTimeout(t);
-  }, [pending, positionRange, strategy, blfPath]);
+  }, [pending, positionRange, strategy, blfPath, storeReadable]);
 
   const countQuery = useMessageCountInRange(
     blfPath,
     strategy === "time" ? (throttledTimeRange?.start ?? null) : null,
     strategy === "time" ? (throttledTimeRange?.end ?? null) : null,
-    strategy === "time"
+    strategy === "time" && storeReadable
   );
 
   const countReady = messageCount.data != null && messageCount.data >= 1;
@@ -174,7 +179,9 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
     });
   }, [brushStart, brushEnd, timeRange.data]);
 
-  if (timeRange.isError) {
+  // Only treat as fatal when we have nothing to show. A failed refetch (e.g.
+  // DuckDB lock during decode) must keep the last good rail, not replace it.
+  if (timeRange.isError && !timeRange.data) {
     return (
       <div className="w-full">
         <p className="text-center text-[11px] text-destructive">
@@ -187,7 +194,9 @@ export default function TrimControl({ blfPath, onApply }: TrimControlProps) {
   if (!timeRange.data || !pending) {
     return (
       <div className="w-full">
-        <p className="text-center font-mono text-[11px] text-muted-foreground">Loading trim…</p>
+        <p className="text-center font-mono text-[11px] text-muted-foreground">
+          {storeReadable ? "Loading trim…" : "Decoding…"}
+        </p>
       </div>
     );
   }

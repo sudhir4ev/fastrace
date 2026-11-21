@@ -240,41 +240,17 @@ fn map_message_row(row: &duckdb::Row) -> duckdb::Result<MessageRow> {
     })
 }
 
-/// Keyset-paginates by `msg_id` within one group. `cursor` is the last
-/// `msg_id` already seen (`None` for the first page); the returned
-/// `next_cursor` is `None` once the group is exhausted.
-pub fn list_messages(
-    conn: &trace_store::Connection,
-    group_key: &str,
-    cursor: Option<i64>,
-    limit: i64,
-    start_us: i64,
-    end_us: i64,
-) -> Result<MessagePage, String> {
-    let cursor = cursor.unwrap_or(-1);
-    let fetch = limit + 1;
+enum ParsedGroupKey {
+    Can { arb_id: i64 },
+    Eth { dst_ip: String, dst_port: i32 },
+}
 
-    let mut rows: Vec<MessageRow> = if let Some(arb_id) = group_key.strip_prefix("can:") {
+fn parse_group_key(group_key: &str) -> Result<ParsedGroupKey, String> {
+    if let Some(arb_id) = group_key.strip_prefix("can:") {
         let arb_id: i64 = arb_id
             .parse()
             .map_err(|_| format!("bad group key: {group_key}"))?;
-        let sql = format!(
-            "select msg_id, timestamp_us, 'CAN' as bus_label, cast(arb_id as varchar) as id_or_src,
-                    (select name from arxml_can where can_id = arb_id limit 1) as name, dlc, payload_len
-             from messages
-             where object_type in ({CAN_OBJECT_TYPES}) and arb_id = ? and timestamp_us between ? and ? and msg_id > ?
-             order by msg_id
-             limit ?"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let out = stmt
-            .query_map(
-                duckdb::params![arb_id, start_us, end_us, cursor, fetch],
-                map_message_row,
-            )
-            .map_err(|e| e.to_string())?;
-        out.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
+        Ok(ParsedGroupKey::Can { arb_id })
     } else if let Some(rest) = group_key.strip_prefix("eth:") {
         let (dst_ip, dst_port) = rest
             .rsplit_once(':')
@@ -282,28 +258,90 @@ pub fn list_messages(
         let dst_port: i32 = dst_port
             .parse()
             .map_err(|_| format!("bad group key: {group_key}"))?;
-        let sql = format!(
-            "select msg_id, timestamp_us, 'Ethernet' as bus_label,
-                    coalesce(dst_ip,'') || ':' || cast(coalesce(dst_port,0) as varchar) as id_or_src,
-                    cast(null as varchar) as name, dlc, payload_len
-             from messages
-             where object_type in ({ETHERNET_OBJECT_TYPES}) and dst_ip = ? and dst_port = ?
-                   and timestamp_us between ? and ? and msg_id > ?
-             order by msg_id
-             limit ?"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let out = stmt
-            .query_map(
-                duckdb::params![dst_ip, dst_port, start_us, end_us, cursor, fetch],
-                map_message_row,
-            )
-            .map_err(|e| e.to_string())?;
-        out.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
+        Ok(ParsedGroupKey::Eth {
+            dst_ip: dst_ip.to_string(),
+            dst_port,
+        })
     } else {
-        return Err(format!("bad group key: {group_key}"));
-    };
+        Err(format!("bad group key: {group_key}"))
+    }
+}
+
+/// Keyset-paginates by `msg_id` across one or more groups (OR). `cursor` is
+/// the last `msg_id` already seen (`None` for the first page); the returned
+/// `next_cursor` is `None` once the selection is exhausted. Empty
+/// `group_keys` yields an empty page (not an error).
+pub fn list_messages(
+    conn: &trace_store::Connection,
+    group_keys: &[String],
+    cursor: Option<i64>,
+    limit: i64,
+    start_us: i64,
+    end_us: i64,
+) -> Result<MessagePage, String> {
+    if group_keys.is_empty() {
+        return Ok(MessagePage {
+            rows: Vec::new(),
+            next_cursor: None,
+        });
+    }
+
+    let parsed: Vec<ParsedGroupKey> = group_keys
+        .iter()
+        .map(|k| parse_group_key(k))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let cursor = cursor.unwrap_or(-1);
+    let fetch = limit + 1;
+
+    let mut predicates = Vec::with_capacity(parsed.len());
+    let mut params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+    for key in &parsed {
+        match key {
+            ParsedGroupKey::Can { arb_id } => {
+                predicates.push(format!(
+                    "(object_type in ({CAN_OBJECT_TYPES}) and arb_id = ?)"
+                ));
+                params.push(Box::new(*arb_id));
+            }
+            ParsedGroupKey::Eth { dst_ip, dst_port } => {
+                predicates.push(format!(
+                    "(object_type in ({ETHERNET_OBJECT_TYPES}) and dst_ip = ? and dst_port = ?)"
+                ));
+                params.push(Box::new(dst_ip.clone()));
+                params.push(Box::new(*dst_port));
+            }
+        }
+    }
+    params.push(Box::new(start_us));
+    params.push(Box::new(end_us));
+    params.push(Box::new(cursor));
+    params.push(Box::new(fetch));
+
+    let sql = format!(
+        "select msg_id, timestamp_us,
+                case when object_type in ({CAN_OBJECT_TYPES}) then 'CAN' else 'Ethernet' end as bus_label,
+                case when object_type in ({CAN_OBJECT_TYPES}) then cast(arb_id as varchar)
+                     else coalesce(dst_ip,'') || ':' || cast(coalesce(dst_port,0) as varchar) end as id_or_src,
+                case when object_type in ({CAN_OBJECT_TYPES})
+                     then (select name from arxml_can where can_id = arb_id limit 1)
+                     else cast(null as varchar) end as name,
+                dlc, payload_len
+         from messages
+         where ({}) and timestamp_us between ? and ? and msg_id > ?
+         order by msg_id
+         limit ?",
+        predicates.join(" or ")
+    );
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let param_refs: Vec<&dyn duckdb::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let out = stmt
+        .query_map(param_refs.as_slice(), map_message_row)
+        .map_err(|e| e.to_string())?;
+    let mut rows = out
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     let next_cursor = if rows.len() as i64 > limit {
         rows.truncate(limit as usize);
@@ -582,12 +620,13 @@ mod tests {
     #[test]
     fn list_messages_paginates_with_keyset_cursor() {
         let conn = setup();
-        let page1 = list_messages(&conn, "can:100", None, 1, 0, 10_000).unwrap();
+        let keys = vec!["can:100".to_string()];
+        let page1 = list_messages(&conn, &keys, None, 1, 0, 10_000).unwrap();
         assert_eq!(page1.rows.len(), 1);
         assert_eq!(page1.rows[0].msg_id, 0);
         assert_eq!(page1.next_cursor, Some(0));
 
-        let page2 = list_messages(&conn, "can:100", page1.next_cursor, 1, 0, 10_000).unwrap();
+        let page2 = list_messages(&conn, &keys, page1.next_cursor, 1, 0, 10_000).unwrap();
         assert_eq!(page2.rows.len(), 1);
         assert_eq!(page2.rows[0].msg_id, 1);
         assert_eq!(
@@ -599,7 +638,25 @@ mod tests {
     #[test]
     fn list_messages_rejects_unrecognized_group_key() {
         let conn = setup();
-        assert!(list_messages(&conn, "bogus:1", None, 10, 0, 10_000).is_err());
+        assert!(list_messages(&conn, &["bogus:1".to_string()], None, 10, 0, 10_000).is_err());
+    }
+
+    #[test]
+    fn list_messages_empty_keys_returns_empty_page() {
+        let conn = setup();
+        let page = list_messages(&conn, &[], None, 10, 0, 10_000).unwrap();
+        assert!(page.rows.is_empty());
+        assert_eq!(page.next_cursor, None);
+    }
+
+    #[test]
+    fn list_messages_ors_multiple_group_keys() {
+        let conn = setup();
+        let keys = vec!["can:100".to_string(), "can:200".to_string()];
+        let page = list_messages(&conn, &keys, None, 10, 0, 10_000).unwrap();
+        let ids: Vec<i64> = page.rows.iter().map(|r| r.msg_id).collect();
+        assert!(ids.contains(&0), "can:100 rows present");
+        assert!(ids.len() >= 2, "OR across groups returns rows from both");
     }
 
     #[test]
@@ -820,7 +877,7 @@ mod tests {
     #[test]
     fn list_messages_respects_time_bound() {
         let conn = setup();
-        let page = list_messages(&conn, "can:100", None, 10, 1000, 1000).unwrap();
+        let page = list_messages(&conn, &["can:100".to_string()], None, 10, 1000, 1000).unwrap();
         assert_eq!(
             page.rows.len(),
             1,

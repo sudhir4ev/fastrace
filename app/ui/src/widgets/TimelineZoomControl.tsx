@@ -19,7 +19,7 @@ export default function TimelineZoomControl() {
     const chart = echarts.init(containerRef.current, undefined, { renderer: "canvas" });
     chart.group = CHART_GROUP;
     echarts.connect(CHART_GROUP);
-    // This component only mounts when displayedSignalIds goes from empty to
+    // This component only mounts when activeSignalIds goes from empty to
     // non-empty, so it's always a fresh mount - initialize its slider from
     // the persisted range (not the 0-100 default) so re-adding a signal
     // after removing the last one doesn't visually reset the zoom.

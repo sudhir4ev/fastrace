@@ -25,18 +25,19 @@ export function useEcus(blfPath: string) {
   });
 }
 
-export function useMessages(blfPath: string, groupKey: string | null, startUs: number, endUs: number) {
+export function useMessages(blfPath: string, groupKeys: string[], startUs: number, endUs: number) {
+  const sortedKeys = [...groupKeys].sort();
   return useInfiniteQuery({
-    queryKey: ["messages", blfPath, groupKey, startUs, endUs],
+    queryKey: ["messages", blfPath, sortedKeys, startUs, endUs],
     queryFn: ({ pageParam }) =>
-      getTraceDataSource().listMessages(blfPath, groupKey as string, pageParam, MESSAGE_PAGE_SIZE, startUs, endUs),
+      getTraceDataSource().listMessages(blfPath, groupKeys, pageParam, MESSAGE_PAGE_SIZE, startUs, endUs),
     initialPageParam: null as number | null,
     // React Query's infinite-query pagination only stops fetching when this
     // returns `undefined` - a `null` passed straight through (the API
     // contract's "no more pages" value) would be treated as a valid next
     // param and loop forever re-requesting the last page.
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: groupKey !== null,
+    enabled: groupKeys.length > 0,
   });
 }
 
@@ -48,15 +49,17 @@ export function useMessageDetail(blfPath: string, msgId: number | null, startUs:
   });
 }
 
-export function useMessageCount(blfPath: string) {
+export function useMessageCount(blfPath: string, enabled = true) {
   return useQuery({
     queryKey: ["message-count", blfPath],
     queryFn: () => getTraceDataSource().countMessages(blfPath),
+    enabled,
   });
 }
 
 export const CONTAINER_INDEX_KEY = (blfPath: string) => ["container-index", blfPath];
 export const SIGNAL_COVERAGE_KEY = (blfPath: string) => ["signal-coverage", blfPath];
+export const TRACE_TIME_RANGE_KEY = (blfPath: string) => ["trace-time-range", blfPath];
 
 export function useContainerIndex(blfPath: string) {
   return useQuery({
@@ -65,10 +68,11 @@ export function useContainerIndex(blfPath: string) {
   });
 }
 
-export function useSignalCoverage(blfPath: string) {
+export function useSignalCoverage(blfPath: string, enabled = true) {
   return useQuery({
     queryKey: SIGNAL_COVERAGE_KEY(blfPath),
     queryFn: () => getTraceDataSource().listSignalCoverage(blfPath),
+    enabled,
   });
 }
 
@@ -162,10 +166,11 @@ export function useRunDetectorQuery(blfPath: string, startUs: number, endUs: num
 // without this, each chart auto-scales to its own series' extent, and
 // CHART_GROUP's percentage-based zoom sync maps the same percentage to
 // different absolute time windows per chart (the misalignment this fixes).
-export function useTraceTimeRange(blfPath: string) {
+export function useTraceTimeRange(blfPath: string, enabled = true) {
   return useQuery({
-    queryKey: ["trace-time-range", blfPath],
+    queryKey: TRACE_TIME_RANGE_KEY(blfPath),
     queryFn: () => getTraceDataSource().getTraceTimeRange(blfPath),
+    enabled,
   });
 }
 
@@ -202,6 +207,11 @@ export function useApplyTrim(blfPath: string) {
       // apply-trim extends signal_coverage and may flip container_index.decoded.
       queryClient.invalidateQueries({ queryKey: CONTAINER_INDEX_KEY(blfPath) });
       queryClient.invalidateQueries({ queryKey: SIGNAL_COVERAGE_KEY(blfPath) });
+      // TrimControl may have paused / failed reads while the sidecar held the
+      // DuckDB write lock - refresh those once the store is readable again.
+      queryClient.invalidateQueries({ queryKey: TRACE_TIME_RANGE_KEY(blfPath) });
+      queryClient.invalidateQueries({ queryKey: ["message-count", blfPath] });
+      queryClient.invalidateQueries({ queryKey: ["message-count-in-range", blfPath] });
       const detail = `${activeSignalIds.length} signal${activeSignalIds.length === 1 ? "" : "s"}`;
       getTraceDataSource()
         .recordActivity(blfPath, "decode", result.elapsedMs, detail)

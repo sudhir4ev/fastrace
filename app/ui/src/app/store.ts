@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { DetectorMatch } from "@/shared/api/trace-source";
 
-export type LeftTab = "signals" | "messages" | "ecus";
+export type WorkspaceTab = "signals" | "messages";
 
 export interface TrimRange {
   start: number;
@@ -9,32 +9,19 @@ export interface TrimRange {
 }
 
 export interface WorkspaceState {
-  selectedGroupKey: string | null;
+  selectedGroupKeys: string[];
   selectedMessageId: number | null;
-  leftTab: LeftTab;
-  // Committed signal selection (post "Read Payloads") - what's pinned to the
-  // top of the Signals tab and considered "active". `pendingSignalIds` is the
-  // transient, not-yet-applied checkbox state local to the Signals tab; it
-  // never touches the backend until Read Payloads is clicked.
+  workspaceTab: WorkspaceTab;
+  // Committed signal selection (post Apply) - chips and timeline plot.
+  // `pendingSignalIds` is the draft checkbox state in SignalSelect until Apply.
   activeSignalIds: Set<number>;
   pendingSignalIds: Set<number>;
-  // Subset of active (cached) signals currently plotted in the Timeline.
-  // Toggled per pill click, independent of decoding.
-  displayedSignalIds: Set<number>;
-  setSelectedGroup: (key: string | null) => void;
+  setSelectedGroupKeys: (keys: string[]) => void;
   setSelectedMessage: (id: number | null) => void;
-  setLeftTab: (tab: LeftTab) => void;
+  setWorkspaceTab: (tab: WorkspaceTab) => void;
   setPendingSignalIds: (ids: Set<number>) => void;
   commitActiveSignalIds: (ids: Set<number>) => void;
-  toggleDisplayedSignal: (id: number) => void;
-  // Called once per signal right after a Read Payloads run that decoded it
-  // for the first time. Only takes effect if nothing is displayed yet -
-  // re-applying an already-cached selection must not trigger this.
-  autoDisplayFirstIfEmpty: (id: number) => void;
-  // Drops any displayed signal id that the live catalog no longer reports as
-  // cached (e.g. after a catalog refetch) - keeps pills and chart in sync
-  // without the caller having to know why a signal stopped being cached.
-  reconcileDisplayedSignals: (cachedIds: Set<number>) => void;
+  removeActiveSignal: (id: number) => void;
   // Detector Query editor state (Analyzer panel). One query at a time -
   // every run replaces the previous result wholesale. `detectorQueryHasRun`
   // is distinct from `detectorMatches.length === 0`: a query that matched
@@ -72,48 +59,33 @@ export interface WorkspaceState {
   resetWorkspace: () => void;
 }
 
+function sameKeys(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((k) => set.has(k));
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
-  selectedGroupKey: null,
+  selectedGroupKeys: [],
   selectedMessageId: null,
-  leftTab: "messages",
+  workspaceTab: "signals",
   activeSignalIds: new Set(),
   pendingSignalIds: new Set(),
-  displayedSignalIds: new Set(),
-  // Switching groups must drop any message selection from the previous
-  // group - otherwise MessageDetails keeps showing a message that no
-  // longer belongs to the group currently being browsed.
-  setSelectedGroup: (key) => set({ selectedGroupKey: key, selectedMessageId: null }),
+  setSelectedGroupKeys: (keys) => {
+    if (sameKeys(keys, get().selectedGroupKeys)) return;
+    set({ selectedGroupKeys: keys, selectedMessageId: null });
+  },
   setSelectedMessage: (id) => set({ selectedMessageId: id }),
-  setLeftTab: (tab) => set({ leftTab: tab }),
+  setWorkspaceTab: (tab) => set({ workspaceTab: tab }),
   setPendingSignalIds: (ids) => set({ pendingSignalIds: ids }),
   commitActiveSignalIds: (ids) => set({ activeSignalIds: ids, pendingSignalIds: ids }),
-  toggleDisplayedSignal: (id) =>
+  removeActiveSignal: (id) =>
     set((s) => {
-      const next = new Set(s.displayedSignalIds);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return { displayedSignalIds: next };
-    }),
-  autoDisplayFirstIfEmpty: (id) => {
-    if (get().displayedSignalIds.size === 0) {
-      set({ displayedSignalIds: new Set([id]) });
-    }
-  },
-  reconcileDisplayedSignals: (cachedIds) =>
-    set((s) => {
-      let changed = false;
-      const next = new Set<number>();
-      for (const id of s.displayedSignalIds) {
-        if (cachedIds.has(id)) {
-          next.add(id);
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? { displayedSignalIds: next } : {};
+      const active = new Set(s.activeSignalIds);
+      active.delete(id);
+      const pending = new Set(s.pendingSignalIds);
+      pending.delete(id);
+      return { activeSignalIds: active, pendingSignalIds: pending };
     }),
   detectorQuerySql: "",
   detectorMatches: [],
@@ -168,12 +140,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   resetTrimRange: () => set({ appliedTrimRange: null, pendingTrimRange: null }),
   resetWorkspace: () =>
     set({
-      selectedGroupKey: null,
+      selectedGroupKeys: [],
       selectedMessageId: null,
-      leftTab: "messages",
+      workspaceTab: "signals",
       activeSignalIds: new Set(),
       pendingSignalIds: new Set(),
-      displayedSignalIds: new Set(),
       detectorQuerySql: "",
       detectorMatches: [],
       detectorQueryTruncated: false,

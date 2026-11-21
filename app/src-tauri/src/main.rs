@@ -255,7 +255,7 @@ fn list_message_groups(
 #[tauri::command]
 fn list_messages(
     blf_path: String,
-    group_key: String,
+    group_keys: Vec<String>,
     cursor: Option<i64>,
     limit: i64,
     start_us: i64,
@@ -263,7 +263,7 @@ fn list_messages(
 ) -> Result<query::MessagePage, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::list_messages(&conn, &group_key, cursor, limit, start_us, end_us)
+    query::list_messages(&conn, &group_keys, cursor, limit, start_us, end_us)
 }
 
 #[tauri::command]

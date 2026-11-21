@@ -56,7 +56,7 @@ type Lane =
   | { kind: "signal"; top: number; height: number; signalId: number; name: string; color: string };
 
 export default function TimelineChart({ blfPath, minTs, maxTs }: TimelineChartProps) {
-  const displayedSignalIds = Array.from(useWorkspaceStore((s) => s.displayedSignalIds));
+  const activeSignalIds = Array.from(useWorkspaceStore((s) => s.activeSignalIds));
   const detectorMatches = useWorkspaceStore((s) => s.detectorMatches);
   const detectorQueryHasRun = useWorkspaceStore((s) => s.detectorQueryHasRun);
   const setSelectedMessage = useWorkspaceStore((s) => s.setSelectedMessage);
@@ -64,7 +64,7 @@ export default function TimelineChart({ blfPath, minTs, maxTs }: TimelineChartPr
   const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
   const samples = useSignalSamplesList(
     blfPath,
-    displayedSignalIds,
+    activeSignalIds,
     trimRange?.start ?? 0,
     trimRange?.end ?? Number.MAX_SAFE_INTEGER
   );
@@ -85,14 +85,14 @@ export default function TimelineChart({ blfPath, minTs, maxTs }: TimelineChartPr
       result.push({ kind: "match", top, height: MATCH_LANE_HEIGHT });
       top += MATCH_LANE_HEIGHT;
     }
-    for (const signalId of displayedSignalIds) {
+    for (const signalId of activeSignalIds) {
       const colorIndex = (catalog.data ?? []).findIndex((c) => c.signalId === signalId);
       const name = catalog.data?.find((c) => c.signalId === signalId)?.name ?? `signal ${signalId}`;
       result.push({ kind: "signal", top, height: SIGNAL_LANE_HEIGHT, signalId, name, color: getSignalColor(colorIndex) });
       top += SIGNAL_LANE_HEIGHT;
     }
     return result;
-  }, [detectorQueryHasRun, displayedSignalIds.join(","), catalog.data]);
+  }, [detectorQueryHasRun, activeSignalIds.join(","), catalog.data]);
 
   const totalHeight = lanes.reduce((sum, l) => sum + l.height, 0) + BOTTOM_AXIS_HEIGHT;
 
@@ -165,7 +165,7 @@ export default function TimelineChart({ blfPath, minTs, maxTs }: TimelineChartPr
       lane.kind === "match"
         ? { type: "value" as const, gridIndex: i, show: false, min: -1, max: 1 }
         : (() => {
-            const data = samples[displayedSignalIds.indexOf(lane.signalId)]?.data ?? [];
+            const data = samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [];
             const values = data.map(([, v]: [number, number]) => v);
             const [min, max] = values.length ? minMax(values) : [0, 1];
             const pad = (max - min) * 0.1 || 1;
@@ -203,7 +203,7 @@ export default function TimelineChart({ blfPath, minTs, maxTs }: TimelineChartPr
             name: lane.name,
             xAxisIndex: i,
             yAxisIndex: i,
-            data: samples[displayedSignalIds.indexOf(lane.signalId)]?.data ?? [],
+            data: samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [],
             showSymbol: false,
             large: true,
             sampling: "lttb" as const,
@@ -238,7 +238,7 @@ export default function TimelineChart({ blfPath, minTs, maxTs }: TimelineChartPr
     // the component has painted, catches it stuck at whatever size it was
     // wrongly measured at on init.
     chart.resize();
-  }, [lanes, samples, detectorMatches, minTs, maxTs, displayedSignalIds]);
+  }, [lanes, samples, detectorMatches, minTs, maxTs, activeSignalIds]);
 
   // containerRef's div must stay mounted even with zero lanes - the init
   // effect below only runs once on mount ([] deps), so swapping it out for a

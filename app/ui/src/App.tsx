@@ -64,8 +64,8 @@ export default function App() {
       // the summary transition never races the "prepare-progress" event
       // listener - the event stream is only for the live counters in the
       // header's byte-progress indicator. The workspace's own data (trace
-      // summary, message groups, ECUs) is fetched independently by TraceRail
-      // via React Query, so App.tsx no longer calls get_trace_summary itself.
+      // summary / message groups) is fetched independently by workspace
+      // panels via React Query, so App.tsx no longer calls get_trace_summary itself.
       const doneTick = await invoke<ProgressTick & { done: true }>("prepare_trace", {
         blfPath: startBlfPath,
         arxmlPath,

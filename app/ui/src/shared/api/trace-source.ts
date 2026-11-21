@@ -108,7 +108,7 @@ export interface TraceDataSource {
   listMessageGroups(blfPath: string, startUs: number, endUs: number): Promise<MessageGroup[]>;
   listMessages(
     blfPath: string,
-    groupKey: string,
+    groupKeys: string[],
     cursor: number | null,
     limit: number,
     startUs: number,
@@ -156,13 +156,13 @@ export class TauriTraceDataSource implements TraceDataSource {
 
   listMessages(
     blfPath: string,
-    groupKey: string,
+    groupKeys: string[],
     cursor: number | null,
     limit: number,
     startUs: number,
     endUs: number
   ): Promise<MessagePage> {
-    return invoke<MessagePage>("list_messages", { blfPath, groupKey, cursor, limit, startUs, endUs });
+    return invoke<MessagePage>("list_messages", { blfPath, groupKeys, cursor, limit, startUs, endUs });
   }
 
   getMessageDetail(blfPath: string, msgId: number, startUs: number, endUs: number): Promise<MessageDetail> {

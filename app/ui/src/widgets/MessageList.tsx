@@ -9,13 +9,13 @@ interface MessageListProps {
 }
 
 export default function MessageList({ blfPath }: MessageListProps) {
-  const selectedGroupKey = useWorkspaceStore((s) => s.selectedGroupKey);
+  const selectedGroupKeys = useWorkspaceStore((s) => s.selectedGroupKeys);
   const selectedMessageId = useWorkspaceStore((s) => s.selectedMessageId);
   const setSelectedMessage = useWorkspaceStore((s) => s.setSelectedMessage);
   const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
   const { data, isPending, isError, fetchNextPage, hasNextPage, isFetchingNextPage } = useMessages(
     blfPath,
-    selectedGroupKey,
+    selectedGroupKeys,
     trimRange?.start ?? 0,
     trimRange?.end ?? Number.MAX_SAFE_INTEGER
   );
@@ -38,10 +38,10 @@ export default function MessageList({ blfPath }: MessageListProps) {
   }
 
   let content: ReactNode;
-  if (selectedGroupKey === null) {
+  if (selectedGroupKeys.length === 0) {
     content = (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        Select a message group from the left rail.
+        Select one or more message groups.
       </div>
     );
   } else if (isPending) {
@@ -59,7 +59,7 @@ export default function MessageList({ blfPath }: MessageListProps) {
   } else if (rows.length === 0) {
     content = (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        No messages in this group.
+        No messages in the selected groups.
       </div>
     );
   } else {
@@ -71,9 +71,11 @@ export default function MessageList({ blfPath }: MessageListProps) {
             return (
               <div
                 key={row.msgId}
-                onClick={() => setSelectedMessage(row.msgId)}
+                onClick={() =>
+                  setSelectedMessage(selectedMessageId === row.msgId ? null : row.msgId)
+                }
                 className={cn(
-                  "absolute left-0 top-0 flex w-full items-center gap-4 border-b border-border px-3 font-mono text-xs",
+                  "absolute left-0 top-0 flex w-full cursor-pointer items-center gap-4 border-b border-border px-3 font-mono text-xs",
                   selectedMessageId === row.msgId && "bg-accent"
                 )}
                 style={{ height: item.size, transform: `translateY(${item.start}px)` }}
