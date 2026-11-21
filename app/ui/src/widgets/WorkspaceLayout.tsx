@@ -58,15 +58,17 @@ function StatusBar({
 
 function SignalsTab({ blfPath, preparing }: { blfPath: string; preparing: boolean }) {
   return (
-    <ResizablePanelGroup direction="vertical">
-      <ResizablePanel defaultSize={60} minSize={25}>
-        {preparing ? <PanelSkeleton /> : <TimelinePanel blfPath={blfPath} />}
-      </ResizablePanel>
-      <ResizableHandle withHandle />
-      <ResizablePanel defaultSize={40} minSize={15}>
-        {preparing ? <PanelSkeleton /> : <AnalyzerPanel blfPath={blfPath} />}
-      </ResizablePanel>
-    </ResizablePanelGroup>
+    <div className="h-full min-h-0">
+      <ResizablePanelGroup direction="vertical" className="h-full">
+        <ResizablePanel defaultSize={60} minSize={25}>
+          {preparing ? <PanelSkeleton /> : <TimelinePanel blfPath={blfPath} />}
+        </ResizablePanel>
+        <ResizableHandle withHandle />
+        <ResizablePanel defaultSize={40} minSize={15}>
+          {preparing ? <PanelSkeleton /> : <AnalyzerPanel blfPath={blfPath} />}
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    </div>
   );
 }
 
@@ -125,7 +127,7 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
       <Tabs
         value={workspaceTab}
         onValueChange={(v) => setWorkspaceTab(v as WorkspaceTab)}
-        className="flex min-h-0 flex-1 flex-col"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden"
       >
         <div className="shrink-0 border-b border-border px-3 py-1.5">
           <TabsList>
@@ -133,21 +135,22 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
             <TabsTrigger value="messages">Messages</TabsTrigger>
           </TabsList>
         </div>
-        {/* No `display`-setting utility on TabsContent: Radix uses `hidden`,
-            and a `flex` class on TabsContent itself defeats the hide. */}
+        {/* Keep height via h-full/flex-1; avoid a bare `flex` on TabsContent —
+            Radix hides inactive panels with `hidden`, and a display utility on
+            the same node can defeat that. Active panel uses data-state flex. */}
         <TabsContent
           value="signals"
-          className="mt-0 min-h-0 flex-1 data-[state=active]:flex data-[state=active]:flex-col"
+          className="mt-0 min-h-0 flex-1 overflow-hidden data-[state=active]:flex data-[state=active]:flex-col"
         >
-          <div className="min-h-0 flex-1">
+          <div className="h-full min-h-0 flex-1 overflow-hidden">
             <SignalsTab blfPath={blfPath} preparing={preparing} />
           </div>
         </TabsContent>
         <TabsContent
           value="messages"
-          className="mt-0 min-h-0 flex-1 data-[state=active]:flex data-[state=active]:flex-col"
+          className="mt-0 min-h-0 flex-1 overflow-hidden data-[state=active]:flex data-[state=active]:flex-col"
         >
-          <div className="min-h-0 flex-1">
+          <div className="h-full min-h-0 flex-1 overflow-hidden">
             <MessagesTab blfPath={blfPath} preparing={preparing} />
           </div>
         </TabsContent>
