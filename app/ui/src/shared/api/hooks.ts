@@ -1,6 +1,23 @@
-import { useInfiniteQuery, useMutation, useMutationState, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useIsFetching,
+  useMutation,
+  useMutationState,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useToastStore } from "@/app/toast-store";
 import { getTraceDataSource } from "./trace-source";
+
+/** Query roots that read local JSON / filesystem, not the Trace Store. */
+const NON_STORE_QUERY_ROOTS = new Set([
+  "file-sizes",
+  "path-size",
+  "recent-traces",
+  "query-history",
+  "activities",
+]);
 
 const MESSAGE_PAGE_SIZE = 200;
 
@@ -156,9 +173,32 @@ export function useSignalSamplesList(
 // shared-constant mechanism across the Tauri IPC boundary.
 export const DETECTOR_QUERY_MATCH_LIMIT = 200_000;
 
-export function useRunDetectorQuery(blfPath: string, startUs: number, endUs: number) {
+const detectorQueryMutationKey = (blfPath: string) => ["run-detector-query", blfPath];
+
+export function useRunDetectorQuery(blfPath: string) {
   return useMutation({
-    mutationFn: (sql: string) => getTraceDataSource().runDetectorQuery(blfPath, sql, startUs, endUs),
+    mutationKey: detectorQueryMutationKey(blfPath),
+    mutationFn: ({
+      sql,
+      respectTrim,
+      startUs,
+      endUs,
+      targetSignalIds,
+    }: {
+      sql: string;
+      respectTrim: boolean;
+      startUs: number;
+      endUs: number;
+      targetSignalIds: number[];
+    }) =>
+      getTraceDataSource().runDetectorQuery(
+        blfPath,
+        sql,
+        respectTrim,
+        startUs,
+        endUs,
+        targetSignalIds
+      ),
   });
 }
 
@@ -228,6 +268,33 @@ export function useIsApplyingTrim(blfPath: string): boolean {
   return states.length > 0;
 }
 
+/** Footer I/O LEDs: BLF sidecar reads vs Trace Store / DuckDB activity. */
+export function useIoBusy(
+  blfPath: string,
+  preparing: boolean
+): { blfBusy: boolean; duckdbBusy: boolean } {
+  const applyingTrim = useIsApplyingTrim(blfPath);
+  const detectorPending =
+    useMutationState({
+      filters: { mutationKey: detectorQueryMutationKey(blfPath), status: "pending" },
+    }).length > 0;
+  const storeFetching = useIsFetching({
+    predicate: (query) => {
+      const key = query.queryKey;
+      if (!Array.isArray(key) || key.length < 2) return false;
+      const root = key[0];
+      if (typeof root !== "string" || NON_STORE_QUERY_ROOTS.has(root)) return false;
+      return key[1] === blfPath;
+    },
+  });
+
+  const sidecarBusy = preparing || applyingTrim;
+  return {
+    blfBusy: sidecarBusy,
+    duckdbBusy: sidecarBusy || detectorPending || storeFetching > 0,
+  };
+}
+
 export function useFileSizes(blfPath: string) {
   return useQuery({
     queryKey: ["file-sizes", blfPath],
@@ -249,6 +316,49 @@ export function useRecentTraces() {
   return useQuery({
     queryKey: RECENT_TRACES_KEY,
     queryFn: () => getTraceDataSource().listRecentTraces(),
+  });
+}
+
+const QUERY_HISTORY_KEY = (blfPath: string) => ["query-history", blfPath];
+
+export function useQueryHistory(blfPath: string) {
+  return useQuery({
+    queryKey: QUERY_HISTORY_KEY(blfPath),
+    queryFn: () => getTraceDataSource().listQueryHistory(blfPath),
+  });
+}
+
+export function useRecordQuery(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      sql,
+      targetSignalIds,
+      respectTrim,
+      matchCount,
+    }: {
+      sql: string;
+      targetSignalIds: number[];
+      respectTrim: boolean;
+      matchCount: number;
+    }) => getTraceDataSource().recordQuery(blfPath, sql, targetSignalIds, respectTrim, matchCount),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: QUERY_HISTORY_KEY(blfPath) }),
+  });
+}
+
+export function useRemoveQuery(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sql: string) => getTraceDataSource().removeQuery(blfPath, sql),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: QUERY_HISTORY_KEY(blfPath) }),
+  });
+}
+
+export function useClearQueryHistory(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => getTraceDataSource().clearQueryHistory(blfPath),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: QUERY_HISTORY_KEY(blfPath) }),
   });
 }
 

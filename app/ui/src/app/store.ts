@@ -1,11 +1,17 @@
 import { create } from "zustand";
-import type { DetectorMatch } from "@/shared/api/trace-source";
+import type { AnomalyBin, DetectorMatch, DetectorQueryRan } from "@/shared/api/trace-source";
 
 export type WorkspaceTab = "signals" | "messages";
 
 export interface TrimRange {
   start: number;
   end: number;
+}
+
+export interface AnomalyScope {
+  startUs: number;
+  endUs: number;
+  wholeTrace: boolean;
 }
 
 export interface WorkspaceState {
@@ -28,12 +34,18 @@ export interface WorkspaceState {
   // nothing still "ran" and the Match lane should show (empty), not stay
   // hidden as if nothing happened yet.
   detectorQuerySql: string;
+  detectorTargetSignalIds: number[];
+  detectorRespectTrim: boolean;
   detectorMatches: DetectorMatch[];
   detectorQueryTruncated: boolean;
   detectorQueryError: string | null;
   detectorQueryHasRun: boolean;
+  anomalyBins: AnomalyBin[];
+  anomalyScope: AnomalyScope | null;
   setDetectorQuerySql: (sql: string) => void;
-  setDetectorQueryResult: (matches: DetectorMatch[], truncated: boolean) => void;
+  setDetectorTargetSignalIds: (ids: number[]) => void;
+  setDetectorRespectTrim: (respect: boolean) => void;
+  setDetectorQueryResult: (ran: DetectorQueryRan) => void;
   setDetectorQueryError: (error: string) => void;
   resetDetectorQuery: () => void;
   // Shared dataZoom window (percent, 0-100) for TimelineChart/TimelineZoomControl.
@@ -88,17 +100,36 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       return { activeSignalIds: active, pendingSignalIds: pending };
     }),
   detectorQuerySql: "",
+  detectorTargetSignalIds: [],
+  detectorRespectTrim: true,
   detectorMatches: [],
   detectorQueryTruncated: false,
   detectorQueryError: null,
   detectorQueryHasRun: false,
+  anomalyBins: [],
+  anomalyScope: null,
   setDetectorQuerySql: (sql) => set({ detectorQuerySql: sql }),
-  setDetectorQueryResult: (matches, truncated) =>
-    set({
-      detectorMatches: matches,
-      detectorQueryTruncated: truncated,
-      detectorQueryError: null,
-      detectorQueryHasRun: true,
+  setDetectorTargetSignalIds: (ids) => set({ detectorTargetSignalIds: ids }),
+  setDetectorRespectTrim: (respect) => set({ detectorRespectTrim: respect }),
+  setDetectorQueryResult: (ran) =>
+    set((s) => {
+      // Union targets into Active Signals (never remove other actives).
+      const active = new Set(s.activeSignalIds);
+      for (const id of ran.targetSignalIds) active.add(id);
+      return {
+        detectorMatches: ran.matches,
+        detectorQueryTruncated: ran.truncated,
+        detectorQueryError: null,
+        detectorQueryHasRun: true,
+        anomalyBins: ran.bins,
+        anomalyScope: {
+          startUs: ran.scopeStartUs,
+          endUs: ran.scopeEndUs,
+          wholeTrace: ran.wholeTrace,
+        },
+        activeSignalIds: active,
+        pendingSignalIds: new Set([...s.pendingSignalIds, ...ran.targetSignalIds]),
+      };
     }),
   setDetectorQueryError: (error) =>
     set({
@@ -106,14 +137,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       detectorMatches: [],
       detectorQueryTruncated: false,
       detectorQueryHasRun: true,
+      anomalyBins: [],
+      anomalyScope: null,
     }),
   resetDetectorQuery: () =>
     set({
       detectorQuerySql: "",
+      detectorTargetSignalIds: [],
+      detectorRespectTrim: true,
       detectorMatches: [],
       detectorQueryTruncated: false,
       detectorQueryError: null,
       detectorQueryHasRun: false,
+      anomalyBins: [],
+      anomalyScope: null,
     }),
   timelineZoomRange: { start: 0, end: 100 },
   setTimelineZoomRange: (range) => set({ timelineZoomRange: range }),
@@ -146,10 +183,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       activeSignalIds: new Set(),
       pendingSignalIds: new Set(),
       detectorQuerySql: "",
+      detectorTargetSignalIds: [],
+      detectorRespectTrim: true,
       detectorMatches: [],
       detectorQueryTruncated: false,
       detectorQueryError: null,
       detectorQueryHasRun: false,
+      anomalyBins: [],
+      anomalyScope: null,
       timelineZoomRange: { start: 0, end: 100 },
       appliedTrimRange: null,
       pendingTrimRange: null,

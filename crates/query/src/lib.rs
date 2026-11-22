@@ -498,11 +498,40 @@ pub struct DetectorMatch {
     pub timestamp_us: i64,
 }
 
+/// One of 500 equal-width bins over a Detector Query's run scope. Only active
+/// bins (count > 0) are returned. `start_us`/`end_us` are the bin's absolute
+/// time bounds so the UI never re-derives them.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnomalyBin {
+    pub bin: i64,
+    pub count: i64,
+    pub first_msg_id: i64,
+    pub first_timestamp_us: i64,
+    pub start_us: i64,
+    pub end_us: i64,
+}
+
+/// A target signal whose `signal_coverage` does not fully cover the requested
+/// `[need_start_us, need_end_us]` scope - returned by
+/// [`missing_signal_coverage`] so the UI can confirm a decode before running.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingSignal {
+    pub signal_id: i64,
+    pub name: String,
+    pub need_start_us: i64,
+    pub need_end_us: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectorQueryResult {
     pub matches: Vec<DetectorMatch>,
     pub truncated: bool,
+    pub bins: Vec<AnomalyBin>,
+    pub scope_start_us: i64,
+    pub scope_end_us: i64,
 }
 
 /// Default Match cap for the Analyzer's Detector Query editor - same order of
@@ -510,8 +539,162 @@ pub struct DetectorQueryResult {
 /// at this scale via `large: true` echarts rendering).
 pub const DETECTOR_QUERY_MATCH_LIMIT: i64 = 200_000;
 
+/// Fixed anomaly-rail segmentation over a Detector Query's run scope.
+pub const ANOMALY_BIN_COUNT: i64 = 500;
+
+/// Absolute `[start, end]` bounds for bin `bin` (0-based) over
+/// `[scope_start, scope_end]`. The last bin always ends at `scope_end`.
+pub fn anomaly_bin_bounds(
+    bin: i64,
+    scope_start_us: i64,
+    scope_end_us: i64,
+    bin_count: i64,
+) -> (i64, i64) {
+    let denom = (scope_end_us - scope_start_us).saturating_add(1);
+    let start = scope_start_us + (bin * denom) / bin_count;
+    let end = if bin >= bin_count - 1 {
+        scope_end_us
+    } else {
+        // Next bin's start minus one. When the scope is narrower than
+        // `bin_count` microseconds some early bins share the same start;
+        // clamp so end never falls below start.
+        let next_start = scope_start_us + ((bin + 1) * denom) / bin_count;
+        next_start.saturating_sub(1).max(start)
+    };
+    (start, end)
+}
+
+/// Returns every `target_ids` entry whose `signal_coverage` is missing or
+/// does not fully cover `[start_us, end_us]`. Empty `target_ids` → empty Vec
+/// (protocol-only queries need no decode precondition). Duplicate ids are
+/// reported once.
+pub fn missing_signal_coverage(
+    conn: &trace_store::Connection,
+    target_ids: &[i64],
+    start_us: i64,
+    end_us: i64,
+) -> Result<Vec<MissingSignal>, String> {
+    if target_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (lo, hi) = if start_us <= end_us {
+        (start_us, end_us)
+    } else {
+        (end_us, start_us)
+    };
+    let coverage: std::collections::HashMap<i64, (i64, i64)> = list_signal_coverage(conn)?
+        .into_iter()
+        .map(|c| (c.signal_id, (c.start_us, c.end_us)))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut missing = Vec::new();
+    for &id in target_ids {
+        if !seen.insert(id) {
+            continue;
+        }
+        let ok = coverage
+            .get(&id)
+            .map(|&(cs, ce)| cs <= lo && ce >= hi)
+            .unwrap_or(false);
+        if ok {
+            continue;
+        }
+        let name = conn
+            .query_row(
+                "select name from arxml_signal where signal_id = ?",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| format!("signal {id}"));
+        missing.push(MissingSignal {
+            signal_id: id,
+            name,
+            need_start_us: lo,
+            need_end_us: hi,
+        });
+    }
+    Ok(missing)
+}
+
+fn normalize_detector_sql(sql: &str) -> Result<String, String> {
+    let trimmed = sql.trim();
+    let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed).trim();
+    if trimmed.is_empty() {
+        return Err("query is empty".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Scoped subquery shared by the Match extract and the anomaly-bin aggregate.
+/// The trailing newline keeps a trailing `--` line comment from swallowing
+/// the wrapper suffix.
+fn detector_scoped_sql(trimmed: &str, start_us: i64, end_us: i64) -> String {
+    format!(
+        "select * from ({trimmed}\n) as detector_query_user_sql
+         where timestamp_us between {start_us} and {end_us}"
+    )
+}
+
+/// Groups scoped Detector Query rows into [`ANOMALY_BIN_COUNT`] equal-width
+/// bins. Only active bins are returned. Runs the user SQL once (separate from
+/// the Match extract - DuckDB read-only connections cannot create TEMP tables
+/// to share the result set).
+pub fn compute_anomaly_bins(
+    conn: &trace_store::Connection,
+    sql: &str,
+    start_us: i64,
+    end_us: i64,
+    bin_count: i64,
+) -> Result<Vec<AnomalyBin>, String> {
+    let trimmed = normalize_detector_sql(sql)?;
+    let (lo, hi) = if start_us <= end_us {
+        (start_us, end_us)
+    } else {
+        (end_us, start_us)
+    };
+    if bin_count < 1 {
+        return Err("bin_count must be >= 1".to_string());
+    }
+    let scoped = detector_scoped_sql(&trimmed, lo, hi);
+    // Clamp the floor expression into [0, bin_count-1] so a floating-point
+    // edge at hi never lands in bin `bin_count`.
+    let bins_sql = format!(
+        "select
+           least({bin_count} - 1,
+                 greatest(0, cast(floor((timestamp_us - {lo})::double * {bin_count}
+                                        / ({hi} - {lo} + 1)) as bigint))) as bin,
+           count(*)::bigint as cnt,
+           arg_min(msg_id, timestamp_us) as first_msg_id,
+           min(timestamp_us) as first_timestamp_us
+         from ({scoped}) as detector_query_binned
+         group by 1
+         order by 1"
+    );
+    let mut stmt = conn.prepare(&bins_sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let bin: i64 = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            let first_msg_id: i64 = row.get(2)?;
+            let first_timestamp_us: i64 = row.get(3)?;
+            let (start_us, end_us) = anomaly_bin_bounds(bin, lo, hi, bin_count);
+            Ok(AnomalyBin {
+                bin,
+                count,
+                first_msg_id,
+                first_timestamp_us,
+                start_us,
+                end_us,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
 /// Runs a user-authored Detector Query and extracts just `msg_id` /
-/// `timestamp_us` from its result, for plotting as Matches on the Timeline.
+/// `timestamp_us` from its result, for plotting as Matches on the Timeline,
+/// plus the 500-bin anomaly segmentation over the same scope.
 /// The query is run read-only (the connection itself is opened read-only) and
 /// wrapped as a subquery rather than string-validated, so DuckDB's own
 /// binder error - not custom validation code - is what reports a missing
@@ -523,11 +706,12 @@ pub fn run_detector_query(
     start_us: i64,
     end_us: i64,
 ) -> Result<DetectorQueryResult, String> {
-    let trimmed = sql.trim();
-    let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed).trim();
-    if trimmed.is_empty() {
-        return Err("query is empty".to_string());
-    }
+    let trimmed = normalize_detector_sql(sql)?;
+    let (lo, hi) = if start_us <= end_us {
+        (start_us, end_us)
+    } else {
+        (end_us, start_us)
+    };
     // A trailing `--` line comment in the user's SQL would otherwise swallow
     // the `) as detector_query_result limit N` suffix appended on the same
     // line - the newline before the closing paren keeps that suffix outside
@@ -535,11 +719,9 @@ pub fn run_detector_query(
     // as literals (not bound params) since they're Rust-generated i64 values,
     // never user text - same trust boundary as the `limit + 1` interpolation
     // below.
+    let scoped = detector_scoped_sql(&trimmed, lo, hi);
     let wrapped = format!(
-        "select msg_id, timestamp_us from (
-           select * from ({trimmed}\n) as detector_query_user_sql
-           where timestamp_us between {start_us} and {end_us}
-         ) as detector_query_result limit {}",
+        "select msg_id, timestamp_us from ({scoped}) as detector_query_result limit {}",
         limit + 1
     );
     let mut stmt = conn.prepare(&wrapped).map_err(|e| e.to_string())?;
@@ -558,7 +740,16 @@ pub fn run_detector_query(
     if truncated {
         matches.truncate(limit as usize);
     }
-    Ok(DetectorQueryResult { matches, truncated })
+    // Second pass for bins - TEMP tables are unavailable on the read-only
+    // Trace Store connection (AccessMode::ReadOnly). Acceptable for MVP.
+    let bins = compute_anomaly_bins(conn, &trimmed, lo, hi, ANOMALY_BIN_COUNT)?;
+    Ok(DetectorQueryResult {
+        matches,
+        truncated,
+        bins,
+        scope_start_us: lo,
+        scope_end_us: hi,
+    })
 }
 
 #[cfg(test)]
@@ -1052,6 +1243,164 @@ mod tests {
             samples,
             vec![(1000, 128.25)],
             "earliest sample first, limited to 1"
+        );
+    }
+
+    #[test]
+    fn missing_signal_coverage_empty_targets_is_empty() {
+        let conn = setup();
+        assert!(missing_signal_coverage(&conn, &[], 1000, 4000)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn missing_signal_coverage_reports_absent_and_partial() {
+        let conn = setup();
+        conn.execute_batch(
+            "CREATE TABLE signal_coverage (signal_id BIGINT PRIMARY KEY, start_us BIGINT, end_us BIGINT);
+             INSERT INTO arxml_signal VALUES (10, 'FullCover', 'can', 100, 0, 8, false, 1.0, 0.0);
+             INSERT INTO arxml_signal VALUES (11, 'PartialCover', 'can', 100, 8, 8, false, 1.0, 0.0);
+             INSERT INTO arxml_signal VALUES (12, 'NoCover', 'can', 100, 16, 8, false, 1.0, 0.0);
+             INSERT INTO signal_coverage VALUES (10, 1000, 4000);
+             INSERT INTO signal_coverage VALUES (11, 1000, 2000);",
+        )
+        .unwrap();
+        let missing = missing_signal_coverage(&conn, &[10, 11, 12], 1000, 4000).unwrap();
+        let ids: Vec<i64> = missing.iter().map(|m| m.signal_id).collect();
+        assert!(!ids.contains(&10), "full cover must not be missing");
+        assert!(ids.contains(&11), "partial cover must be missing");
+        assert!(ids.contains(&12), "absent cover must be missing");
+        let partial = missing.iter().find(|m| m.signal_id == 11).unwrap();
+        assert_eq!(partial.name, "PartialCover");
+        assert_eq!(partial.need_start_us, 1000);
+        assert_eq!(partial.need_end_us, 4000);
+    }
+
+    #[test]
+    fn missing_signal_coverage_accepts_exact_cover() {
+        let conn = setup();
+        conn.execute_batch(
+            "CREATE TABLE signal_coverage (signal_id BIGINT PRIMARY KEY, start_us BIGINT, end_us BIGINT);
+             INSERT INTO arxml_signal VALUES (10, 'Exact', 'can', 100, 0, 8, false, 1.0, 0.0);
+             INSERT INTO signal_coverage VALUES (10, 1500, 2500);",
+        )
+        .unwrap();
+        assert!(missing_signal_coverage(&conn, &[10], 1500, 2500)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn missing_signal_coverage_dedupes_duplicate_ids() {
+        let conn = setup();
+        conn.execute_batch(
+            "CREATE TABLE signal_coverage (signal_id BIGINT PRIMARY KEY, start_us BIGINT, end_us BIGINT);
+             INSERT INTO arxml_signal VALUES (10, 'NoCover', 'can', 100, 0, 8, false, 1.0, 0.0);",
+        )
+        .unwrap();
+        let missing = missing_signal_coverage(&conn, &[10, 10], 1000, 4000).unwrap();
+        assert_eq!(missing.len(), 1);
+    }
+
+    #[test]
+    fn anomaly_bin_bounds_last_bin_ends_at_scope_end() {
+        let (s, e) = anomaly_bin_bounds(499, 1000, 4000, 500);
+        assert_eq!(e, 4000);
+        let (s0, _) = anomaly_bin_bounds(0, 1000, 4000, 500);
+        assert_eq!(s0, 1000);
+        assert!(s > 1000);
+    }
+
+    #[test]
+    fn compute_anomaly_bins_places_endpoints_in_first_and_last_bin() {
+        let conn = setup();
+        // Scope [1000, 4000] - msg at 1000 → bin 0; msg at 4000 → bin 499.
+        let bins = compute_anomaly_bins(
+            &conn,
+            "select msg_id, timestamp_us from messages",
+            1000,
+            4000,
+            500,
+        )
+        .unwrap();
+        assert!(
+            bins.iter().any(|b| b.bin == 0),
+            "first timestamp must land in bin 0, got {bins:?}"
+        );
+        assert!(
+            bins.iter().any(|b| b.bin == 499),
+            "last timestamp must land in bin 499, never 500; got {bins:?}"
+        );
+        assert!(bins.iter().all(|b| b.bin >= 0 && b.bin < 500));
+        let last = bins.iter().find(|b| b.bin == 499).unwrap();
+        assert_eq!(last.end_us, 4000);
+        assert_eq!(last.first_timestamp_us, 4000);
+    }
+
+    #[test]
+    fn compute_anomaly_bins_empty_result_returns_no_bins() {
+        let conn = setup();
+        let bins = compute_anomaly_bins(
+            &conn,
+            "select msg_id, timestamp_us from messages where arb_id = 999",
+            1000,
+            4000,
+            500,
+        )
+        .unwrap();
+        assert!(bins.is_empty());
+    }
+
+    #[test]
+    fn compute_anomaly_bins_one_microsecond_scope() {
+        let conn = setup();
+        let bins = compute_anomaly_bins(
+            &conn,
+            "select msg_id, timestamp_us from messages",
+            1000,
+            1000,
+            500,
+        )
+        .unwrap();
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0].bin, 0);
+        assert_eq!(bins[0].count, 1);
+        assert_eq!(bins[0].start_us, 1000);
+        assert_eq!(bins[0].end_us, 1000);
+    }
+
+    #[test]
+    fn compute_anomaly_bins_handles_trailing_line_comment() {
+        let conn = setup();
+        let bins = compute_anomaly_bins(
+            &conn,
+            "select msg_id, timestamp_us from messages where arb_id = 100 -- note",
+            0,
+            10_000,
+            500,
+        )
+        .unwrap();
+        assert!(!bins.is_empty());
+    }
+
+    #[test]
+    fn run_detector_query_includes_bins_and_scope() {
+        let conn = setup();
+        let result = run_detector_query(
+            &conn,
+            "select msg_id, timestamp_us from messages",
+            10,
+            1000,
+            4000,
+        )
+        .unwrap();
+        assert_eq!(result.scope_start_us, 1000);
+        assert_eq!(result.scope_end_us, 4000);
+        assert!(!result.bins.is_empty());
+        assert_eq!(
+            result.bins.iter().map(|b| b.count).sum::<i64>(),
+            result.matches.len() as i64
         );
     }
 }

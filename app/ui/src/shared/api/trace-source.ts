@@ -78,9 +78,56 @@ export interface DetectorMatch {
   timestampUs: number;
 }
 
-export interface DetectorQueryResult {
+export interface AnomalyBin {
+  bin: number;
+  count: number;
+  firstMsgId: number;
+  firstTimestampUs: number;
+  startUs: number;
+  endUs: number;
+}
+
+export interface MissingSignal {
+  signalId: number;
+  name: string;
+  needStartUs: number;
+  needEndUs: number;
+}
+
+export interface NeedsDecodeInfo {
+  missing: MissingSignal[];
+  wholeTrace: boolean;
+  blfBytes: number;
+  scopeStartUs: number;
+  scopeEndUs: number;
+}
+
+export interface DetectorQueryRan {
   matches: DetectorMatch[];
   truncated: boolean;
+  bins: AnomalyBin[];
+  scopeStartUs: number;
+  scopeEndUs: number;
+  wholeTrace: boolean;
+  elapsedMs: number;
+  targetSignalIds: number[];
+}
+
+/** Adjacent-tagged: exactly one of `needsDecode` / `ran` is set. */
+export interface DetectorQueryResponse {
+  needsDecode?: NeedsDecodeInfo;
+  ran?: DetectorQueryRan;
+}
+
+/** 5 GiB whole-trace decode confirmation threshold (matches the plan). */
+export const WHOLE_TRACE_DECODE_WARN_BYTES = 5 * 1024 * 1024 * 1024;
+
+export interface QueryHistoryEntry {
+  sql: string;
+  targetSignalIds: number[];
+  respectTrim: boolean;
+  ranAt: number;
+  matchCount: number;
 }
 
 export interface TraceTimeRange {
@@ -131,7 +178,14 @@ export interface TraceDataSource {
     startUs: number,
     endUs: number
   ): Promise<[number, number][]>;
-  runDetectorQuery(blfPath: string, sql: string, startUs: number, endUs: number): Promise<DetectorQueryResult>;
+  runDetectorQuery(
+    blfPath: string,
+    sql: string,
+    respectTrim: boolean,
+    startUs: number,
+    endUs: number,
+    targetSignalIds: number[]
+  ): Promise<DetectorQueryResponse>;
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange>;
   applyTrim(blfPath: string, startUs: number, endUs: number, activeSignalIds: number[]): Promise<DecodeResult>;
   recordActivity(blfPath: string, kind: string, elapsedMs: number, detail: string): Promise<void>;
@@ -143,6 +197,16 @@ export interface TraceDataSource {
   listRecentTraces(): Promise<RecentTraceInfo[]>;
   recordRecentTrace(blfPath: string, meta?: PrepareMeta): Promise<void>;
   removeRecentTrace(blfPath: string): Promise<void>;
+  listQueryHistory(blfPath: string): Promise<QueryHistoryEntry[]>;
+  recordQuery(
+    blfPath: string,
+    sql: string,
+    targetSignalIds: number[],
+    respectTrim: boolean,
+    matchCount: number
+  ): Promise<void>;
+  removeQuery(blfPath: string, sql: string): Promise<void>;
+  clearQueryHistory(blfPath: string): Promise<void>;
 }
 
 export class TauriTraceDataSource implements TraceDataSource {
@@ -212,8 +276,22 @@ export class TauriTraceDataSource implements TraceDataSource {
     return invoke<[number, number][]>("get_signal_samples", { blfPath, signalId, limit, startUs, endUs });
   }
 
-  runDetectorQuery(blfPath: string, sql: string, startUs: number, endUs: number): Promise<DetectorQueryResult> {
-    return invoke<DetectorQueryResult>("run_detector_query", { blfPath, sql, startUs, endUs });
+  runDetectorQuery(
+    blfPath: string,
+    sql: string,
+    respectTrim: boolean,
+    startUs: number,
+    endUs: number,
+    targetSignalIds: number[]
+  ): Promise<DetectorQueryResponse> {
+    return invoke<DetectorQueryResponse>("run_detector_query", {
+      blfPath,
+      sql,
+      respectTrim,
+      startUs,
+      endUs,
+      targetSignalIds,
+    });
   }
 
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange> {
@@ -276,6 +354,34 @@ export class TauriTraceDataSource implements TraceDataSource {
 
   removeRecentTrace(blfPath: string): Promise<void> {
     return invoke<void>("remove_recent_trace", { blfPath });
+  }
+
+  listQueryHistory(blfPath: string): Promise<QueryHistoryEntry[]> {
+    return invoke<QueryHistoryEntry[]>("list_query_history", { blfPath });
+  }
+
+  recordQuery(
+    blfPath: string,
+    sql: string,
+    targetSignalIds: number[],
+    respectTrim: boolean,
+    matchCount: number
+  ): Promise<void> {
+    return invoke<void>("record_query", {
+      blfPath,
+      sql,
+      targetSignalIds,
+      respectTrim,
+      matchCount,
+    });
+  }
+
+  removeQuery(blfPath: string, sql: string): Promise<void> {
+    return invoke<void>("remove_query", { blfPath, sql });
+  }
+
+  clearQueryHistory(blfPath: string): Promise<void> {
+    return invoke<void>("clear_query_history", { blfPath });
   }
 }
 

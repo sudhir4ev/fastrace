@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useWorkspaceStore } from "@/app/store";
+import AnomalyRail from "./AnomalyRail";
 import SignalSelect from "./SignalSelect";
 import TimelineChart from "./TimelineChart";
 import TimelineZoomControl from "./TimelineZoomControl";
@@ -18,6 +19,7 @@ export default function TimelinePanel({ blfPath }: TimelinePanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <AnomalyRail blfPath={blfPath} />
       <div className="min-h-0 flex-1">
         <TimelineChart
           blfPath={blfPath}

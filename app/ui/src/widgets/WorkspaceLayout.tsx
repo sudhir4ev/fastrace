@@ -1,6 +1,6 @@
-import { Activity, List } from "lucide-react";
+import { Activity, Database, File, List, type LucideIcon } from "lucide-react";
 import { useWorkspaceStore, type WorkspaceTab } from "@/app/store";
-import { useApplyTrim, useFileSizes } from "@/shared/api/hooks";
+import { useApplyTrim, useFileSizes, useIoBusy } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
 import { cn, formatBytes } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
@@ -38,14 +38,43 @@ function PanelSkeleton() {
   );
 }
 
+function StatusIoLed({
+  label,
+  Icon,
+  active,
+  title,
+}: {
+  label: string;
+  Icon: LucideIcon;
+  active: boolean;
+  title: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center",
+        active ? "text-emerald-300 status-led-active" : "text-background/35"
+      )}
+      title={title}
+      aria-label={`${label}: ${active ? "busy" : "idle"}`}
+      role="status"
+    >
+      <Icon className="h-3 w-3" aria-hidden />
+    </span>
+  );
+}
+
 function StatusBar({
   blfPath,
+  preparing,
   prepareTotals,
 }: {
   blfPath: string;
+  preparing: boolean;
   prepareTotals: { messages: number; protocol_rows: number; elapsed_ms: number } | null;
 }) {
   const fileSizes = useFileSizes(blfPath);
+  const { blfBusy, duckdbBusy } = useIoBusy(blfPath, preparing);
   const fileName = blfPath.split(/[\\/]/).pop() ?? blfPath;
   return (
     <div className="flex h-[26px] shrink-0 items-center gap-4 bg-foreground px-3 text-[10px] text-background">
@@ -55,7 +84,21 @@ function StatusBar({
       <span>Total messages: {prepareTotals ? prepareTotals.messages : "-"}</span>
       <span>BLF size: {fileSizes.data ? formatBytes(fileSizes.data.blfBytes) : "-"}</span>
       <span>Ingested size: {fileSizes.data ? formatBytes(fileSizes.data.duckdbBytes) : "-"}</span>
-      <span className="ml-auto">
+      <span className="ml-auto flex items-center gap-3">
+        <span className="flex items-center gap-2" aria-label="I/O status">
+          <StatusIoLed
+            label="BLF"
+            Icon={File}
+            active={blfBusy}
+            title={blfBusy ? "BLF read in progress" : "BLF idle"}
+          />
+          <StatusIoLed
+            label="DuckDB"
+            Icon={Database}
+            active={duckdbBusy}
+            title={duckdbBusy ? "DuckDB busy" : "DuckDB idle"}
+          />
+        </span>
         <ActivityLog blfPath={blfPath} />
       </span>
     </div>
@@ -168,7 +211,7 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
           </div>
         </main>
       </div>
-      <StatusBar blfPath={blfPath} prepareTotals={prepareTotals} />
+      <StatusBar blfPath={blfPath} preparing={preparing} prepareTotals={prepareTotals} />
       <Toaster />
     </div>
   );

@@ -1,7 +1,27 @@
-import { useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useWorkspaceStore } from "@/app/store";
-import { useRunDetectorQuery, DETECTOR_QUERY_MATCH_LIMIT } from "@/shared/api/hooks";
+import {
+  DETECTOR_QUERY_MATCH_LIMIT,
+  useApplyTrim,
+  useClearQueryHistory,
+  useQueryHistory,
+  useRecordQuery,
+  useRemoveQuery,
+  useRunDetectorQuery,
+  useSignalCatalog,
+} from "@/shared/api/hooks";
+import type { NeedsDecodeInfo, QueryHistoryEntry } from "@/shared/api/trace-source";
+import { WHOLE_TRACE_DECODE_WARN_BYTES } from "@/shared/api/trace-source";
 import { Button } from "@/shared/ui/button";
+import { Checkbox } from "@/shared/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/shared/ui/dialog";
 
 interface AnalyzerPanelProps {
   blfPath: string;
@@ -19,9 +39,23 @@ function hasEmbeddedSemicolon(sql: string): boolean {
   return withoutTrailing.includes(";");
 }
 
+function formatUs(us: number): string {
+  return `${(us / 1_000_000).toFixed(3)}s`;
+}
+
+function formatBytes(n: number): string {
+  if (n >= 1024 * 1024 * 1024) return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(0)} MiB`;
+  return `${n} B`;
+}
+
 export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
   const sql = useWorkspaceStore((s) => s.detectorQuerySql);
   const setSql = useWorkspaceStore((s) => s.setDetectorQuerySql);
+  const targets = useWorkspaceStore((s) => s.detectorTargetSignalIds);
+  const setTargets = useWorkspaceStore((s) => s.setDetectorTargetSignalIds);
+  const respectTrim = useWorkspaceStore((s) => s.detectorRespectTrim);
+  const setRespectTrim = useWorkspaceStore((s) => s.setDetectorRespectTrim);
   const error = useWorkspaceStore((s) => s.detectorQueryError);
   const setError = useWorkspaceStore((s) => s.setDetectorQueryError);
   const setResult = useWorkspaceStore((s) => s.setDetectorQueryResult);
@@ -29,8 +63,71 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
   const truncated = useWorkspaceStore((s) => s.detectorQueryTruncated);
   const hasRun = useWorkspaceStore((s) => s.detectorQueryHasRun);
   const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
-  const mutation = useRunDetectorQuery(blfPath, trimRange?.start ?? 0, trimRange?.end ?? Number.MAX_SAFE_INTEGER);
+  const activeSignalIds = useWorkspaceStore((s) => s.activeSignalIds);
+  const commitActiveSignalIds = useWorkspaceStore((s) => s.commitActiveSignalIds);
+
+  const catalog = useSignalCatalog(blfPath);
+  const mutation = useRunDetectorQuery(blfPath);
+  const applyTrim = useApplyTrim(blfPath);
+  const history = useQueryHistory(blfPath);
+  const recordQuery = useRecordQuery(blfPath);
+  const removeQuery = useRemoveQuery(blfPath);
+  const clearHistory = useClearQueryHistory(blfPath);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [needsDecode, setNeedsDecode] = useState<NeedsDecodeInfo | null>(null);
+  const [confirmPending, setConfirmPending] = useState(false);
+  const [restoreNote, setRestoreNote] = useState<string | null>(null);
+
+  const targetSet = useMemo(() => new Set(targets), [targets]);
+
+  const selectableSignals = useMemo(
+    () => (catalog.data ?? []).filter((s) => s.decodable && !s.opaque),
+    [catalog.data]
+  );
+
+  function toggleTarget(signalId: number) {
+    if (targetSet.has(signalId)) {
+      setTargets(targets.filter((id) => id !== signalId));
+    } else {
+      setTargets([...targets, signalId]);
+    }
+  }
+
+  function runArgs() {
+    return {
+      sql,
+      respectTrim,
+      startUs: trimRange?.start ?? 0,
+      endUs: trimRange?.end ?? Number.MAX_SAFE_INTEGER,
+      targetSignalIds: targets,
+    };
+  }
+
+  function handleResponse(
+    response: Awaited<ReturnType<typeof mutation.mutateAsync>>,
+    opts?: { afterDecode?: boolean }
+  ) {
+    if (response.needsDecode) {
+      if (opts?.afterDecode) {
+        setError(
+          "Decode completed but signal coverage is still insufficient for this scope. Widen the trim or re-decode."
+        );
+        return;
+      }
+      setNeedsDecode(response.needsDecode);
+      return;
+    }
+    if (response.ran) {
+      setNeedsDecode(null);
+      setResult(response.ran);
+      recordQuery.mutate({
+        sql,
+        targetSignalIds: response.ran.targetSignalIds,
+        respectTrim: !response.ran.wholeTrace,
+        matchCount: response.ran.matches.length,
+      });
+    }
+  }
 
   function run() {
     if (sql.trim() === "") return;
@@ -38,10 +135,33 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
       setError("Only a single SQL statement is supported.");
       return;
     }
-    mutation.mutate(sql, {
-      onSuccess: (result) => setResult(result.matches, result.truncated),
+    mutation.mutate(runArgs(), {
+      onSuccess: (response) => handleResponse(response),
       onError: (e) => setError(String(e)),
     });
+  }
+
+  async function confirmDecodeAndRerun() {
+    if (!needsDecode) return;
+    setConfirmPending(true);
+    try {
+      const nextActive = new Set(activeSignalIds);
+      for (const m of needsDecode.missing) nextActive.add(m.signalId);
+      for (const id of targets) nextActive.add(id);
+      commitActiveSignalIds(nextActive);
+      await applyTrim.mutateAsync({
+        startUs: needsDecode.scopeStartUs,
+        endUs: needsDecode.scopeEndUs,
+        activeSignalIds: Array.from(nextActive),
+      });
+      const response = await mutation.mutateAsync(runArgs());
+      handleResponse(response, { afterDecode: true });
+    } catch (e) {
+      setError(String(e));
+      setNeedsDecode(null);
+    } finally {
+      setConfirmPending(false);
+    }
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -51,8 +171,62 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
     }
   }
 
+  function loadHistoryEntry(entry: QueryHistoryEntry) {
+    setSql(entry.sql);
+    setRespectTrim(entry.respectTrim);
+    const catalogIds = new Set((catalog.data ?? []).map((c) => c.signalId));
+    const kept: number[] = [];
+    const skipped: number[] = [];
+    for (const id of entry.targetSignalIds) {
+      if (catalogIds.has(id)) kept.push(id);
+      else skipped.push(id);
+    }
+    setTargets(kept);
+    setRestoreNote(
+      skipped.length > 0
+        ? `Skipped ${skipped.length} target signal${skipped.length === 1 ? "" : "s"} missing from catalog.`
+        : null
+    );
+  }
+
+  const busy = mutation.isPending || confirmPending || applyTrim.isPending;
+  const showSizeWarning =
+    needsDecode?.wholeTrace === true && (needsDecode?.blfBytes ?? 0) > WHOLE_TRACE_DECODE_WARN_BYTES;
+
   return (
     <div className="flex h-full flex-col gap-2 p-2">
+      <label className="flex shrink-0 items-center gap-2 text-xs">
+        <Checkbox
+          checked={respectTrim}
+          onCheckedChange={(checked) => setRespectTrim(checked === true)}
+        />
+        Respect trim window
+      </label>
+
+      <div className="flex max-h-28 shrink-0 flex-col gap-1 overflow-auto rounded border border-border p-1">
+        <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          Target signals
+        </div>
+        {selectableSignals.length === 0 && (
+          <div className="px-1 text-xs text-muted-foreground">No decodable signals in catalog.</div>
+        )}
+        {selectableSignals.map((s) => (
+          <label key={s.signalId} className="flex items-center gap-2 px-1 text-xs">
+            <Checkbox
+              checked={targetSet.has(s.signalId)}
+              onCheckedChange={() => toggleTarget(s.signalId)}
+            />
+            <span className="truncate" title={s.name}>
+              {s.name}
+            </span>
+            {s.cached && <span className="text-[10px] text-muted-foreground">cached</span>}
+          </label>
+        ))}
+      </div>
+      <p className="shrink-0 text-[10px] text-muted-foreground">
+        Signals your SQL reads must be selected here.
+      </p>
+
       <textarea
         ref={textareaRef}
         value={sql}
@@ -63,11 +237,12 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
         spellCheck={false}
       />
       <div className="flex items-center justify-between gap-2">
-        <Button size="sm" onClick={run} disabled={mutation.isPending}>
-          {mutation.isPending ? "Running..." : "Run"}
+        <Button size="sm" onClick={run} disabled={busy}>
+          {busy ? "Running..." : "Run"}
         </Button>
         <span className="text-xs text-muted-foreground">Cmd/Ctrl+Enter</span>
       </div>
+      {restoreNote && <div className="text-xs text-muted-foreground">{restoreNote}</div>}
       {error && (
         <div className="rounded border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
           {error}
@@ -79,6 +254,91 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
           {truncated && ` (showing first ${DETECTOR_QUERY_MATCH_LIMIT.toLocaleString()})`}
         </div>
       )}
+
+      <div className="flex max-h-36 shrink-0 flex-col gap-1 overflow-auto rounded border border-border p-1">
+        <div className="flex items-center justify-between px-1">
+          <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Recent queries
+          </div>
+          {(history.data?.length ?? 0) > 0 && (
+            <button
+              type="button"
+              className="text-[10px] text-muted-foreground underline"
+              onClick={() => clearHistory.mutate()}
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+        {(history.data?.length ?? 0) === 0 && (
+          <div className="px-1 text-xs text-muted-foreground">No recent queries for this trace.</div>
+        )}
+        {history.data?.map((entry) => (
+          <div key={`${entry.ranAt}-${entry.sql}`} className="flex items-start gap-1 px-1">
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate text-left font-mono text-[10px] hover:underline"
+              title={entry.sql}
+              onClick={() => loadHistoryEntry(entry)}
+            >
+              {entry.sql.trim().slice(0, 80)}
+              {entry.sql.trim().length > 80 ? "…" : ""}
+            </button>
+            <button
+              type="button"
+              className="shrink-0 text-[10px] text-muted-foreground hover:text-destructive"
+              aria-label="Remove query from history"
+              onClick={() => removeQuery.mutate(entry.sql)}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <Dialog
+        open={needsDecode !== null}
+        onOpenChange={(open) => !open && !confirmPending && setNeedsDecode(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Decode required</DialogTitle>
+            <DialogDescription>
+              These target signals are not decoded for the run scope. Confirm to decode, then re-run
+              the query.
+            </DialogDescription>
+          </DialogHeader>
+          {needsDecode && (
+            <div className="flex flex-col gap-2 px-4 pb-2 text-sm">
+              <div>
+                Scope:{" "}
+                {needsDecode.wholeTrace
+                  ? `whole trace (${formatUs(needsDecode.scopeStartUs)} – ${formatUs(needsDecode.scopeEndUs)})`
+                  : `trim window (${formatUs(needsDecode.scopeStartUs)} – ${formatUs(needsDecode.scopeEndUs)})`}
+              </div>
+              <ul className="list-inside list-disc">
+                {needsDecode.missing.map((m) => (
+                  <li key={m.signalId}>{m.name}</li>
+                ))}
+              </ul>
+              {showSizeWarning && (
+                <div className="rounded border border-amber-500/50 bg-amber-500/10 p-2 text-xs text-amber-900 dark:text-amber-200">
+                  Trace file is {formatBytes(needsDecode.blfBytes)} (&gt; 5 GiB). Decoding the whole
+                  trace may take a while and will block queries while it runs.
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter className="gap-2 p-4 pt-0">
+            <Button variant="outline" onClick={() => setNeedsDecode(null)} disabled={confirmPending}>
+              Cancel
+            </Button>
+            <Button onClick={confirmDecodeAndRerun} disabled={confirmPending}>
+              {confirmPending ? "Decoding..." : "Decode and run"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
