@@ -153,7 +153,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       anomalyScope: null,
     }),
   timelineZoomRange: { start: 0, end: 100 },
-  setTimelineZoomRange: (range) => set({ timelineZoomRange: range }),
+  setTimelineZoomRange: (range) => {
+    const cur = get().timelineZoomRange;
+    if (cur.start === range.start && cur.end === range.end) return;
+    set({ timelineZoomRange: range });
+  },
   appliedTrimRange: null,
   pendingTrimRange: null,
   setPendingTrimRange: (range) => set({ pendingTrimRange: range }),

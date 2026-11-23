@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useWorkspaceStore } from "@/app/store";
 import {
   DETECTOR_QUERY_MATCH_LIMIT,
@@ -22,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import TargetSignalSelect from "./TargetSignalSelect";
 
 interface AnalyzerPanelProps {
   blfPath: string;
@@ -77,21 +78,6 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
   const [needsDecode, setNeedsDecode] = useState<NeedsDecodeInfo | null>(null);
   const [confirmPending, setConfirmPending] = useState(false);
   const [restoreNote, setRestoreNote] = useState<string | null>(null);
-
-  const targetSet = useMemo(() => new Set(targets), [targets]);
-
-  const selectableSignals = useMemo(
-    () => (catalog.data ?? []).filter((s) => s.decodable && !s.opaque),
-    [catalog.data]
-  );
-
-  function toggleTarget(signalId: number) {
-    if (targetSet.has(signalId)) {
-      setTargets(targets.filter((id) => id !== signalId));
-    } else {
-      setTargets([...targets, signalId]);
-    }
-  }
 
   function runArgs() {
     return {
@@ -203,29 +189,7 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
         Respect trim window
       </label>
 
-      <div className="flex max-h-28 shrink-0 flex-col gap-1 overflow-auto rounded border border-border p-1">
-        <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-          Target signals
-        </div>
-        {selectableSignals.length === 0 && (
-          <div className="px-1 text-xs text-muted-foreground">No decodable signals in catalog.</div>
-        )}
-        {selectableSignals.map((s) => (
-          <label key={s.signalId} className="flex items-center gap-2 px-1 text-xs">
-            <Checkbox
-              checked={targetSet.has(s.signalId)}
-              onCheckedChange={() => toggleTarget(s.signalId)}
-            />
-            <span className="truncate" title={s.name}>
-              {s.name}
-            </span>
-            {s.cached && <span className="text-[10px] text-muted-foreground">cached</span>}
-          </label>
-        ))}
-      </div>
-      <p className="shrink-0 text-[10px] text-muted-foreground">
-        Signals your SQL reads must be selected here.
-      </p>
+      <TargetSignalSelect blfPath={blfPath} />
 
       <textarea
         ref={textareaRef}

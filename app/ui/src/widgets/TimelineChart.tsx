@@ -67,7 +67,10 @@ export default function TimelineChart({
   onAddCharts,
 }: TimelineChartProps) {
   const activeSignalIds = Array.from(useWorkspaceStore((s) => s.activeSignalIds));
-  const detectorMatches = useWorkspaceStore((s) => s.detectorMatches);
+  const activeSignalKey = activeSignalIds.join(",");
+  // Match lane plots anomaly bins (≤500), not raw detectorMatches (up to
+  // 200k) - dataZoom redraw of a large scatter was flashing on every zoom.
+  const anomalyBins = useWorkspaceStore((s) => s.anomalyBins);
   const detectorQueryHasRun = useWorkspaceStore((s) => s.detectorQueryHasRun);
   const setSelectedMessage = useWorkspaceStore((s) => s.setSelectedMessage);
   const catalog = useSignalCatalog(blfPath);
@@ -81,12 +84,9 @@ export default function TimelineChart({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
-  // The click handler is registered once (init effect has no dependency
-  // array reruns) but needs the *current* matches array on every click, not
-  // the one from whenever `chart.on` was called - this ref is kept current
-  // by the option-building effect and read inside the closure instead.
-  const matchesRef = useRef(detectorMatches);
-  matchesRef.current = detectorMatches;
+  // Click handler is registered once (init effect); keep bins current via ref.
+  const binsRef = useRef(anomalyBins);
+  binsRef.current = anomalyBins;
 
   const lanes: Lane[] = useMemo(() => {
     let top = 0;
@@ -102,7 +102,7 @@ export default function TimelineChart({
       top += SIGNAL_LANE_HEIGHT;
     }
     return result;
-  }, [detectorQueryHasRun, activeSignalIds.join(","), catalog.data]);
+  }, [detectorQueryHasRun, activeSignalKey, catalog.data]);
 
   const totalHeight = lanes.reduce((sum, l) => sum + l.height, 0) + BOTTOM_AXIS_HEIGHT;
 
@@ -114,7 +114,7 @@ export default function TimelineChart({
     echarts.connect(CHART_GROUP);
     chart.on("click", (params) => {
       if (params.seriesName !== MATCH_SERIES_NAME) return;
-      const msgId = matchesRef.current[params.dataIndex]?.msgId;
+      const msgId = binsRef.current[params.dataIndex]?.firstMsgId;
       if (msgId !== undefined) setSelectedMessage(msgId);
     });
     // Persist the zoom/pan window (percent) so it survives signal add/remove
@@ -208,14 +208,18 @@ export default function TimelineChart({
             name: MATCH_SERIES_NAME,
             xAxisIndex: i,
             yAxisIndex: i,
-            data: detectorMatches.map((m) => [m.timestampUs, 0]),
+            // One marker per active anomaly bin (first hit) - aligns with
+            // AnomalyRail and keeps dataZoom redraw cheap.
+            data: anomalyBins.map((b) => [b.firstTimestampUs, 0]),
             symbolSize: 8,
             itemStyle: { color: MATCH_COLOR },
-            large: true,
             tooltip: {
               trigger: "item" as const,
-              formatter: (p: { data: [number, number]; dataIndex: number }) =>
-                `msg_id: ${detectorMatches[p.dataIndex]?.msgId}<br/>t: ${(p.data[0] / 1_000_000).toFixed(3)}s`,
+              formatter: (p: { data: [number, number]; dataIndex: number }) => {
+                const b = anomalyBins[p.dataIndex];
+                if (!b) return "";
+                return `msg_id: ${b.firstMsgId}<br/>count: ${b.count}<br/>t: ${(p.data[0] / 1_000_000).toFixed(3)}s`;
+              },
             },
           }
         : {
@@ -258,7 +262,7 @@ export default function TimelineChart({
     // the component has painted, catches it stuck at whatever size it was
     // wrongly measured at on init.
     chart.resize();
-  }, [lanes, samples, detectorMatches, minTs, maxTs, activeSignalIds]);
+  }, [lanes, samples, anomalyBins, minTs, maxTs, activeSignalKey]);
 
   // containerRef's div must stay mounted even with zero lanes - the init
   // effect below only runs once on mount ([] deps), so swapping it out for a
