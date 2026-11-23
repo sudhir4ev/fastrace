@@ -27,7 +27,7 @@ export default function TimelinePanel({ blfPath }: TimelinePanelProps) {
           onAddCharts={() => setPickerOpen(true)}
         />
       </div>
-      {hasActiveSignals && <TimelineZoomControl />}
+      {hasActiveSignals && <TimelineZoomControl minTs={minTs} maxTs={maxTs} />}
       <SignalSelect blfPath={blfPath} open={pickerOpen} onOpenChange={setPickerOpen} />
     </div>
   );
