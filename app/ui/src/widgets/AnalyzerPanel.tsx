@@ -1,5 +1,15 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Copy, History } from "lucide-react";
+import { Editor } from "prism-react-editor";
+import { usePrismEditor } from "prism-react-editor/extensions";
+import { fuzzyFilter, useAutoComplete } from "prism-react-editor/autocomplete";
+import { useCursorPosition } from "prism-react-editor/cursor";
+import "prism-react-editor/prism/languages/sql";
+import "prism-react-editor/languages/sql";
+import "prism-react-editor/layout.css";
+import "prism-react-editor/themes/github-light.css";
+import "prism-react-editor/autocomplete.css";
+import "prism-react-editor/autocomplete-icons.css";
 import { useWorkspaceStore } from "@/app/store";
 import {
   DETECTOR_QUERY_MATCH_LIMIT,
@@ -25,6 +35,23 @@ import {
 } from "@/shared/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import TargetSignalSelect from "./TargetSignalSelect";
+import {
+  registerSignalSqlCompletions,
+  setSignalCompletionNames,
+} from "./signal-sql-completions";
+
+registerSignalSqlCompletions();
+
+/** Cursor + explicit-only signal autocomplete (Ctrl+Space / Mod+I). */
+function SignalSqlAutoComplete({ names }: { names: readonly string[] }) {
+  const [editor] = usePrismEditor();
+  useCursorPosition(editor);
+  useAutoComplete(editor, { filter: fuzzyFilter, explicitOnly: true });
+  useEffect(() => {
+    setSignalCompletionNames(names);
+  }, [names]);
+  return null;
+}
 
 interface AnalyzerPanelProps {
   blfPath: string;
@@ -76,15 +103,23 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
   const recordQuery = useRecordQuery(blfPath);
   const removeQuery = useRemoveQuery(blfPath);
   const clearHistory = useClearQueryHistory(blfPath);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [needsDecode, setNeedsDecode] = useState<NeedsDecodeInfo | null>(null);
   const [confirmPending, setConfirmPending] = useState(false);
   const [restoreNote, setRestoreNote] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Editor is uncontrolled; seed + epoch remount it on history restore / file switch.
+  const [editorSeed, setEditorSeed] = useState(sql);
+  const [editorEpoch, setEditorEpoch] = useState(0);
+  const [seedPath, setSeedPath] = useState(blfPath);
+  if (seedPath !== blfPath) {
+    setSeedPath(blfPath);
+    setEditorSeed(useWorkspaceStore.getState().detectorQuerySql);
+    setEditorEpoch(0);
+  }
 
-  function runArgs() {
+  function runArgs(sqlText: string) {
     return {
-      sql,
+      sql: sqlText,
       respectTrim,
       startUs: trimRange?.start ?? 0,
       endUs: trimRange?.end ?? Number.MAX_SAFE_INTEGER,
@@ -94,10 +129,10 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
 
   function handleResponse(
     response: Awaited<ReturnType<typeof mutation.mutateAsync>>,
-    opts?: { afterDecode?: boolean }
+    opts: { sqlText: string; afterDecode?: boolean }
   ) {
     if (response.needsDecode) {
-      if (opts?.afterDecode) {
+      if (opts.afterDecode) {
         setError(
           "Decode completed but signal coverage is still insufficient for this scope. Widen the trim or re-decode."
         );
@@ -110,7 +145,7 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
       setNeedsDecode(null);
       setResult(response.ran);
       recordQuery.mutate({
-        sql,
+        sql: opts.sqlText,
         targetSignalIds: response.ran.targetSignalIds,
         respectTrim: !response.ran.wholeTrace,
         matchCount: response.ran.matches.length,
@@ -119,19 +154,21 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
   }
 
   function run() {
-    if (sql.trim() === "") return;
-    if (hasEmbeddedSemicolon(sql)) {
+    const sqlText = useWorkspaceStore.getState().detectorQuerySql;
+    if (sqlText.trim() === "") return;
+    if (hasEmbeddedSemicolon(sqlText)) {
       setError("Only a single SQL statement is supported.");
       return;
     }
-    mutation.mutate(runArgs(), {
-      onSuccess: (response) => handleResponse(response),
+    mutation.mutate(runArgs(sqlText), {
+      onSuccess: (response) => handleResponse(response, { sqlText }),
       onError: (e) => setError(String(e)),
     });
   }
 
   async function confirmDecodeAndRerun() {
     if (!needsDecode) return;
+    const sqlText = useWorkspaceStore.getState().detectorQuerySql;
     setConfirmPending(true);
     try {
       const nextActive = new Set(activeSignalIds);
@@ -143,8 +180,8 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
         endUs: needsDecode.scopeEndUs,
         activeSignalIds: Array.from(nextActive),
       });
-      const response = await mutation.mutateAsync(runArgs());
-      handleResponse(response, { afterDecode: true });
+      const response = await mutation.mutateAsync(runArgs(sqlText));
+      handleResponse(response, { sqlText, afterDecode: true });
     } catch (e) {
       setError(String(e));
       setNeedsDecode(null);
@@ -153,7 +190,7 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
     }
   }
 
-  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+  function onEditorKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       run();
@@ -162,6 +199,8 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
 
   function loadHistoryEntry(entry: QueryHistoryEntry) {
     setSql(entry.sql);
+    setEditorSeed(entry.sql);
+    setEditorEpoch((e) => e + 1);
     setRespectTrim(entry.respectTrim);
     const catalogIds = new Set((catalog.data ?? []).map((c) => c.signalId));
     const kept: number[] = [];
@@ -182,6 +221,10 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
   const busy = mutation.isPending || confirmPending || applyTrim.isPending;
   const showSizeWarning =
     needsDecode?.wholeTrace === true && (needsDecode?.blfBytes ?? 0) > WHOLE_TRACE_DECODE_WARN_BYTES;
+  const signalNames = useMemo(
+    () => (catalog.data ?? []).map((s) => s.name),
+    [catalog.data]
+  );
 
   return (
     <div className="flex h-full flex-col gap-2 p-2">
@@ -271,20 +314,31 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
 
       <TargetSignalSelect blfPath={blfPath} />
 
-      <textarea
-        ref={textareaRef}
-        value={sql}
-        onChange={(e) => setSql(e.target.value)}
-        onKeyDown={onKeyDown}
-        placeholder="select msg_id, timestamp_us from messages where ..."
-        className="min-h-0 flex-1 resize-none rounded border border-border bg-background p-2 font-mono text-xs"
-        spellCheck={false}
-      />
+      <div className="min-h-0 flex-1 overflow-hidden rounded border border-border [&_.prism-code-editor]:h-full [&_.prism-code-editor]:rounded [&_.prism-code-editor]:text-xs [&_.prism-code-editor]:[font-family:var(--font-mono)]">
+        <Editor
+          key={`${blfPath}:${editorEpoch}`}
+          language="sql"
+          value={editorSeed}
+          onUpdate={setSql}
+          lineNumbers
+          wordWrap
+          style={{ height: "100%" }}
+          textareaProps={{
+            placeholder: "select msg_id, timestamp_us from messages where ...",
+            spellCheck: false,
+            onKeyDown: onEditorKeyDown,
+          }}
+        >
+          <SignalSqlAutoComplete names={signalNames} />
+        </Editor>
+      </div>
       <div className="flex items-center justify-between gap-2">
         <Button size="sm" onClick={run} disabled={busy}>
           {busy ? "Running..." : "Run"}
         </Button>
-        <span className="text-xs text-muted-foreground">Cmd/Ctrl+Enter</span>
+        <span className="text-xs text-muted-foreground">
+          Ctrl+Space signals · Cmd/Ctrl+Enter
+        </span>
       </div>
       {restoreNote && <div className="text-xs text-muted-foreground">{restoreNote}</div>}
       {error && (
