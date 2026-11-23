@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { DetectorMatch } from "@/shared/api/trace-source";
+import type { AnomalyBin, DetectorMatch, DetectorQueryRan } from "@/shared/api/trace-source";
 
 export type WorkspaceTab = "signals" | "messages";
 
@@ -28,12 +28,17 @@ export interface WorkspaceState {
   // nothing still "ran" and the Match lane should show (empty), not stay
   // hidden as if nothing happened yet.
   detectorQuerySql: string;
+  detectorTargetSignalIds: number[];
+  detectorRespectTrim: boolean;
   detectorMatches: DetectorMatch[];
   detectorQueryTruncated: boolean;
   detectorQueryError: string | null;
   detectorQueryHasRun: boolean;
+  anomalyBins: AnomalyBin[];
   setDetectorQuerySql: (sql: string) => void;
-  setDetectorQueryResult: (matches: DetectorMatch[], truncated: boolean) => void;
+  setDetectorTargetSignalIds: (ids: number[]) => void;
+  setDetectorRespectTrim: (respect: boolean) => void;
+  setDetectorQueryResult: (ran: DetectorQueryRan) => void;
   setDetectorQueryError: (error: string) => void;
   resetDetectorQuery: () => void;
   // Shared dataZoom window (percent, 0-100) for TimelineChart/TimelineZoomControl.
@@ -88,17 +93,30 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       return { activeSignalIds: active, pendingSignalIds: pending };
     }),
   detectorQuerySql: "",
+  detectorTargetSignalIds: [],
+  detectorRespectTrim: true,
   detectorMatches: [],
   detectorQueryTruncated: false,
   detectorQueryError: null,
   detectorQueryHasRun: false,
+  anomalyBins: [],
   setDetectorQuerySql: (sql) => set({ detectorQuerySql: sql }),
-  setDetectorQueryResult: (matches, truncated) =>
-    set({
-      detectorMatches: matches,
-      detectorQueryTruncated: truncated,
-      detectorQueryError: null,
-      detectorQueryHasRun: true,
+  setDetectorTargetSignalIds: (ids) => set({ detectorTargetSignalIds: ids }),
+  setDetectorRespectTrim: (respect) => set({ detectorRespectTrim: respect }),
+  setDetectorQueryResult: (ran) =>
+    set((s) => {
+      // Union targets into Active Signals (never remove other actives).
+      const active = new Set(s.activeSignalIds);
+      for (const id of ran.targetSignalIds) active.add(id);
+      return {
+        detectorMatches: ran.matches,
+        detectorQueryTruncated: ran.truncated,
+        detectorQueryError: null,
+        detectorQueryHasRun: true,
+        anomalyBins: ran.bins,
+        activeSignalIds: active,
+        pendingSignalIds: new Set([...s.pendingSignalIds, ...ran.targetSignalIds]),
+      };
     }),
   setDetectorQueryError: (error) =>
     set({
@@ -106,17 +124,25 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       detectorMatches: [],
       detectorQueryTruncated: false,
       detectorQueryHasRun: true,
+      anomalyBins: [],
     }),
   resetDetectorQuery: () =>
     set({
       detectorQuerySql: "",
+      detectorTargetSignalIds: [],
+      detectorRespectTrim: true,
       detectorMatches: [],
       detectorQueryTruncated: false,
       detectorQueryError: null,
       detectorQueryHasRun: false,
+      anomalyBins: [],
     }),
   timelineZoomRange: { start: 0, end: 100 },
-  setTimelineZoomRange: (range) => set({ timelineZoomRange: range }),
+  setTimelineZoomRange: (range) => {
+    const cur = get().timelineZoomRange;
+    if (cur.start === range.start && cur.end === range.end) return;
+    set({ timelineZoomRange: range });
+  },
   appliedTrimRange: null,
   pendingTrimRange: null,
   setPendingTrimRange: (range) => set({ pendingTrimRange: range }),
@@ -146,10 +172,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       activeSignalIds: new Set(),
       pendingSignalIds: new Set(),
       detectorQuerySql: "",
+      detectorTargetSignalIds: [],
+      detectorRespectTrim: true,
       detectorMatches: [],
       detectorQueryTruncated: false,
       detectorQueryError: null,
       detectorQueryHasRun: false,
+      anomalyBins: [],
       timelineZoomRange: { start: 0, end: 100 },
       appliedTrimRange: null,
       pendingTrimRange: null,

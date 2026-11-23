@@ -16,6 +16,7 @@ Background that the ADRs rely on:
 | [0005](0005-signal-decode-on-plot.md) | Signal decode on plot | Accepted |
 | [0006](0006-trace-store-schema-no-payloads.md) | Trace Store schema without payloads | Accepted |
 | [0007](0007-verification-and-fixtures.md) | Verification and fixtures | Accepted |
+| [0008](0008-detector-query-preconditions-and-anomaly-bins.md) | Detector Query preconditions and anomaly bins | Accepted |
 
 Each ADR lists context, decision, consequences, and the conditions that should trigger a revisit.
 

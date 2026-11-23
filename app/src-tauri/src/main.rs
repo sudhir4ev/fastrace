@@ -358,22 +358,96 @@ fn get_trace_time_range(blf_path: String) -> Result<query::TraceTimeRange, Strin
     query::get_trace_time_range(&conn)
 }
 
+/// Payload when target signals are not yet decoded for the run scope - the
+/// UI confirms, runs apply-trim, then re-invokes.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NeedsDecodeInfo {
+    missing: Vec<query::MissingSignal>,
+    whole_trace: bool,
+    blf_bytes: u64,
+    scope_start_us: i64,
+    scope_end_us: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetectorQueryRan {
+    matches: Vec<query::DetectorMatch>,
+    truncated: bool,
+    bins: Vec<query::AnomalyBin>,
+    scope_start_us: i64,
+    scope_end_us: i64,
+    whole_trace: bool,
+    elapsed_ms: i64,
+    target_signal_ids: Vec<i64>,
+}
+
+/// Adjacent-tagged response: exactly one of `needsDecode` / `ran` is set.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetectorQueryResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    needs_decode: Option<NeedsDecodeInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ran: Option<DetectorQueryRan>,
+}
+
 #[tauri::command]
 fn run_detector_query(
     blf_path: String,
     sql: String,
+    respect_trim: bool,
     start_us: i64,
     end_us: i64,
-) -> Result<query::DetectorQueryResult, String> {
+    target_signal_ids: Vec<i64>,
+) -> Result<DetectorQueryResponse, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::run_detector_query(
+    let whole_trace = !respect_trim;
+    let (scope_start, scope_end) = if respect_trim {
+        (start_us, end_us)
+    } else {
+        let range = query::get_trace_time_range(&conn)?;
+        (range.min_timestamp_us, range.max_timestamp_us)
+    };
+    let missing =
+        query::missing_signal_coverage(&conn, &target_signal_ids, scope_start, scope_end)?;
+    if !missing.is_empty() {
+        let blf_bytes = file_size(std::path::Path::new(&blf_path)).unwrap_or(0);
+        return Ok(DetectorQueryResponse {
+            needs_decode: Some(NeedsDecodeInfo {
+                missing,
+                whole_trace,
+                blf_bytes,
+                scope_start_us: scope_start,
+                scope_end_us: scope_end,
+            }),
+            ran: None,
+        });
+    }
+    let started = std::time::Instant::now();
+    let result = query::run_detector_query(
         &conn,
         &sql,
         query::DETECTOR_QUERY_MATCH_LIMIT,
-        start_us,
-        end_us,
-    )
+        scope_start,
+        scope_end,
+    )?;
+    let elapsed_ms = started.elapsed().as_millis() as i64;
+    Ok(DetectorQueryResponse {
+        needs_decode: None,
+        ran: Some(DetectorQueryRan {
+            matches: result.matches,
+            truncated: result.truncated,
+            bins: result.bins,
+            scope_start_us: result.scope_start_us,
+            scope_end_us: result.scope_end_us,
+            whole_trace,
+            elapsed_ms,
+            target_signal_ids,
+        }),
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -437,6 +511,17 @@ struct ActivityEntry {
     detail: String,
 }
 
+/// One Detector Query remembered against a recent Trace - max 25 per trace.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryHistoryEntry {
+    sql: String,
+    target_signal_ids: Vec<i64>,
+    respect_trim: bool,
+    ran_at: i64,
+    match_count: i64,
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct RecentTraceEntry {
     blf_path: String,
@@ -449,6 +534,8 @@ struct RecentTraceEntry {
     elapsed_ms: Option<i64>,
     #[serde(default)]
     activities: Vec<ActivityEntry>,
+    #[serde(default)]
+    queries: Vec<QueryHistoryEntry>,
 }
 
 #[derive(serde::Serialize)]
@@ -463,6 +550,7 @@ struct RecentTraceInfo {
 }
 
 const MAX_RECENT_TRACES: usize = 5;
+const MAX_QUERY_HISTORY: usize = 25;
 
 /// Moves `blf_path` to the front, deduping by path, capped at
 /// `MAX_RECENT_TRACES`. Pure so it's unit-testable without a Tauri app handle.
@@ -489,12 +577,68 @@ fn upsert_recent(
                 .or_else(|| previous.as_ref().and_then(|p| p.protocol_rows)),
             elapsed_ms: elapsed_ms.or_else(|| previous.as_ref().and_then(|p| p.elapsed_ms)),
             // Re-opening a trace rebuilds this entry from scratch (see the
-            // `retain` above) - without carrying the old activity log
-            // forward, every reopen would silently wipe its history.
-            activities: previous.map(|p| p.activities).unwrap_or_default(),
+            // `retain` above) - without carrying the old activity log and
+            // query history forward, every reopen would silently wipe them.
+            activities: previous
+                .as_ref()
+                .map(|p| p.activities.clone())
+                .unwrap_or_default(),
+            queries: previous.map(|p| p.queries).unwrap_or_default(),
         },
     );
     list.truncate(MAX_RECENT_TRACES);
+    list
+}
+
+fn normalize_query_sql(sql: &str) -> String {
+    sql.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Inserts `entry` at the front of the matching trace's query history,
+/// deduping by whitespace-normalized SQL (a changed target set replaces the
+/// prior entry), capped at `MAX_QUERY_HISTORY`. Creates a minimal recent
+/// entry when none exists yet.
+fn push_query(
+    mut list: Vec<RecentTraceEntry>,
+    blf_path: &str,
+    entry: QueryHistoryEntry,
+) -> Vec<RecentTraceEntry> {
+    let norm = normalize_query_sql(&entry.sql);
+    match list.iter_mut().find(|e| e.blf_path == blf_path) {
+        Some(e) => {
+            e.queries.retain(|q| normalize_query_sql(&q.sql) != norm);
+            e.queries.insert(0, entry);
+            e.queries.truncate(MAX_QUERY_HISTORY);
+        }
+        None => list.push(RecentTraceEntry {
+            blf_path: blf_path.to_string(),
+            opened_at: entry.ran_at,
+            messages: None,
+            protocol_rows: None,
+            elapsed_ms: None,
+            activities: vec![],
+            queries: vec![entry],
+        }),
+    }
+    list
+}
+
+fn remove_query_entry(
+    mut list: Vec<RecentTraceEntry>,
+    blf_path: &str,
+    sql: &str,
+) -> Vec<RecentTraceEntry> {
+    let norm = normalize_query_sql(sql);
+    if let Some(e) = list.iter_mut().find(|e| e.blf_path == blf_path) {
+        e.queries.retain(|q| normalize_query_sql(&q.sql) != norm);
+    }
+    list
+}
+
+fn clear_queries(mut list: Vec<RecentTraceEntry>, blf_path: &str) -> Vec<RecentTraceEntry> {
+    if let Some(e) = list.iter_mut().find(|e| e.blf_path == blf_path) {
+        e.queries.clear();
+    }
     list
 }
 
@@ -522,6 +666,7 @@ fn push_activity(
             protocol_rows: None,
             elapsed_ms: None,
             activities: vec![entry],
+            queries: vec![],
         }),
     }
     list
@@ -622,6 +767,55 @@ fn remove_recent_trace(app: tauri::AppHandle, blf_path: String) -> Result<(), St
 }
 
 #[tauri::command]
+fn list_query_history(
+    app: tauri::AppHandle,
+    blf_path: String,
+) -> Result<Vec<QueryHistoryEntry>, String> {
+    let path = recent_traces_path(&app)?;
+    let list = read_recent_traces(&path)?;
+    Ok(list
+        .into_iter()
+        .find(|e| e.blf_path == blf_path)
+        .map(|e| e.queries)
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+fn record_query(
+    app: tauri::AppHandle,
+    blf_path: String,
+    sql: String,
+    target_signal_ids: Vec<i64>,
+    respect_trim: bool,
+    match_count: i64,
+) -> Result<(), String> {
+    let path = recent_traces_path(&app)?;
+    let list = read_recent_traces(&path)?;
+    let entry = QueryHistoryEntry {
+        sql,
+        target_signal_ids,
+        respect_trim,
+        ran_at: now_ms(),
+        match_count,
+    };
+    write_recent_traces(&path, &push_query(list, &blf_path, entry))
+}
+
+#[tauri::command]
+fn remove_query(app: tauri::AppHandle, blf_path: String, sql: String) -> Result<(), String> {
+    let path = recent_traces_path(&app)?;
+    let list = read_recent_traces(&path)?;
+    write_recent_traces(&path, &remove_query_entry(list, &blf_path, &sql))
+}
+
+#[tauri::command]
+fn clear_query_history(app: tauri::AppHandle, blf_path: String) -> Result<(), String> {
+    let path = recent_traces_path(&app)?;
+    let list = read_recent_traces(&path)?;
+    write_recent_traces(&path, &clear_queries(list, &blf_path))
+}
+
+#[tauri::command]
 fn list_recent_traces(app: tauri::AppHandle) -> Result<Vec<RecentTraceInfo>, String> {
     let path = recent_traces_path(&app)?;
     let list = read_recent_traces(&path)?;
@@ -703,7 +897,11 @@ fn main() {
             remove_recent_trace,
             list_recent_traces,
             record_activity,
-            list_activities
+            list_activities,
+            list_query_history,
+            record_query,
+            remove_query,
+            clear_query_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running fastrace");
@@ -868,6 +1066,7 @@ mod tests {
                 protocol_rows: None,
                 elapsed_ms: None,
                 activities: vec![],
+                queries: vec![],
             },
             RecentTraceEntry {
                 blf_path: "b.blf".into(),
@@ -876,6 +1075,7 @@ mod tests {
                 protocol_rows: None,
                 elapsed_ms: None,
                 activities: vec![],
+                queries: vec![],
             },
         ];
         let result = upsert_recent(list, "a.blf", 99, None, None, None);
@@ -894,6 +1094,7 @@ mod tests {
             protocol_rows: Some(5),
             elapsed_ms: Some(2500),
             activities: vec![],
+            queries: vec![],
         }];
         let result = upsert_recent(list, "a.blf", 99, None, None, None);
         assert_eq!(result[0].messages, Some(1000));
@@ -915,12 +1116,84 @@ mod tests {
                 elapsed_ms: 2500,
                 detail: "1000 messages".into(),
             }],
+            queries: vec![QueryHistoryEntry {
+                sql: "select msg_id, timestamp_us from messages".into(),
+                target_signal_ids: vec![1],
+                respect_trim: true,
+                ran_at: 1,
+                match_count: 3,
+            }],
         }];
         let result = upsert_recent(list, "a.blf", 99, None, None, None);
         assert_eq!(
             result[0].activities.len(),
             1,
             "reopening must not wipe the activity log"
+        );
+        assert_eq!(
+            result[0].queries.len(),
+            1,
+            "reopening must not wipe the query history"
+        );
+    }
+
+    #[test]
+    fn push_query_dedupes_by_normalized_sql_and_caps() {
+        let list = vec![RecentTraceEntry {
+            blf_path: "a.blf".into(),
+            opened_at: 1,
+            messages: None,
+            protocol_rows: None,
+            elapsed_ms: None,
+            activities: vec![],
+            queries: vec![],
+        }];
+        let mut list = push_query(
+            list,
+            "a.blf",
+            QueryHistoryEntry {
+                sql: "select  msg_id,  timestamp_us from messages".into(),
+                target_signal_ids: vec![1],
+                respect_trim: true,
+                ran_at: 1,
+                match_count: 1,
+            },
+        );
+        list = push_query(
+            list,
+            "a.blf",
+            QueryHistoryEntry {
+                sql: "select msg_id, timestamp_us from messages".into(),
+                target_signal_ids: vec![2],
+                respect_trim: false,
+                ran_at: 2,
+                match_count: 5,
+            },
+        );
+        assert_eq!(
+            list[0].queries.len(),
+            1,
+            "whitespace-normalized SQL dedupes"
+        );
+        assert_eq!(list[0].queries[0].target_signal_ids, vec![2]);
+        assert!(!list[0].queries[0].respect_trim);
+        for i in 0..MAX_QUERY_HISTORY + 5 {
+            list = push_query(
+                list,
+                "a.blf",
+                QueryHistoryEntry {
+                    sql: format!("select {i}"),
+                    target_signal_ids: vec![],
+                    respect_trim: true,
+                    ran_at: i as i64,
+                    match_count: 0,
+                },
+            );
+        }
+        assert_eq!(list[0].queries.len(), MAX_QUERY_HISTORY);
+        assert_eq!(
+            list[0].queries[0].sql,
+            format!("select {}", MAX_QUERY_HISTORY + 4)
         );
     }
 
@@ -933,6 +1206,7 @@ mod tests {
             protocol_rows: Some(5),
             elapsed_ms: Some(2500),
             activities: vec![],
+            queries: vec![],
         }];
         let result = push_activity(
             list,
@@ -987,6 +1261,7 @@ mod tests {
                 protocol_rows: None,
                 elapsed_ms: None,
                 activities: vec![],
+                queries: vec![],
             },
             RecentTraceEntry {
                 blf_path: "b.blf".into(),
@@ -995,6 +1270,7 @@ mod tests {
                 protocol_rows: None,
                 elapsed_ms: None,
                 activities: vec![],
+                queries: vec![],
             },
         ];
         let result = remove_recent(list, "a.blf");
