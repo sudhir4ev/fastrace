@@ -6,10 +6,6 @@ import { getSignalColor } from "@/app/signalColors";
 import { useSignalCatalog, useSignalSamplesList } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
 
-const MATCH_COLOR = "#e34948"; // PALETTE[5] - red, distinct from signal colors, reads as "flagged"
-const MATCH_SERIES_NAME = "Matches";
-
-const MATCH_LANE_HEIGHT = 64;
 const SIGNAL_LANE_HEIGHT = 100;
 const LANE_TOP_PAD = 28; // space at the top of each lane for the name label, above the grid
 const LANE_BOTTOM_PAD = 10;
@@ -55,9 +51,7 @@ function currentDataZoom(chart: echarts.ECharts): { start: number; end: number }
   return option?.dataZoom?.[0];
 }
 
-type Lane =
-  | { kind: "match"; top: number; height: number }
-  | { kind: "signal"; top: number; height: number; signalId: number; name: string; color: string };
+type Lane = { top: number; height: number; signalId: number; name: string; color: string };
 
 export default function TimelineChart({
   blfPath,
@@ -68,11 +62,6 @@ export default function TimelineChart({
 }: TimelineChartProps) {
   const activeSignalIds = Array.from(useWorkspaceStore((s) => s.activeSignalIds));
   const activeSignalKey = activeSignalIds.join(",");
-  // Match lane plots anomaly bins (≤500), not raw detectorMatches (up to
-  // 200k) - dataZoom redraw of a large scatter was flashing on every zoom.
-  const anomalyBins = useWorkspaceStore((s) => s.anomalyBins);
-  const detectorQueryHasRun = useWorkspaceStore((s) => s.detectorQueryHasRun);
-  const setSelectedMessage = useWorkspaceStore((s) => s.setSelectedMessage);
   const catalog = useSignalCatalog(blfPath);
   const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
   const samples = useSignalSamplesList(
@@ -84,25 +73,18 @@ export default function TimelineChart({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
-  // Click handler is registered once (init effect); keep bins current via ref.
-  const binsRef = useRef(anomalyBins);
-  binsRef.current = anomalyBins;
 
   const lanes: Lane[] = useMemo(() => {
     let top = 0;
     const result: Lane[] = [];
-    if (detectorQueryHasRun) {
-      result.push({ kind: "match", top, height: MATCH_LANE_HEIGHT });
-      top += MATCH_LANE_HEIGHT;
-    }
     for (const signalId of activeSignalIds) {
       const colorIndex = (catalog.data ?? []).findIndex((c) => c.signalId === signalId);
       const name = catalog.data?.find((c) => c.signalId === signalId)?.name ?? `signal ${signalId}`;
-      result.push({ kind: "signal", top, height: SIGNAL_LANE_HEIGHT, signalId, name, color: getSignalColor(colorIndex) });
+      result.push({ top, height: SIGNAL_LANE_HEIGHT, signalId, name, color: getSignalColor(colorIndex) });
       top += SIGNAL_LANE_HEIGHT;
     }
     return result;
-  }, [detectorQueryHasRun, activeSignalKey, catalog.data]);
+  }, [activeSignalKey, catalog.data]);
 
   const totalHeight = lanes.reduce((sum, l) => sum + l.height, 0) + BOTTOM_AXIS_HEIGHT;
 
@@ -112,11 +94,6 @@ export default function TimelineChart({
     chart.group = CHART_GROUP;
     chartRef.current = chart;
     echarts.connect(CHART_GROUP);
-    chart.on("click", (params) => {
-      if (params.seriesName !== MATCH_SERIES_NAME) return;
-      const msgId = binsRef.current[params.dataIndex]?.firstMsgId;
-      if (msgId !== undefined) setSelectedMessage(msgId);
-    });
     // Persist the zoom/pan window (percent) so it survives signal add/remove
     // option rebuilds and panel remounts - fires for drags on this chart AND
     // on TimelineZoomControl's slider (CHART_GROUP sync re-dispatches here
@@ -172,7 +149,7 @@ export default function TimelineChart({
     // min/max; only the bottom-most one renders ticks - this is the one
     // shared timeline, split across grids only because echarts ties an axis
     // to a grid via gridIndex.
-    const xAxis = lanes.map((lane, i) => ({
+    const xAxis = lanes.map((_lane, i) => ({
       type: "value" as const,
       gridIndex: i,
       min: minTs,
@@ -181,60 +158,34 @@ export default function TimelineChart({
       axisLabel: { formatter: (v: number) => `${(v / 1_000_000).toFixed(1)}s` },
     }));
 
-    const yAxis = lanes.map((lane, i) =>
-      lane.kind === "match"
-        ? { type: "value" as const, gridIndex: i, show: false, min: -1, max: 1 }
-        : (() => {
-            const data = samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [];
-            const values = data.map(([, v]: [number, number]) => v);
-            const [min, max] = values.length ? minMax(values) : [0, 1];
-            const pad = (max - min) * 0.1 || 1;
-            return {
-              type: "value" as const,
-              gridIndex: i,
-              min: min - pad,
-              max: max + pad,
-              splitNumber: 2, // fewer y-axis ticks now that lanes are shorter (150px)
-              axisLabel: { formatter: (v: number) => v.toFixed(3) },
-              splitLine: { show: false },
-            };
-          })()
-    );
+    const yAxis = lanes.map((lane, i) => {
+      const data = samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [];
+      const values = data.map(([, v]: [number, number]) => v);
+      const [min, max] = values.length ? minMax(values) : [0, 1];
+      const pad = (max - min) * 0.1 || 1;
+      return {
+        type: "value" as const,
+        gridIndex: i,
+        min: min - pad,
+        max: max + pad,
+        splitNumber: 2, // fewer y-axis ticks now that lanes are shorter (150px)
+        axisLabel: { formatter: (v: number) => v.toFixed(3) },
+        splitLine: { show: false },
+      };
+    });
 
-    const series = lanes.map((lane, i) =>
-      lane.kind === "match"
-        ? {
-            type: "scatter" as const,
-            name: MATCH_SERIES_NAME,
-            xAxisIndex: i,
-            yAxisIndex: i,
-            // One marker per active anomaly bin (first hit) - keeps
-            // dataZoom redraw cheap vs raw detectorMatches.
-            data: anomalyBins.map((b) => [b.firstTimestampUs, 0]),
-            symbolSize: 8,
-            itemStyle: { color: MATCH_COLOR },
-            tooltip: {
-              trigger: "item" as const,
-              formatter: (p: { data: [number, number]; dataIndex: number }) => {
-                const b = anomalyBins[p.dataIndex];
-                if (!b) return "";
-                return `msg_id: ${b.firstMsgId}<br/>count: ${b.count}<br/>t: ${(p.data[0] / 1_000_000).toFixed(3)}s`;
-              },
-            },
-          }
-        : {
-            type: "line" as const,
-            name: lane.name,
-            xAxisIndex: i,
-            yAxisIndex: i,
-            data: samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [],
-            showSymbol: false,
-            large: true,
-            sampling: "lttb" as const,
-            lineStyle: { color: lane.color, width: 2 },
-            areaStyle: { color: lane.color, opacity: 0.15 },
-          }
-    );
+    const series = lanes.map((lane, i) => ({
+      type: "line" as const,
+      name: lane.name,
+      xAxisIndex: i,
+      yAxisIndex: i,
+      data: samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [],
+      showSymbol: false,
+      large: true,
+      sampling: "lttb" as const,
+      lineStyle: { color: lane.color, width: 2 },
+      areaStyle: { color: lane.color, opacity: 0.15 },
+    }));
 
     chart.setOption(
       {
@@ -262,7 +213,7 @@ export default function TimelineChart({
     // the component has painted, catches it stuck at whatever size it was
     // wrongly measured at on init.
     chart.resize();
-  }, [lanes, samples, anomalyBins, minTs, maxTs, activeSignalKey]);
+  }, [lanes, samples, minTs, maxTs, activeSignalKey]);
 
   // containerRef's div must stay mounted even with zero lanes - the init
   // effect below only runs once on mount ([] deps), so swapping it out for a
@@ -286,32 +237,30 @@ export default function TimelineChart({
               No signals displayed - click Add Signal to plot.
             </div>
           )}
-          {lanes
-            .filter((l): l is Extract<Lane, { kind: "signal" }> => l.kind === "signal")
-            .map((lane) => (
-              <div
-                key={lane.signalId}
-                className="absolute z-[1] flex items-start gap-1 px-2"
-                style={{ top: lane.top + 4, left: 20 }}
+          {lanes.map((lane) => (
+            <div
+              key={lane.signalId}
+              className="absolute z-[1] flex items-start gap-1 px-2"
+              style={{ top: lane.top + 4, left: 20 }}
+            >
+              <span
+                className="whitespace-normal break-words text-xs font-medium font-mono capitalize tracking-wide underline"
+                style={{ color: lane.color }}
               >
-                <span
-                  className="whitespace-normal break-words text-xs font-medium font-mono capitalize tracking-wide underline"
-                  style={{ color: lane.color }}
+                {lane.name}
+              </span>
+              {onChartRemove && (
+                <button
+                  type="button"
+                  className="mt-0.5 rounded-sm text-muted-foreground opacity-70 hover:bg-background/80 hover:opacity-100"
+                  aria-label={`Remove ${lane.name}`}
+                  onClick={() => onChartRemove(lane.signalId)}
                 >
-                  {lane.name}
-                </span>
-                {onChartRemove && (
-                  <button
-                    type="button"
-                    className="mt-0.5 rounded-sm text-muted-foreground opacity-70 hover:bg-background/80 hover:opacity-100"
-                    aria-label={`Remove ${lane.name}`}
-                    onClick={() => onChartRemove(lane.signalId)}
-                  >
-                    <XIcon className="size-3.5" />
-                  </button>
-                )}
-              </div>
-            ))}
+                  <XIcon className="size-3.5" />
+                </button>
+              )}
+            </div>
+          ))}
         </div>
       </div>
     </div>

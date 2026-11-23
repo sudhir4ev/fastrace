@@ -9,7 +9,7 @@ const ZOOM_CONTROL_HEIGHT = 50;
 const TRACK_LEFT = 80;
 const TRACK_RIGHT = 20;
 
-// Amber -> red, matches MATCH_COLOR (TimelineChart) at the hot end.
+// Amber -> red heatmap for anomaly density in the zoom overview.
 const COLOR_STOPS: [number, number, number][] = [
   [254, 249, 231], // #fef9e7
   [252, 166, 82], // #fca652
