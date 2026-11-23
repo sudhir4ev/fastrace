@@ -175,16 +175,14 @@ export default function TimelineChart({
     });
 
     const series = lanes.map((lane, i) => ({
-      type: "line" as const,
+      type: "scatter" as const,
       name: lane.name,
       xAxisIndex: i,
       yAxisIndex: i,
       data: samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [],
-      showSymbol: false,
+      symbolSize: 4,
       large: true,
-      sampling: "lttb" as const,
-      lineStyle: { color: lane.color, width: 2 },
-      areaStyle: { color: lane.color, opacity: 0.15 },
+      itemStyle: { color: lane.color },
     }));
 
     chart.setOption(
