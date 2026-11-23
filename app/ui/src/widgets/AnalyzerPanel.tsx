@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Copy, History } from "lucide-react";
 import { useWorkspaceStore } from "@/app/store";
 import {
   DETECTOR_QUERY_MATCH_LIMIT,
@@ -22,6 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import TargetSignalSelect from "./TargetSignalSelect";
 
 interface AnalyzerPanelProps {
@@ -78,6 +80,7 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
   const [needsDecode, setNeedsDecode] = useState<NeedsDecodeInfo | null>(null);
   const [confirmPending, setConfirmPending] = useState(false);
   const [restoreNote, setRestoreNote] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   function runArgs() {
     return {
@@ -173,6 +176,7 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
         ? `Skipped ${skipped.length} target signal${skipped.length === 1 ? "" : "s"} missing from catalog.`
         : null
     );
+    setHistoryOpen(false);
   }
 
   const busy = mutation.isPending || confirmPending || applyTrim.isPending;
@@ -181,6 +185,82 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
 
   return (
     <div className="flex h-full flex-col gap-2 p-2">
+      <div className="flex shrink-0 items-center justify-between gap-2">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          Analyzer
+        </span>
+        <Popover open={historyOpen} onOpenChange={setHistoryOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-muted-foreground"
+              aria-label="Recent queries"
+              title="Recent queries"
+            >
+              <History className="h-3.5 w-3.5" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-[40rem] max-w-[min(40rem,calc(100vw-2rem))] p-2">
+            <div className="mb-1 flex items-center justify-between px-1">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Recent queries
+              </div>
+              {(history.data?.length ?? 0) > 0 && (
+                <button
+                  type="button"
+                  className="text-[10px] text-muted-foreground underline"
+                  onClick={() => clearHistory.mutate()}
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
+            <div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
+              {(history.data?.length ?? 0) === 0 && (
+                <div className="px-1 text-xs text-muted-foreground">
+                  No recent queries for this trace.
+                </div>
+              )}
+              {history.data?.map((entry) => (
+                <div
+                  key={`${entry.ranAt}-${entry.sql}`}
+                  className="flex items-start gap-2 rounded border border-border/60 px-3 py-2.5 hover:bg-accent"
+                >
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 whitespace-pre-wrap break-all text-left font-mono text-[10px] hover:underline"
+                    onClick={() => loadHistoryEntry(entry)}
+                  >
+                    {entry.sql.trim()}
+                  </button>
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <button
+                      type="button"
+                      className="rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+                      aria-label="Copy query"
+                      title="Copy query"
+                      onClick={() => void navigator.clipboard.writeText(entry.sql)}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-background hover:text-destructive"
+                      aria-label="Remove query from history"
+                      onClick={() => removeQuery.mutate(entry.sql)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+
       <label className="flex shrink-0 items-center gap-2 text-xs">
         <Checkbox
           checked={respectTrim}
@@ -218,47 +298,6 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
           {truncated && ` (showing first ${DETECTOR_QUERY_MATCH_LIMIT.toLocaleString()})`}
         </div>
       )}
-
-      <div className="flex max-h-36 shrink-0 flex-col gap-1 overflow-auto rounded border border-border p-1">
-        <div className="flex items-center justify-between px-1">
-          <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-            Recent queries
-          </div>
-          {(history.data?.length ?? 0) > 0 && (
-            <button
-              type="button"
-              className="text-[10px] text-muted-foreground underline"
-              onClick={() => clearHistory.mutate()}
-            >
-              Clear all
-            </button>
-          )}
-        </div>
-        {(history.data?.length ?? 0) === 0 && (
-          <div className="px-1 text-xs text-muted-foreground">No recent queries for this trace.</div>
-        )}
-        {history.data?.map((entry) => (
-          <div key={`${entry.ranAt}-${entry.sql}`} className="flex items-start gap-1 px-1">
-            <button
-              type="button"
-              className="min-w-0 flex-1 truncate text-left font-mono text-[10px] hover:underline"
-              title={entry.sql}
-              onClick={() => loadHistoryEntry(entry)}
-            >
-              {entry.sql.trim().slice(0, 80)}
-              {entry.sql.trim().length > 80 ? "…" : ""}
-            </button>
-            <button
-              type="button"
-              className="shrink-0 text-[10px] text-muted-foreground hover:text-destructive"
-              aria-label="Remove query from history"
-              onClick={() => removeQuery.mutate(entry.sql)}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-      </div>
 
       <Dialog
         open={needsDecode !== null}
