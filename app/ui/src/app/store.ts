@@ -8,12 +8,6 @@ export interface TrimRange {
   end: number;
 }
 
-export interface AnomalyScope {
-  startUs: number;
-  endUs: number;
-  wholeTrace: boolean;
-}
-
 export interface WorkspaceState {
   selectedGroupKeys: string[];
   selectedMessageId: number | null;
@@ -41,7 +35,6 @@ export interface WorkspaceState {
   detectorQueryError: string | null;
   detectorQueryHasRun: boolean;
   anomalyBins: AnomalyBin[];
-  anomalyScope: AnomalyScope | null;
   setDetectorQuerySql: (sql: string) => void;
   setDetectorTargetSignalIds: (ids: number[]) => void;
   setDetectorRespectTrim: (respect: boolean) => void;
@@ -107,7 +100,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   detectorQueryError: null,
   detectorQueryHasRun: false,
   anomalyBins: [],
-  anomalyScope: null,
   setDetectorQuerySql: (sql) => set({ detectorQuerySql: sql }),
   setDetectorTargetSignalIds: (ids) => set({ detectorTargetSignalIds: ids }),
   setDetectorRespectTrim: (respect) => set({ detectorRespectTrim: respect }),
@@ -122,11 +114,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         detectorQueryError: null,
         detectorQueryHasRun: true,
         anomalyBins: ran.bins,
-        anomalyScope: {
-          startUs: ran.scopeStartUs,
-          endUs: ran.scopeEndUs,
-          wholeTrace: ran.wholeTrace,
-        },
         activeSignalIds: active,
         pendingSignalIds: new Set([...s.pendingSignalIds, ...ran.targetSignalIds]),
       };
@@ -138,7 +125,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       detectorQueryTruncated: false,
       detectorQueryHasRun: true,
       anomalyBins: [],
-      anomalyScope: null,
     }),
   resetDetectorQuery: () =>
     set({
@@ -150,7 +136,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       detectorQueryError: null,
       detectorQueryHasRun: false,
       anomalyBins: [],
-      anomalyScope: null,
     }),
   timelineZoomRange: { start: 0, end: 100 },
   setTimelineZoomRange: (range) => {
@@ -194,7 +179,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       detectorQueryError: null,
       detectorQueryHasRun: false,
       anomalyBins: [],
-      anomalyScope: null,
       timelineZoomRange: { start: 0, end: 100 },
       appliedTrimRange: null,
       pendingTrimRange: null,

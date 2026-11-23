@@ -208,8 +208,8 @@ export default function TimelineChart({
             name: MATCH_SERIES_NAME,
             xAxisIndex: i,
             yAxisIndex: i,
-            // One marker per active anomaly bin (first hit) - aligns with
-            // AnomalyRail and keeps dataZoom redraw cheap.
+            // One marker per active anomaly bin (first hit) - keeps
+            // dataZoom redraw cheap vs raw detectorMatches.
             data: anomalyBins.map((b) => [b.firstTimestampUs, 0]),
             symbolSize: 8,
             itemStyle: { color: MATCH_COLOR },
