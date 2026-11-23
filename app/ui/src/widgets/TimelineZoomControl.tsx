@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as echarts from "echarts";
 import { useWorkspaceStore } from "@/app/store";
+import { anomalyBinColor } from "./anomaly-bin-color";
 import { CHART_GROUP } from "./TimelineChart";
 
 const ZOOM_CONTROL_HEIGHT = 50;
@@ -8,26 +9,6 @@ const ZOOM_CONTROL_HEIGHT = 50;
 // bars line up with the slider's own track/handles.
 const TRACK_LEFT = 80;
 const TRACK_RIGHT = 20;
-
-// Amber -> red heatmap for anomaly density in the zoom overview.
-const COLOR_STOPS: [number, number, number][] = [
-  [254, 249, 231], // #fef9e7
-  [252, 166, 82], // #fca652
-  [227, 73, 72], // #e34948
-];
-
-function binColor(t: number): string {
-  const clamped = Math.max(0, Math.min(1, t));
-  const segment = clamped * (COLOR_STOPS.length - 1);
-  const i = Math.min(COLOR_STOPS.length - 2, Math.floor(segment));
-  const localT = segment - i;
-  const [r0, g0, b0] = COLOR_STOPS[i];
-  const [r1, g1, b1] = COLOR_STOPS[i + 1];
-  const r = Math.round(r0 + (r1 - r0) * localT);
-  const g = Math.round(g0 + (g1 - g0) * localT);
-  const b = Math.round(b0 + (b1 - b0) * localT);
-  return `rgb(${r}, ${g}, ${b})`;
-}
 
 interface TimelineZoomControlProps {
   // Same pinned trace-wide domain TimelineChart's lanes use (see its
@@ -108,7 +89,7 @@ export default function TimelineZoomControl({ minTs, maxTs }: TimelineZoomContro
       bin: b.bin,
       leftPct: ((b.startUs - minTs) / domain) * 100,
       widthPct: Math.max(((b.endUs - b.startUs) / domain) * 100, 0.1),
-      color: binColor(b.count / maxCount),
+      color: anomalyBinColor(b.count / maxCount),
     }));
   }, [anomalyBins, minTs, maxTs]);
 

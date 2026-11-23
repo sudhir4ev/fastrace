@@ -5,6 +5,9 @@ import { useWorkspaceStore } from "@/app/store";
 import { getSignalColor } from "@/app/signalColors";
 import { useSignalCatalog, useSignalSamplesList } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
+import { anomalyBinColor } from "./anomaly-bin-color";
+
+const ANOMALY_MARK_OPACITY = 0.28;
 
 const SIGNAL_LANE_HEIGHT = 100;
 const LANE_TOP_PAD = 28; // space at the top of each lane for the name label, above the grid
@@ -64,6 +67,7 @@ export default function TimelineChart({
   const activeSignalKey = activeSignalIds.join(",");
   const catalog = useSignalCatalog(blfPath);
   const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
+  const anomalyBins = useWorkspaceStore((s) => s.anomalyBins);
   const samples = useSignalSamplesList(
     blfPath,
     activeSignalIds,
@@ -174,6 +178,23 @@ export default function TimelineChart({
       };
     });
 
+    // Same amber→red density as TimelineZoomControl; only bins with count > 0
+    // are stored after a detector run, so this is usually sparse (<< 500).
+    const maxCount = anomalyBins.reduce((m, b) => Math.max(m, b.count), 0);
+    const markAreaData =
+      maxCount > 0
+        ? anomalyBins.map((b) => [
+            {
+              xAxis: b.startUs,
+              itemStyle: {
+                color: anomalyBinColor(b.count / maxCount),
+                opacity: ANOMALY_MARK_OPACITY,
+              },
+            },
+            { xAxis: b.endUs },
+          ])
+        : [];
+
     const series = lanes.map((lane, i) => ({
       type: "scatter" as const,
       name: lane.name,
@@ -183,6 +204,12 @@ export default function TimelineChart({
       symbolSize: 4,
       large: true,
       itemStyle: { color: lane.color },
+      // Vertical bands for every active anomaly bin, aligned to the shared
+      // timestamp x-axis so they line up with the zoom-strip heatmap.
+      markArea:
+        markAreaData.length > 0
+          ? { silent: true, data: markAreaData }
+          : undefined,
     }));
 
     chart.setOption(
@@ -211,7 +238,7 @@ export default function TimelineChart({
     // the component has painted, catches it stuck at whatever size it was
     // wrongly measured at on init.
     chart.resize();
-  }, [lanes, samples, minTs, maxTs, activeSignalKey]);
+  }, [lanes, samples, minTs, maxTs, activeSignalKey, anomalyBins]);
 
   // containerRef's div must stay mounted even with zero lanes - the init
   // effect below only runs once on mount ([] deps), so swapping it out for a
