@@ -8,6 +8,7 @@ import { Button } from "@/shared/ui/button";
 import { anomalyBinColor } from "./anomaly-bin-color";
 import { createDebouncer } from "./debounce";
 import { buildTimelineDiagnostics } from "./diagnostics";
+import { shouldShowDots } from "./dot-visibility";
 import { viewportFromZoomPercent } from "./viewport";
 
 const ANOMALY_MARK_OPACITY = 0.28;
@@ -244,15 +245,26 @@ export default function TimelineChart({
           ])
         : [];
 
+    const pointCounts: Record<number, number> = {};
+    for (const lane of lanes) {
+      pointCounts[lane.signalId] = samples[activeSignalIds.indexOf(lane.signalId)]?.data?.length ?? 0;
+    }
+
+    // Line by default; dots only reveal themselves once zoomed in enough
+    // that individual points are actually spaced apart on screen - at low
+    // zoom (many points packed into few pixels) a dense scatter is noise,
+    // a line reads the signal's shape better.
     const series = lanes.map((lane, i) => ({
-      type: "scatter" as const,
+      type: "line" as const,
       name: lane.name,
       xAxisIndex: i,
       yAxisIndex: i,
       data: samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [],
+      showSymbol: shouldShowDots(pointCounts[lane.signalId] ?? 0, effectiveViewport.pixelWidth),
       symbolSize: 4,
       large: true,
       itemStyle: { color: lane.color },
+      lineStyle: { color: lane.color, width: 1 },
       // Vertical bands for every active anomaly bin, aligned to the shared
       // timestamp x-axis so they line up with the zoom-strip heatmap.
       markArea:
@@ -288,10 +300,6 @@ export default function TimelineChart({
     // wrongly measured at on init.
     chart.resize();
 
-    const pointCounts: Record<number, number> = {};
-    for (const lane of lanes) {
-      pointCounts[lane.signalId] = samples[activeSignalIds.indexOf(lane.signalId)]?.data?.length ?? 0;
-    }
     useWorkspaceStore.getState().setTimelineDiagnostics(
       buildTimelineDiagnostics({
         viewport: effectiveViewport,

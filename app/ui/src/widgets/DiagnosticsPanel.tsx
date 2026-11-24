@@ -35,12 +35,13 @@ function TimelineDiagnosticsView() {
               <th className="px-2 py-1">Signal</th>
               <th className="px-2 py-1">Algorithm</th>
               <th className="px-2 py-1">Points rendered</th>
+              <th className="px-2 py-1">Dots visible</th>
             </tr>
           </thead>
           <tbody>
             {signals.length === 0 ? (
               <tr>
-                <td className="px-2 py-1 text-muted-foreground" colSpan={3}>
+                <td className="px-2 py-1 text-muted-foreground" colSpan={4}>
                   No signals displayed.
                 </td>
               </tr>
@@ -50,6 +51,7 @@ function TimelineDiagnosticsView() {
                   <td className="px-2 py-1">{s.name}</td>
                   <td className="px-2 py-1">{s.algorithm}</td>
                   <td className="px-2 py-1">{s.pointCount}</td>
+                  <td className="px-2 py-1">{s.showingDots ? "yes" : "no"}</td>
                 </tr>
               ))
             )}

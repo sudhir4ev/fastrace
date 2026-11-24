@@ -17,8 +17,10 @@ describe("buildTimelineDiagnostics", () => {
     expect(result).toEqual({
       viewport: { startUs: 1000, endUs: 2000, pixelWidth: 800 },
       signals: [
-        { signalId: 1, name: "EngineRpm", algorithm: "min_max", pointCount: 512 },
-        { signalId: 2, name: "VehicleSpeed", algorithm: "lttb", pointCount: 128 },
+        // 800px / 512 points = 1.56px/point - too dense, line only.
+        { signalId: 1, name: "EngineRpm", algorithm: "min_max", pointCount: 512, showingDots: false },
+        // 800px / 128 points = 6.25px/point - spaced out enough for dots.
+        { signalId: 2, name: "VehicleSpeed", algorithm: "lttb", pointCount: 128, showingDots: true },
       ],
       overlayBinCount: 7,
       overlayError: null,
@@ -34,7 +36,9 @@ describe("buildTimelineDiagnostics", () => {
       overlayBinCount: 0,
       overlayError: null,
     });
-    expect(result.signals).toEqual([{ signalId: 9, name: "Unseen", algorithm: "min_max", pointCount: 0 }]);
+    expect(result.signals).toEqual([
+      { signalId: 9, name: "Unseen", algorithm: "min_max", pointCount: 0, showingDots: true },
+    ]);
   });
 
   it("passes the overlay error through unchanged", () => {

@@ -1,10 +1,12 @@
 import type { DownsamplingAlgorithm } from "@/shared/api/trace-source";
+import { shouldShowDots } from "./dot-visibility";
 
 export interface TimelineSignalDiagnostics {
   signalId: number;
   name: string;
   algorithm: DownsamplingAlgorithm;
   pointCount: number;
+  showingDots: boolean;
 }
 
 export interface TimelineDiagnostics {
@@ -26,12 +28,16 @@ export function buildTimelineDiagnostics(args: {
 }): TimelineDiagnostics {
   return {
     viewport: args.viewport,
-    signals: args.lanes.map((lane) => ({
-      signalId: lane.signalId,
-      name: lane.name,
-      algorithm: args.algorithms[lane.signalId] ?? "min_max",
-      pointCount: args.pointCounts[lane.signalId] ?? 0,
-    })),
+    signals: args.lanes.map((lane) => {
+      const pointCount = args.pointCounts[lane.signalId] ?? 0;
+      return {
+        signalId: lane.signalId,
+        name: lane.name,
+        algorithm: args.algorithms[lane.signalId] ?? "min_max",
+        pointCount,
+        showingDots: shouldShowDots(pointCount, args.viewport.pixelWidth),
+      };
+    }),
     overlayBinCount: args.overlayBinCount,
     overlayError: args.overlayError,
   };
