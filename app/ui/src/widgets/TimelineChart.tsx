@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
 import { Plus, XIcon } from "lucide-react";
 import { useWorkspaceStore } from "@/app/store";
 import { getSignalColor } from "@/app/signalColors";
-import { useSignalCatalog, useSignalSamplesList } from "@/shared/api/hooks";
+import { useAnomalyBinsForViewport, useSignalCatalog, useSignalSamplesList } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
 import { anomalyBinColor } from "./anomaly-bin-color";
+import { createDebouncer } from "./debounce";
+import { viewportFromZoomPercent } from "./viewport";
 
 const ANOMALY_MARK_OPACITY = 0.28;
 
@@ -67,16 +69,39 @@ export default function TimelineChart({
   const activeSignalKey = activeSignalIds.join(",");
   const catalog = useSignalCatalog(blfPath);
   const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
-  const anomalyBins = useWorkspaceStore((s) => s.anomalyBins);
-  const samples = useSignalSamplesList(
-    blfPath,
-    activeSignalIds,
-    trimRange?.start ?? 0,
-    trimRange?.end ?? Number.MAX_SAFE_INTEGER
-  );
+  const signalAlgorithms = useWorkspaceStore((s) => s.signalDownsamplingAlgorithms);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
+
+  const [viewport, setViewport] = useState<{ startUs: number; endUs: number; pixelWidth: number } | null>(null);
+  const debouncerRef = useRef(
+    createDebouncer(200, (startUs: number, endUs: number, pixelWidth: number) =>
+      setViewport({ startUs, endUs, pixelWidth })
+    )
+  );
+
+  const effectiveViewport = viewport ?? {
+    startUs: trimRange?.start ?? 0,
+    endUs: trimRange?.end ?? Number.MAX_SAFE_INTEGER,
+    pixelWidth: 800,
+  };
+  const samples = useSignalSamplesList(
+    blfPath,
+    activeSignalIds,
+    effectiveViewport.startUs,
+    effectiveViewport.endUs,
+    effectiveViewport.pixelWidth,
+    signalAlgorithms
+  );
+  const detectorSql = useWorkspaceStore((s) => s.detectorQuerySql);
+  const overlayBins = useAnomalyBinsForViewport(
+    blfPath,
+    detectorSql,
+    effectiveViewport.startUs,
+    effectiveViewport.endUs,
+    effectiveViewport.pixelWidth
+  );
 
   const lanes: Lane[] = useMemo(() => {
     let top = 0;
@@ -98,6 +123,18 @@ export default function TimelineChart({
     chart.group = CHART_GROUP;
     chartRef.current = chart;
     echarts.connect(CHART_GROUP);
+    // Recomputes the debounced viewport (absolute [startUs,endUs] + pixel
+    // width) that drives LOD-tiered sample/anomaly-overlay fetches - on
+    // pan-end/zoom-change and on resize, not continuously mid-drag
+    // (`docs/adr/0009`).
+    const scheduleViewportUpdate = () => {
+      const dz = currentDataZoom(chart) ?? useWorkspaceStore.getState().timelineZoomRange;
+      const trim = useWorkspaceStore.getState().appliedTrimRange;
+      if (!trim || !containerRef.current) return;
+      const { startUs, endUs } = viewportFromZoomPercent(dz, trim);
+      debouncerRef.current.call(startUs, endUs, containerRef.current.clientWidth);
+    };
+
     // Persist the zoom/pan window (percent) so it survives signal add/remove
     // option rebuilds and panel remounts - fires for drags on this chart AND
     // on TimelineZoomControl's slider (CHART_GROUP sync re-dispatches here
@@ -106,13 +143,18 @@ export default function TimelineChart({
     chart.on("dataZoom", () => {
       const dz = currentDataZoom(chart);
       if (dz) useWorkspaceStore.getState().setTimelineZoomRange(dz);
+      scheduleViewportUpdate();
     });
-    const resize = () => chart.resize();
+    const resize = () => {
+      chart.resize();
+      scheduleViewportUpdate();
+    };
     const ro = new ResizeObserver(resize);
     ro.observe(containerRef.current);
     window.addEventListener("resize", resize);
     requestAnimationFrame(resize);
     return () => {
+      debouncerRef.current.cancel();
       ro.disconnect();
       window.removeEventListener("resize", resize);
       chart.dispose();
@@ -178,16 +220,18 @@ export default function TimelineChart({
       };
     });
 
-    // Same amber→red density as TimelineZoomControl; only bins with count > 0
-    // are stored after a detector run, so this is usually sparse (<< 500).
-    const maxCount = anomalyBins.reduce((m, b) => Math.max(m, b.count), 0);
+    // Viewport-scoped, LOD-Tier-aware Anomaly Overlay (`docs/adr/0009`) -
+    // distinct from TimelineZoomControl's fixed-500-bin heatmap, which keeps
+    // reading the store's `anomalyBins` unchanged.
+    const activeOverlayBins = overlayBins.data ?? [];
+    const maxOverlayCount = activeOverlayBins.reduce((m, b) => Math.max(m, b.count), 0);
     const markAreaData =
-      maxCount > 0
-        ? anomalyBins.map((b) => [
+      maxOverlayCount > 0
+        ? activeOverlayBins.map((b) => [
             {
               xAxis: b.startUs,
               itemStyle: {
-                color: anomalyBinColor(b.count / maxCount),
+                color: anomalyBinColor(b.count / maxOverlayCount),
                 opacity: ANOMALY_MARK_OPACITY,
               },
             },
@@ -238,7 +282,7 @@ export default function TimelineChart({
     // the component has painted, catches it stuck at whatever size it was
     // wrongly measured at on init.
     chart.resize();
-  }, [lanes, samples, minTs, maxTs, activeSignalKey, anomalyBins]);
+  }, [lanes, samples, minTs, maxTs, activeSignalKey, overlayBins.data]);
 
   // containerRef's div must stay mounted even with zero lanes - the init
   // effect below only runs once on mount ([] deps), so swapping it out for a
