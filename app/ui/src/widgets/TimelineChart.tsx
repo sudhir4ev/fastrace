@@ -248,9 +248,16 @@ export default function TimelineChart({
           ])
         : [];
 
+    // The cache holds the viewport plus a margin on each side (`docs/adr/0011`)
+    // so count only points inside the actual viewport here - using the whole
+    // cached count would see roughly double the on-screen density and never
+    // switch out of line mode.
     const pointCounts: Record<number, number> = {};
     for (const lane of lanes) {
-      pointCounts[lane.signalId] = samplesBySignal[lane.signalId]?.length ?? 0;
+      const data = samplesBySignal[lane.signalId] ?? [];
+      pointCounts[lane.signalId] = data.filter(
+        ([ts]) => ts >= effectiveViewport.startUs && ts <= effectiveViewport.endUs
+      ).length;
     }
 
     // Line by default; dots only reveal themselves once zoomed in enough
