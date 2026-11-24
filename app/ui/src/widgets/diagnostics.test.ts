@@ -9,7 +9,7 @@ describe("buildTimelineDiagnostics", () => {
         { signalId: 1, name: "EngineRpm" },
         { signalId: 2, name: "VehicleSpeed" },
       ],
-      pointCounts: { 1: 512, 2: 128 },
+      pointCounts: { 1: 512, 2: 100 },
       algorithms: { 2: "lttb" },
       overlayBinCount: 7,
       overlayError: null,
@@ -19,8 +19,8 @@ describe("buildTimelineDiagnostics", () => {
       signals: [
         // 800px / 512 points = 1.56px/point - too dense, line only.
         { signalId: 1, name: "EngineRpm", algorithm: "min_max", pointCount: 512, showingDots: false },
-        // 800px / 128 points = 6.25px/point - spaced out enough for dots.
-        { signalId: 2, name: "VehicleSpeed", algorithm: "lttb", pointCount: 128, showingDots: true },
+        // 800px / 100 points = 8px/point - spaced out enough for dots.
+        { signalId: 2, name: "VehicleSpeed", algorithm: "lttb", pointCount: 100, showingDots: true },
       ],
       overlayBinCount: 7,
       overlayError: null,

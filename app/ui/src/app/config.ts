@@ -12,6 +12,9 @@ export interface LodConfig {
   viewportDebounceMs: number;
   defaultPixelWidthFallback: number;
   anomalyMarkOpacity: number;
+  maxClientCachePoints: number;
+  cacheMarginRatio: number;
+  cacheDensityThresholdRatio: number;
 }
 
 interface ConfigFile {

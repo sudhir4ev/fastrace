@@ -4,12 +4,13 @@ import { Plus, XIcon } from "lucide-react";
 import { useWorkspaceStore } from "@/app/store";
 import { LOD_CONFIG } from "@/app/config";
 import { getSignalColor } from "@/app/signalColors";
-import { useAnomalyBinsForViewport, useSignalCatalog, useSignalSamplesList } from "@/shared/api/hooks";
+import { useAnomalyBinsForViewport, useSignalCatalog } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
 import { anomalyBinColor } from "./anomaly-bin-color";
 import { createDebouncer } from "./debounce";
 import { buildTimelineDiagnostics } from "./diagnostics";
 import { shouldShowDots } from "./dot-visibility";
+import { useSignalPointCache } from "./useSignalPointCache";
 import { viewportFromZoomPercent } from "./viewport";
 
 const SIGNAL_LANE_HEIGHT = 100;
@@ -87,13 +88,16 @@ export default function TimelineChart({
     endUs: trimRange?.end ?? Number.MAX_SAFE_INTEGER,
     pixelWidth: LOD_CONFIG.defaultPixelWidthFallback,
   };
-  const samples = useSignalSamplesList(
+  // Per-signal point cache (`docs/adr/0011`): pan within an already-cached
+  // margin is free, zoom only refetches when the cache is too sparse for the
+  // new tier, and Trim Window changes invalidate - replaces a fresh
+  // viewport-exact fetch on every settle.
+  const samplesBySignal = useSignalPointCache(
     blfPath,
     activeSignalIds,
-    effectiveViewport.startUs,
-    effectiveViewport.endUs,
-    effectiveViewport.pixelWidth,
-    signalAlgorithms
+    effectiveViewport,
+    signalAlgorithms,
+    trimRange ? { startUs: trimRange.start, endUs: trimRange.end } : null
   );
   // Keyed off the SQL that actually ran, never the live editor draft - the
   // Anomaly Overlay is a Detector Query run's bins (CONTEXT.md), not a
@@ -210,7 +214,7 @@ export default function TimelineChart({
     }));
 
     const yAxis = lanes.map((lane, i) => {
-      const data = samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [];
+      const data = samplesBySignal[lane.signalId] ?? [];
       const values = data.map(([, v]: [number, number]) => v);
       const [min, max] = values.length ? minMax(values) : [0, 1];
       const pad = (max - min) * 0.1 || 1;
@@ -246,7 +250,7 @@ export default function TimelineChart({
 
     const pointCounts: Record<number, number> = {};
     for (const lane of lanes) {
-      pointCounts[lane.signalId] = samples[activeSignalIds.indexOf(lane.signalId)]?.data?.length ?? 0;
+      pointCounts[lane.signalId] = samplesBySignal[lane.signalId]?.length ?? 0;
     }
 
     // Line by default; dots only reveal themselves once zoomed in enough
@@ -258,7 +262,7 @@ export default function TimelineChart({
       name: lane.name,
       xAxisIndex: i,
       yAxisIndex: i,
-      data: samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [],
+      data: samplesBySignal[lane.signalId] ?? [],
       showSymbol: shouldShowDots(pointCounts[lane.signalId] ?? 0, effectiveViewport.pixelWidth),
       symbolSize: 4,
       large: true,
@@ -309,7 +313,7 @@ export default function TimelineChart({
         overlayError: overlayBins.error ? String(overlayBins.error) : null,
       })
     );
-  }, [lanes, samples, minTs, maxTs, activeSignalKey, overlayBins.data, overlayBins.error]);
+  }, [lanes, samplesBySignal, minTs, maxTs, activeSignalKey, overlayBins.data, overlayBins.error]);
 
   // containerRef's div must stay mounted even with zero lanes - the init
   // effect below only runs once on mount ([] deps), so swapping it out for a
