@@ -319,6 +319,19 @@ export default function TimelineChart({
               >
                 {lane.name}
               </span>
+              <select
+                className="ml-1 rounded-sm border border-border bg-background text-[10px]"
+                value={signalAlgorithms[lane.signalId] ?? "min_max"}
+                onChange={(e) =>
+                  useWorkspaceStore
+                    .getState()
+                    .setSignalDownsamplingAlgorithm(lane.signalId, e.target.value as "min_max" | "lttb")
+                }
+                aria-label={`Downsampling algorithm for ${lane.name}`}
+              >
+                <option value="min_max">Min/Max</option>
+                <option value="lttb">LTTB</option>
+              </select>
               {onChartRemove && (
                 <button
                   type="button"
