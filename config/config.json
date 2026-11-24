@@ -4,7 +4,7 @@
     "maxLodTargetPoints": 50000,
     "anomalyBinCount": 500,
     "detectorQueryMatchLimit": 200000,
-    "minPixelsPerPointForDots": 6,
+    "minPixelsPerPointForDots": 7,
     "viewportDebounceMs": 200,
     "defaultPixelWidthFallback": 800,
     "anomalyMarkOpacity": 0.28
