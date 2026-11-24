@@ -256,7 +256,8 @@ export default function TimelineChart({
       )}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="relative" style={{ height: lanes.length === 0 ? "100%" : totalHeight }}>
-          <div ref={containerRef} className="absolute inset-0" />
+          {/* echarts sets inline cursor (pointer/move) on its zr root; !important wins */}
+          <div ref={containerRef} className="absolute inset-0 [&_*]:!cursor-crosshair" />
           {lanes.length === 0 && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
               No signals displayed - click Add Signal to plot.
