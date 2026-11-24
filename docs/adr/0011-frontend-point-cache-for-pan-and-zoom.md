@@ -1,6 +1,12 @@
 # 0011. Frontend point cache for Timeline pan and zoom
 
-- Status: Accepted
+- Status: Decisions 1-6 superseded by `docs/adr/0012` (the extent+density
+  cache model here had two bugs in practice: the cache's recorded extent
+  only ever grew, so coverage checks went stale forever after the first
+  fetch, and a dense sub-region could mask a sparse one in the aggregate
+  density check. 0012 replaces it with a fixed-grid tile cache). Decision
+  7 (Anomaly Overlay stays out of scope, viewport-exact, no cache) still
+  stands.
 - Date: 2026-11-24
 
 ## Plain-language summary

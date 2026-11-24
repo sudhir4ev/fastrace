@@ -23,6 +23,8 @@ function TimelineDiagnosticsView() {
         <span>{spanUs}</span>
         <span className="text-muted-foreground">Pixel width</span>
         <span>{viewport.pixelWidth}</span>
+        <span className="text-muted-foreground">Tile span (us)</span>
+        <span>{viewport.tileSpanUs}</span>
         <span className="text-muted-foreground">Anomaly Overlay bins</span>
         <span>{overlayBinCount}</span>
         <span className="text-muted-foreground">Overlay error</span>
@@ -35,13 +37,14 @@ function TimelineDiagnosticsView() {
               <th className="px-2 py-1">Signal</th>
               <th className="px-2 py-1">Algorithm</th>
               <th className="px-2 py-1">Points rendered</th>
+              <th className="px-2 py-1">Avg us/point</th>
               <th className="px-2 py-1">Dots visible</th>
             </tr>
           </thead>
           <tbody>
             {signals.length === 0 ? (
               <tr>
-                <td className="px-2 py-1 text-muted-foreground" colSpan={4}>
+                <td className="px-2 py-1 text-muted-foreground" colSpan={5}>
                   No signals displayed.
                 </td>
               </tr>
@@ -51,6 +54,7 @@ function TimelineDiagnosticsView() {
                   <td className="px-2 py-1">{s.name}</td>
                   <td className="px-2 py-1">{s.algorithm}</td>
                   <td className="px-2 py-1">{s.pointCount}</td>
+                  <td className="px-2 py-1">{s.avgSampleIntervalUs?.toFixed(1) ?? "-"}</td>
                   <td className="px-2 py-1">{s.showingDots ? "yes" : "no"}</td>
                 </tr>
               ))

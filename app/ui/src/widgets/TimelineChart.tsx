@@ -10,7 +10,7 @@ import { anomalyBinColor } from "./anomaly-bin-color";
 import { createDebouncer } from "./debounce";
 import { buildTimelineDiagnostics } from "./diagnostics";
 import { shouldShowDots } from "./dot-visibility";
-import { useSignalPointCache } from "./useSignalPointCache";
+import { useSignalTileCache } from "./useSignalTileCache";
 import { viewportFromZoomPercent } from "./viewport";
 
 const SIGNAL_LANE_HEIGHT = 100;
@@ -88,11 +88,12 @@ export default function TimelineChart({
     endUs: trimRange?.end ?? Number.MAX_SAFE_INTEGER,
     pixelWidth: LOD_CONFIG.defaultPixelWidthFallback,
   };
-  // Per-signal point cache (`docs/adr/0011`): pan within an already-cached
-  // margin is free, zoom only refetches when the cache is too sparse for the
-  // new tier, and Trim Window changes invalidate - replaces a fresh
-  // viewport-exact fetch on every settle.
-  const samplesBySignal = useSignalPointCache(
+  // Per-signal tile cache (`docs/adr/0012`): a fixed time grid per
+  // (signal, algorithm, tile size) - panning within the margin tiles is
+  // free, a tile fetch only happens for the newly-entered tile(s), and a
+  // zoom that crosses into a different tile size drops and refetches.
+  // Trim Window changes invalidate.
+  const samplesBySignal = useSignalTileCache(
     blfPath,
     activeSignalIds,
     effectiveViewport,
@@ -248,10 +249,10 @@ export default function TimelineChart({
           ])
         : [];
 
-    // The cache holds the viewport plus a margin on each side (`docs/adr/0011`)
-    // so count only points inside the actual viewport here - using the whole
-    // cached count would see roughly double the on-screen density and never
-    // switch out of line mode.
+    // The cache holds the viewport's tiles plus margin tiles on each side
+    // (`docs/adr/0012`), so count only points inside the actual viewport
+    // here - using the whole cached count would see the margin tiles' extra
+    // density too and never switch out of line mode.
     const pointCounts: Record<number, number> = {};
     for (const lane of lanes) {
       const data = samplesBySignal[lane.signalId] ?? [];

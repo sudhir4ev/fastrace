@@ -131,6 +131,7 @@ export default function SignalSelect({ blfPath, open, onOpenChange }: SignalSele
             value={signalFilter}
             onChange={(e) => setSignalFilter(e.target.value)}
             placeholder="Search signals..."
+            autoComplete="off"
             autoFocus
             className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
