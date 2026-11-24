@@ -32,6 +32,12 @@ export interface WorkspaceState {
   // nothing still "ran" and the Match lane should show (empty), not stay
   // hidden as if nothing happened yet.
   detectorQuerySql: string;
+  // The SQL text of the last Detector Query that actually ran - distinct
+  // from `detectorQuerySql`, which keeps changing as the user types a new
+  // draft. The Anomaly Overlay keys off this, not the live draft, so it
+  // never recomputes from an unrun/half-typed query (CONTEXT.md's Anomaly
+  // Bin is defined over a Detector Query's *run* scope).
+  detectorRanSql: string | null;
   detectorTargetSignalIds: number[];
   detectorRespectTrim: boolean;
   detectorMatches: DetectorMatch[];
@@ -42,7 +48,7 @@ export interface WorkspaceState {
   setDetectorQuerySql: (sql: string) => void;
   setDetectorTargetSignalIds: (ids: number[]) => void;
   setDetectorRespectTrim: (respect: boolean) => void;
-  setDetectorQueryResult: (ran: DetectorQueryRan) => void;
+  setDetectorQueryResult: (ran: DetectorQueryRan, sqlText: string) => void;
   setDetectorQueryError: (error: string) => void;
   resetDetectorQuery: () => void;
   // Shared dataZoom window (percent, 0-100) for TimelineChart/TimelineZoomControl.
@@ -102,6 +108,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       return { activeSignalIds: active, pendingSignalIds: pending };
     }),
   detectorQuerySql: "",
+  detectorRanSql: null,
   detectorTargetSignalIds: [],
   detectorRespectTrim: true,
   detectorMatches: [],
@@ -112,7 +119,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setDetectorQuerySql: (sql) => set({ detectorQuerySql: sql }),
   setDetectorTargetSignalIds: (ids) => set({ detectorTargetSignalIds: ids }),
   setDetectorRespectTrim: (respect) => set({ detectorRespectTrim: respect }),
-  setDetectorQueryResult: (ran) =>
+  setDetectorQueryResult: (ran, sqlText) =>
     set((s) => {
       // Union targets into Active Signals (never remove other actives).
       const active = new Set(s.activeSignalIds);
@@ -122,6 +129,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         detectorQueryTruncated: ran.truncated,
         detectorQueryError: null,
         detectorQueryHasRun: true,
+        detectorRanSql: sqlText,
         anomalyBins: ran.bins,
         activeSignalIds: active,
         pendingSignalIds: new Set([...s.pendingSignalIds, ...ran.targetSignalIds]),
@@ -138,6 +146,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   resetDetectorQuery: () =>
     set({
       detectorQuerySql: "",
+      detectorRanSql: null,
       detectorTargetSignalIds: [],
       detectorRespectTrim: true,
       detectorMatches: [],
@@ -181,6 +190,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       activeSignalIds: new Set(),
       pendingSignalIds: new Set(),
       detectorQuerySql: "",
+      detectorRanSql: null,
       detectorTargetSignalIds: [],
       detectorRespectTrim: true,
       detectorMatches: [],

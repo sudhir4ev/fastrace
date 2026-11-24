@@ -94,10 +94,14 @@ export default function TimelineChart({
     effectiveViewport.pixelWidth,
     signalAlgorithms
   );
-  const detectorSql = useWorkspaceStore((s) => s.detectorQuerySql);
+  // Keyed off the SQL that actually ran, never the live editor draft - the
+  // Anomaly Overlay is a Detector Query run's bins (CONTEXT.md), not a
+  // per-keystroke recompute, and `detectorRanSql` is null until a query has
+  // run at least once (the hook's own `enabled` check then stays false).
+  const detectorRanSql = useWorkspaceStore((s) => s.detectorRanSql);
   const overlayBins = useAnomalyBinsForViewport(
     blfPath,
-    detectorSql,
+    detectorRanSql ?? "",
     effectiveViewport.startUs,
     effectiveViewport.endUs,
     effectiveViewport.pixelWidth
@@ -296,6 +300,11 @@ export default function TimelineChart({
             <Plus className="size-3.5" />
             Add Signal
           </Button>
+        </div>
+      )}
+      {overlayBins.error && (
+        <div className="shrink-0 border-b border-destructive/50 bg-destructive/10 px-2 py-1 text-xs text-destructive">
+          Anomaly overlay: {String(overlayBins.error)}
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto">
