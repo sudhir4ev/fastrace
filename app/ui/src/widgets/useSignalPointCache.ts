@@ -46,50 +46,55 @@ export function useSignalPointCache(
     const wanted = computeWantedRange(viewport, LOD_CONFIG.cacheMarginRatio);
     const budget = lodTierPointBudget(viewport.pixelWidth);
 
-    async function run() {
-      const nextPoints: Record<number, [number, number][]> = {};
-      for (const signalId of signalIds) {
-        const algorithm: DownsamplingAlgorithm = algorithms[signalId] ?? "min_max";
-        const key = `${signalId}:${algorithm}`;
-        let cached = cacheRef.current.get(key) ?? null;
+    // Per-signal fetches run concurrently (not one-at-a-time) and each
+    // signal's result is applied to state as soon as it resolves - with N
+    // displayed signals each needing up to two gap fetches, a sequential
+    // await-in-a-loop could take N*2 round trips before anything painted,
+    // and a cancellation partway through (the next pan/zoom landing before
+    // that finished) discarded the whole batch, not just the slow signal.
+    async function fetchSignal(signalId: number) {
+      const algorithm: DownsamplingAlgorithm = algorithms[signalId] ?? "min_max";
+      const key = `${signalId}:${algorithm}`;
+      let cached = cacheRef.current.get(key) ?? null;
 
-        const gaps = computeCacheGaps(cached, wanted);
-        for (const gap of gaps) {
-          const points = await getTraceDataSource().getSignalSamples(
-            blfPath,
-            signalId,
-            gap.startUs,
-            gap.endUs,
-            viewport.pixelWidth,
-            algorithm
-          );
-          if (cancelled) return;
-          cached = mergeCachedRange(cached, { startUs: gap.startUs, endUs: gap.endUs, points });
-        }
-
-        if (gaps.length === 0 && isDensityInsufficient(cached, viewport, budget, LOD_CONFIG.cacheDensityThresholdRatio)) {
-          const points = await getTraceDataSource().getSignalSamples(
-            blfPath,
-            signalId,
-            viewport.startUs,
-            viewport.endUs,
-            viewport.pixelWidth,
-            algorithm
-          );
-          if (cancelled) return;
-          cached = replaceRange(cached, viewport, { startUs: viewport.startUs, endUs: viewport.endUs, points });
-        }
-
-        if (cached) {
-          cached = evictToCap(cached, viewport, LOD_CONFIG.cacheMarginRatio, LOD_CONFIG.maxClientCachePoints);
-          cacheRef.current.set(key, cached);
-        }
-        nextPoints[signalId] = cached?.points ?? [];
+      const gaps = computeCacheGaps(cached, wanted);
+      for (const gap of gaps) {
+        const points = await getTraceDataSource().getSignalSamples(
+          blfPath,
+          signalId,
+          gap.startUs,
+          gap.endUs,
+          viewport.pixelWidth,
+          algorithm
+        );
+        if (cancelled) return;
+        cached = mergeCachedRange(cached, { startUs: gap.startUs, endUs: gap.endUs, points });
       }
-      if (!cancelled) setPointsBySignal(nextPoints);
+
+      if (gaps.length === 0 && isDensityInsufficient(cached, viewport, budget, LOD_CONFIG.cacheDensityThresholdRatio)) {
+        const points = await getTraceDataSource().getSignalSamples(
+          blfPath,
+          signalId,
+          viewport.startUs,
+          viewport.endUs,
+          viewport.pixelWidth,
+          algorithm
+        );
+        if (cancelled) return;
+        cached = replaceRange(cached, viewport, { startUs: viewport.startUs, endUs: viewport.endUs, points });
+      }
+
+      if (cached) {
+        cached = evictToCap(cached, viewport, LOD_CONFIG.cacheMarginRatio, LOD_CONFIG.maxClientCachePoints);
+        cacheRef.current.set(key, cached);
+      }
+      if (!cancelled) {
+        const resolvedPoints = cached?.points ?? [];
+        setPointsBySignal((prev) => ({ ...prev, [signalId]: resolvedPoints }));
+      }
     }
 
-    run();
+    Promise.all(signalIds.map(fetchSignal));
     return () => {
       cancelled = true;
     };
