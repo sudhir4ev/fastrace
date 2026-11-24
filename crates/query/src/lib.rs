@@ -598,6 +598,47 @@ pub fn lttb_downsample(points: &[(i64, f64)], target_points: usize) -> Vec<(i64,
     sampled
 }
 
+/// LTTB over a capped raw-row fetch - reuses `list_signal_samples`'s
+/// existing `ORDER BY timestamp_us LIMIT` as the raw source, capped at
+/// `DETECTOR_QUERY_MATCH_LIMIT` for the same reason the Detector Query match
+/// extract is capped there (`docs/adr/0009` decision 2).
+pub fn list_signal_samples_lttb(
+    conn: &trace_store::Connection,
+    signal_id: i64,
+    start_us: i64,
+    end_us: i64,
+    target_points: i64,
+) -> Result<Vec<(i64, f64)>, String> {
+    let raw = list_signal_samples(
+        conn,
+        signal_id,
+        DETECTOR_QUERY_MATCH_LIMIT,
+        start_us,
+        end_us,
+    )?;
+    Ok(lttb_downsample(&raw, target_points.max(0) as usize))
+}
+
+/// Dispatches to the signal's chosen Downsampling Algorithm - the one
+/// function the Tauri `get_signal_samples` command calls.
+pub fn list_signal_samples_for_viewport(
+    conn: &trace_store::Connection,
+    signal_id: i64,
+    start_us: i64,
+    end_us: i64,
+    target_points: i64,
+    algorithm: DownsamplingAlgorithm,
+) -> Result<Vec<(i64, f64)>, String> {
+    match algorithm {
+        DownsamplingAlgorithm::MinMax => {
+            list_signal_samples_minmax(conn, signal_id, start_us, end_us, target_points)
+        }
+        DownsamplingAlgorithm::Lttb => {
+            list_signal_samples_lttb(conn, signal_id, start_us, end_us, target_points)
+        }
+    }
+}
+
 pub fn list_ecus(conn: &trace_store::Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare("select name from arxml_ecu order by name")
@@ -924,6 +965,67 @@ mod tests {
         // Two widths that both map to the same power-of-two tier must produce
         // the identical budget, so repeated requests at a similar zoom reuse it.
         assert_eq!(lod_tier_point_budget(260), lod_tier_point_budget(300));
+    }
+
+    #[test]
+    fn list_signal_samples_lttb_reduces_to_target_points() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);",
+        )
+        .unwrap();
+        for i in 0..200i64 {
+            conn.execute(
+                "INSERT INTO signals VALUES (0, 0, ?, 0, ?)",
+                duckdb::params![i * 1000, i as f64],
+            )
+            .unwrap();
+        }
+        let out = list_signal_samples_lttb(&conn, 0, 0, 199_000, 20).unwrap();
+        assert_eq!(out.len(), 20);
+        assert_eq!(out[0], (0, 0.0));
+        assert_eq!(out[19], (199_000, 199.0));
+    }
+
+    #[test]
+    fn list_signal_samples_for_viewport_dispatches_minmax() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 0, 1000, 0, 50.0);
+             INSERT INTO signals VALUES (0, 0, 1100, 0, 200.0);",
+        )
+        .unwrap();
+        let out = list_signal_samples_for_viewport(
+            &conn,
+            0,
+            1000,
+            1100,
+            1,
+            DownsamplingAlgorithm::MinMax,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn list_signal_samples_for_viewport_dispatches_lttb() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);",
+        )
+        .unwrap();
+        for i in 0..50i64 {
+            conn.execute(
+                "INSERT INTO signals VALUES (0, 0, ?, 0, ?)",
+                duckdb::params![i * 1000, i as f64],
+            )
+            .unwrap();
+        }
+        let out =
+            list_signal_samples_for_viewport(&conn, 0, 0, 49_000, 10, DownsamplingAlgorithm::Lttb)
+                .unwrap();
+        assert_eq!(out.len(), 10);
     }
 
     #[test]
