@@ -1,6 +1,8 @@
 # 0008. Detector Query preconditions and anomaly bins
 
-- Status: Accepted
+- Status: Accepted (decisions 3-4 partially superseded by `docs/adr/0009`:
+  bin count is now tier-aware for the Anomaly Overlay, fixed 500 only for the
+  Anomaly Heatmap; Anomaly Rail is retired - see `CONTEXT.md`)
 - Date: 2026-11-21
 
 ## Context
