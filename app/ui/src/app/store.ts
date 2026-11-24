@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AnomalyBin, DetectorMatch, DetectorQueryRan } from "@/shared/api/trace-source";
+import type { AnomalyBin, DetectorMatch, DetectorQueryRan, DownsamplingAlgorithm } from "@/shared/api/trace-source";
 
 export type WorkspaceTab = "signals" | "messages";
 
@@ -16,6 +16,10 @@ export interface WorkspaceState {
   // `pendingSignalIds` is the draft checkbox state in SignalSelect until Apply.
   activeSignalIds: Set<number>;
   pendingSignalIds: Set<number>;
+  // Per-signal Downsampling Algorithm choice (CONTEXT.md) - defaults to
+  // Min/Max for any signal not yet present in the map.
+  signalDownsamplingAlgorithms: Record<number, DownsamplingAlgorithm>;
+  setSignalDownsamplingAlgorithm: (signalId: number, algorithm: DownsamplingAlgorithm) => void;
   setSelectedGroupKeys: (keys: string[]) => void;
   setSelectedMessage: (id: number | null) => void;
   setWorkspaceTab: (tab: WorkspaceTab) => void;
@@ -76,6 +80,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspaceTab: "signals",
   activeSignalIds: new Set(),
   pendingSignalIds: new Set(),
+  signalDownsamplingAlgorithms: {},
+  setSignalDownsamplingAlgorithm: (signalId, algorithm) =>
+    set((s) => ({
+      signalDownsamplingAlgorithms: { ...s.signalDownsamplingAlgorithms, [signalId]: algorithm },
+    })),
   setSelectedGroupKeys: (keys) => {
     if (sameKeys(keys, get().selectedGroupKeys)) return;
     set({ selectedGroupKeys: keys, selectedMessageId: null });
@@ -180,6 +189,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       detectorQueryHasRun: false,
       anomalyBins: [],
       timelineZoomRange: { start: 0, end: 100 },
+      signalDownsamplingAlgorithms: {},
       appliedTrimRange: null,
       pendingTrimRange: null,
     }),
