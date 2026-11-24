@@ -477,6 +477,71 @@ pub fn list_signal_samples(
         .map_err(|e| e.to_string())
 }
 
+/// Min/Max decimation: groups a signal's samples in `[start_us, end_us]`
+/// into `target_points` equal-width time buckets (same bucketing shape as
+/// `compute_anomaly_bins`) and keeps each bucket's min- and max-valued
+/// sample, chronologically ordered. A bucket with a single row contributes
+/// one point, not a duplicate. Preserves outliers/spikes - the Downsampling
+/// Algorithm default for every signal (`docs/adr/0009`).
+pub fn list_signal_samples_minmax(
+    conn: &trace_store::Connection,
+    signal_id: i64,
+    start_us: i64,
+    end_us: i64,
+    target_points: i64,
+) -> Result<Vec<(i64, f64)>, String> {
+    if target_points < 1 {
+        return Err("target_points must be >= 1".to_string());
+    }
+    let (lo, hi) = if start_us <= end_us {
+        (start_us, end_us)
+    } else {
+        (end_us, start_us)
+    };
+    let sql = format!(
+        "with bucketed as (
+           select timestamp_us, phys_value,
+                  least({target_points} - 1,
+                        greatest(0, cast(floor((timestamp_us - {lo})::double * {target_points}
+                                               / ({hi} - {lo} + 1)) as bigint))) as bucket
+           from signals
+           where signal_id = ? and timestamp_us between ? and ?
+         )
+         select arg_min(timestamp_us, phys_value) as min_ts, min(phys_value) as min_val,
+                arg_max(timestamp_us, phys_value) as max_ts, max(phys_value) as max_val
+         from bucketed
+         group by bucket
+         order by bucket"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(duckdb::params![signal_id, lo, hi], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, f64>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        let (min_ts, min_val, max_ts, max_val) = r.map_err(|e| e.to_string())?;
+        match min_ts.cmp(&max_ts) {
+            std::cmp::Ordering::Equal => out.push((min_ts, min_val)),
+            std::cmp::Ordering::Less => {
+                out.push((min_ts, min_val));
+                out.push((max_ts, max_val));
+            }
+            std::cmp::Ordering::Greater => {
+                out.push((max_ts, max_val));
+                out.push((min_ts, min_val));
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub fn list_ecus(conn: &trace_store::Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare("select name from arxml_ecu order by name")
@@ -803,6 +868,69 @@ mod tests {
         // Two widths that both map to the same power-of-two tier must produce
         // the identical budget, so repeated requests at a similar zoom reuse it.
         assert_eq!(lod_tier_point_budget(260), lod_tier_point_budget(300));
+    }
+
+    #[test]
+    fn list_signal_samples_minmax_keeps_extremes_per_bucket() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 0, 1000, 0, 50.0);
+             INSERT INTO signals VALUES (0, 0, 1100, 0, 200.0);
+             INSERT INTO signals VALUES (0, 0, 1200, 0, 10.0);",
+        )
+        .unwrap();
+        // One wide bucket covering all three samples: min=10 at 1200, max=200 at 1100.
+        let out = list_signal_samples_minmax(&conn, 0, 1000, 1200, 1).unwrap();
+        assert_eq!(out.len(), 2, "both extremes kept, chronologically ordered");
+        assert_eq!(out[0], (1100, 200.0));
+        assert_eq!(out[1], (1200, 10.0));
+    }
+
+    #[test]
+    fn list_signal_samples_minmax_single_row_bucket_is_not_duplicated() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 0, 1000, 0, 42.0);",
+        )
+        .unwrap();
+        let out = list_signal_samples_minmax(&conn, 0, 1000, 1000, 500).unwrap();
+        assert_eq!(out, vec![(1000, 42.0)]);
+    }
+
+    #[test]
+    fn list_signal_samples_minmax_empty_range_returns_empty() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 0, 9000, 0, 42.0);",
+        )
+        .unwrap();
+        // Signal has samples, but none inside [0, 100] - must not panic, just empty.
+        let out = list_signal_samples_minmax(&conn, 0, 0, 100, 500).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn list_signal_samples_minmax_rejects_nonpositive_target_points() {
+        let conn = setup();
+        assert!(list_signal_samples_minmax(&conn, 0, 0, 1000, 0).is_err());
+    }
+
+    #[test]
+    fn list_signal_samples_minmax_respects_many_buckets() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 0, 0, 0, 1.0);
+             INSERT INTO signals VALUES (0, 0, 1000, 0, 2.0);
+             INSERT INTO signals VALUES (0, 0, 2000, 0, 3.0);",
+        )
+        .unwrap();
+        // 3 buckets over [0,2000] each containing exactly one sample.
+        let out = list_signal_samples_minmax(&conn, 0, 0, 2000, 3).unwrap();
+        assert_eq!(out, vec![(0, 1.0), (1000, 2.0), (2000, 3.0)]);
     }
 
     #[test]
