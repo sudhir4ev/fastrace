@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MIN_PIXELS_PER_POINT_FOR_DOTS, shouldShowDots } from "./dot-visibility";
+import { MIN_PIXELS_PER_POINT_FOR_DOTS } from "@/app/lod-config";
+import { shouldShowDots } from "./dot-visibility";
 
 describe("shouldShowDots", () => {
   it("shows dots when points are spaced well apart on screen", () => {
