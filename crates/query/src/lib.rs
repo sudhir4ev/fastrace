@@ -542,6 +542,62 @@ pub fn list_signal_samples_minmax(
     Ok(out)
 }
 
+/// Largest-Triangle-Three-Buckets downsampling (Sveinn Steinarsson, 2013).
+/// Always keeps the first and last point. `target_points == 0` or `>= n`
+/// returns the input unchanged; `target_points < 3` (with `n >= 2`) returns
+/// just the first and last point, since LTTB's triangle-area selection needs
+/// at least one point strictly between the two fixed endpoints.
+pub fn lttb_downsample(points: &[(i64, f64)], target_points: usize) -> Vec<(i64, f64)> {
+    let n = points.len();
+    if target_points == 0 || target_points >= n || n <= 2 {
+        return points.to_vec();
+    }
+    if target_points < 3 {
+        return vec![points[0], points[n - 1]];
+    }
+
+    let mut sampled = Vec::with_capacity(target_points);
+    sampled.push(points[0]);
+
+    // Bucket size for the *middle* points only - first/last are fixed.
+    let bucket_size = (n - 2) as f64 / (target_points - 2) as f64;
+    let mut a = 0usize; // index of the last point actually selected
+
+    for i in 0..(target_points - 2) {
+        let bucket_start = ((i as f64) * bucket_size) as usize + 1;
+        let bucket_end = ((((i + 1) as f64) * bucket_size) as usize + 1)
+            .min(n - 1)
+            .max(bucket_start + 1);
+
+        let next_start = bucket_end;
+        let next_end = ((((i + 2) as f64) * bucket_size) as usize + 1)
+            .min(n)
+            .max(next_start + 1);
+        let slice = &points[next_start..next_end];
+        let len = slice.len() as f64;
+        let (avg_x, avg_y) = (
+            slice.iter().map(|p| p.0 as f64).sum::<f64>() / len,
+            slice.iter().map(|p| p.1).sum::<f64>() / len,
+        );
+
+        let (ax, ay) = (points[a].0 as f64, points[a].1);
+        let mut best_area = -1.0;
+        let mut best_idx = bucket_start;
+        for idx in bucket_start..bucket_end {
+            let (bx, by) = (points[idx].0 as f64, points[idx].1);
+            let area = ((ax - avg_x) * (by - ay) - (ax - bx) * (avg_y - ay)).abs();
+            if area > best_area {
+                best_area = area;
+                best_idx = idx;
+            }
+        }
+        sampled.push(points[best_idx]);
+        a = best_idx;
+    }
+    sampled.push(points[n - 1]);
+    sampled
+}
+
 pub fn list_ecus(conn: &trace_store::Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare("select name from arxml_ecu order by name")
@@ -868,6 +924,69 @@ mod tests {
         // Two widths that both map to the same power-of-two tier must produce
         // the identical budget, so repeated requests at a similar zoom reuse it.
         assert_eq!(lod_tier_point_budget(260), lod_tier_point_budget(300));
+    }
+
+    #[test]
+    fn lttb_downsample_keeps_first_and_last_point() {
+        let points: Vec<(i64, f64)> = (0..100).map(|i| (i * 1000, (i as f64).sin())).collect();
+        let out = lttb_downsample(&points, 10);
+        assert_eq!(out.first(), points.first());
+        assert_eq!(out.last(), points.last());
+    }
+
+    #[test]
+    fn lttb_downsample_returns_exactly_target_points_when_input_is_larger() {
+        let points: Vec<(i64, f64)> = (0..1000).map(|i| (i * 1000, i as f64)).collect();
+        let out = lttb_downsample(&points, 50);
+        assert_eq!(out.len(), 50);
+    }
+
+    #[test]
+    fn lttb_downsample_preserves_monotonic_timestamps() {
+        let points: Vec<(i64, f64)> = (0..500).map(|i| (i * 1000, (i as f64).cos())).collect();
+        let out = lttb_downsample(&points, 37);
+        for pair in out.windows(2) {
+            assert!(
+                pair[0].0 < pair[1].0,
+                "timestamps must stay strictly increasing: {pair:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lttb_downsample_returns_input_unchanged_when_target_exceeds_input_len() {
+        let points = vec![(0, 1.0), (1000, 2.0), (2000, 3.0)];
+        assert_eq!(lttb_downsample(&points, 100), points);
+    }
+
+    #[test]
+    fn lttb_downsample_empty_input_returns_empty() {
+        assert_eq!(lttb_downsample(&[], 50), Vec::<(i64, f64)>::new());
+    }
+
+    #[test]
+    fn lttb_downsample_single_point_input_returns_that_point() {
+        let points = vec![(42, 3.14)];
+        assert_eq!(lttb_downsample(&points, 50), points);
+    }
+
+    #[test]
+    fn lttb_downsample_two_point_input_returns_both() {
+        let points = vec![(0, 1.0), (1000, 2.0)];
+        assert_eq!(lttb_downsample(&points, 50), points);
+    }
+
+    #[test]
+    fn lttb_downsample_target_below_three_keeps_endpoints_only() {
+        let points: Vec<(i64, f64)> = (0..20).map(|i| (i * 1000, i as f64)).collect();
+        let out = lttb_downsample(&points, 2);
+        assert_eq!(out, vec![points[0], points[19]]);
+    }
+
+    #[test]
+    fn lttb_downsample_target_zero_returns_all_points_unchanged() {
+        let points = vec![(0, 1.0), (1000, 2.0), (2000, 3.0)];
+        assert_eq!(lttb_downsample(&points, 0), points);
     }
 
     #[test]
