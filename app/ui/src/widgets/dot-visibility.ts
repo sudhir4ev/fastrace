@@ -1,4 +1,4 @@
-import { MIN_PIXELS_PER_POINT_FOR_DOTS } from "@/app/lod-config";
+import { LOD_CONFIG } from "@/app/config";
 
 // Dots are only visually distinguishable once rendered points are spaced
 // far enough apart on screen - below that spacing a line is clearer than
@@ -7,7 +7,7 @@ import { MIN_PIXELS_PER_POINT_FOR_DOTS } from "@/app/lod-config";
 export function shouldShowDots(
   pointCount: number,
   pixelWidth: number,
-  minPixelsPerPoint: number = MIN_PIXELS_PER_POINT_FOR_DOTS
+  minPixelsPerPoint: number = LOD_CONFIG.minPixelsPerPointForDots
 ): boolean {
   if (pointCount <= 1) return true;
   const avgSpacingPx = pixelWidth / pointCount;

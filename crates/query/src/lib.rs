@@ -13,15 +13,15 @@ pub enum DownsamplingAlgorithm {
 
 /// Point budget for a chart viewport: ~2 points per pixel, snapped up to the
 /// next power of two so repeated requests at a similar zoom reuse the same
-/// LOD Tier (`docs/adr/0009`). Clamped to `[MIN_LOD_TARGET_POINTS,
-/// MAX_LOD_TARGET_POINTS]` so a not-yet-laid-out container (`pixel_width <=
-/// 0`) or a pathologically wide one can't produce a degenerate or runaway
-/// budget.
+/// LOD Tier (`docs/adr/0009`). Clamped to `[LOD.min_lod_target_points,
+/// LOD.max_lod_target_points]` (`config/config.json`) so a not-yet-laid-out
+/// container (`pixel_width <= 0`) or a pathologically wide one can't
+/// produce a degenerate or runaway budget.
 pub fn lod_tier_point_budget(pixel_width: i64) -> i64 {
     let raw = (pixel_width.max(1) * 2) as f64;
     let tier_exp = raw.log2().ceil().max(0.0) as u32;
     let budget = 1i64 << tier_exp;
-    budget.clamp(MIN_LOD_TARGET_POINTS, MAX_LOD_TARGET_POINTS)
+    budget.clamp(LOD.min_lod_target_points, LOD.max_lod_target_points)
 }
 
 /// Runs a `SELECT COUNT(*) ...`-shaped query and returns the single integer
@@ -600,8 +600,9 @@ pub fn lttb_downsample(points: &[(i64, f64)], target_points: usize) -> Vec<(i64,
 
 /// LTTB over a capped raw-row fetch - reuses `list_signal_samples`'s
 /// existing `ORDER BY timestamp_us LIMIT` as the raw source, capped at
-/// `DETECTOR_QUERY_MATCH_LIMIT` for the same reason the Detector Query match
-/// extract is capped there (`docs/adr/0009` decision 2).
+/// `LOD.detector_query_match_limit` (`config/config.json`) for the same
+/// reason the Detector Query match extract is capped there (`docs/adr/0009`
+/// decision 2).
 pub fn list_signal_samples_lttb(
     conn: &trace_store::Connection,
     signal_id: i64,
@@ -612,7 +613,7 @@ pub fn list_signal_samples_lttb(
     let raw = list_signal_samples(
         conn,
         signal_id,
-        DETECTOR_QUERY_MATCH_LIMIT,
+        LOD.detector_query_match_limit,
         start_us,
         end_us,
     )?;
@@ -813,8 +814,9 @@ fn detector_scoped_sql(trimmed: &str, start_us: i64, end_us: i64) -> String {
     )
 }
 
-/// Groups scoped Detector Query rows into [`ANOMALY_BIN_COUNT`] equal-width
-/// bins. Only active bins are returned. Runs the user SQL once (separate from
+/// Groups scoped Detector Query rows into `LOD.anomaly_bin_count`
+/// (`config/config.json`) equal-width bins. Only active bins are returned.
+/// Runs the user SQL once (separate from
 /// the Match extract - DuckDB read-only connections cannot create TEMP tables
 /// to share the result set).
 pub fn compute_anomaly_bins(
@@ -920,7 +922,7 @@ pub fn run_detector_query(
     }
     // Second pass for bins - TEMP tables are unavailable on the read-only
     // Trace Store connection (AccessMode::ReadOnly). Acceptable for MVP.
-    let bins = compute_anomaly_bins(conn, &trimmed, lo, hi, ANOMALY_BIN_COUNT)?;
+    let bins = compute_anomaly_bins(conn, &trimmed, lo, hi, LOD.anomaly_bin_count)?;
     Ok(DetectorQueryResult {
         matches,
         truncated,
@@ -943,13 +945,13 @@ mod tests {
 
     #[test]
     fn lod_tier_point_budget_clamps_nonpositive_width_to_minimum() {
-        assert_eq!(lod_tier_point_budget(0), MIN_LOD_TARGET_POINTS);
-        assert_eq!(lod_tier_point_budget(-50), MIN_LOD_TARGET_POINTS);
+        assert_eq!(lod_tier_point_budget(0), LOD.min_lod_target_points);
+        assert_eq!(lod_tier_point_budget(-50), LOD.min_lod_target_points);
     }
 
     #[test]
     fn lod_tier_point_budget_clamps_runaway_width_to_maximum() {
-        assert_eq!(lod_tier_point_budget(1_000_000), MAX_LOD_TARGET_POINTS);
+        assert_eq!(lod_tier_point_budget(1_000_000), LOD.max_lod_target_points);
     }
 
     #[test]

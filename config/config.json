@@ -1,0 +1,12 @@
+{
+  "lod": {
+    "minLodTargetPoints": 16,
+    "maxLodTargetPoints": 50000,
+    "anomalyBinCount": 500,
+    "detectorQueryMatchLimit": 200000,
+    "minPixelsPerPointForDots": 6,
+    "viewportDebounceMs": 200,
+    "defaultPixelWidthFallback": 800,
+    "anomalyMarkOpacity": 0.28
+  }
+}

@@ -457,7 +457,7 @@ fn run_detector_query(
     let result = query::run_detector_query(
         &conn,
         &sql,
-        query::DETECTOR_QUERY_MATCH_LIMIT,
+        query::LOD.detector_query_match_limit,
         scope_start,
         scope_end,
     )?;

@@ -8,6 +8,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useToastStore } from "@/app/toast-store";
+import { LOD_CONFIG } from "@/app/config";
 import type { DownsamplingAlgorithm } from "./trace-source";
 import { getTraceDataSource } from "./trace-source";
 
@@ -193,9 +194,10 @@ export function useAnomalyBinsForViewport(
   });
 }
 
-// Duplicated from the Rust-side query::DETECTOR_QUERY_MATCH_LIMIT because
-// there's no shared-constant mechanism across the Tauri IPC boundary.
-export const DETECTOR_QUERY_MATCH_LIMIT = 200_000;
+// Same value the Rust side reads from config/config.json
+// (query::LOD.detector_query_match_limit) - no longer a second hardcoded
+// copy now that both sides read the one shared file.
+export const DETECTOR_QUERY_MATCH_LIMIT = LOD_CONFIG.detectorQueryMatchLimit;
 
 const detectorQueryMutationKey = (blfPath: string) => ["run-detector-query", blfPath];
 

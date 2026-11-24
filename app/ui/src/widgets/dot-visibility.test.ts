@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MIN_PIXELS_PER_POINT_FOR_DOTS } from "@/app/lod-config";
+import { LOD_CONFIG } from "@/app/config";
 import { shouldShowDots } from "./dot-visibility";
 
 describe("shouldShowDots", () => {
@@ -17,7 +17,7 @@ describe("shouldShowDots", () => {
   });
 
   it("is inclusive at exactly the threshold spacing", () => {
-    expect(shouldShowDots(100, 100 * MIN_PIXELS_PER_POINT_FOR_DOTS)).toBe(true);
+    expect(shouldShowDots(100, 100 * LOD_CONFIG.minPixelsPerPointForDots)).toBe(true);
   });
 
   it("honors a custom threshold", () => {

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
 import { Plus, XIcon } from "lucide-react";
 import { useWorkspaceStore } from "@/app/store";
-import { ANOMALY_MARK_OPACITY, DEFAULT_PIXEL_WIDTH_FALLBACK, VIEWPORT_DEBOUNCE_MS } from "@/app/lod-config";
+import { LOD_CONFIG } from "@/app/config";
 import { getSignalColor } from "@/app/signalColors";
 import { useAnomalyBinsForViewport, useSignalCatalog, useSignalSamplesList } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
@@ -77,7 +77,7 @@ export default function TimelineChart({
 
   const [viewport, setViewport] = useState<{ startUs: number; endUs: number; pixelWidth: number } | null>(null);
   const debouncerRef = useRef(
-    createDebouncer(VIEWPORT_DEBOUNCE_MS, (startUs: number, endUs: number, pixelWidth: number) =>
+    createDebouncer(LOD_CONFIG.viewportDebounceMs, (startUs: number, endUs: number, pixelWidth: number) =>
       setViewport({ startUs, endUs, pixelWidth })
     )
   );
@@ -85,7 +85,7 @@ export default function TimelineChart({
   const effectiveViewport = viewport ?? {
     startUs: trimRange?.start ?? 0,
     endUs: trimRange?.end ?? Number.MAX_SAFE_INTEGER,
-    pixelWidth: DEFAULT_PIXEL_WIDTH_FALLBACK,
+    pixelWidth: LOD_CONFIG.defaultPixelWidthFallback,
   };
   const samples = useSignalSamplesList(
     blfPath,
@@ -237,7 +237,7 @@ export default function TimelineChart({
               xAxis: b.startUs,
               itemStyle: {
                 color: anomalyBinColor(b.count / maxOverlayCount),
-                opacity: ANOMALY_MARK_OPACITY,
+                opacity: LOD_CONFIG.anomalyMarkOpacity,
               },
             },
             { xAxis: b.endUs },
