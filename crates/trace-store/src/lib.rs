@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn open_succeeds_when_version_matches() {
         let dir = std::env::temp_dir().join(format!("trace_store_test_ok_{}", std::process::id()));
-        write_store_with_version(&dir, "4");
+        write_store_with_version(&dir, "5");
         assert!(open(&dir).is_ok());
         let _ = std::fs::remove_file(&dir);
     }
