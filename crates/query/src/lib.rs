@@ -1,4 +1,28 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// The two user-selectable Downsampling Algorithms (`CONTEXT.md`, `docs/adr/0009`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownsamplingAlgorithm {
+    MinMax,
+    Lttb,
+}
+
+pub const MIN_LOD_TARGET_POINTS: i64 = 16;
+pub const MAX_LOD_TARGET_POINTS: i64 = 50_000;
+
+/// Point budget for a chart viewport: ~2 points per pixel, snapped up to the
+/// next power of two so repeated requests at a similar zoom reuse the same
+/// LOD Tier (`docs/adr/0009`). Clamped to `[MIN_LOD_TARGET_POINTS,
+/// MAX_LOD_TARGET_POINTS]` so a not-yet-laid-out container (`pixel_width <=
+/// 0`) or a pathologically wide one can't produce a degenerate or runaway
+/// budget.
+pub fn lod_tier_point_budget(pixel_width: i64) -> i64 {
+    let raw = (pixel_width.max(1) * 2) as f64;
+    let tier_exp = raw.log2().ceil().max(0.0) as u32;
+    let budget = 1i64 << tier_exp;
+    budget.clamp(MIN_LOD_TARGET_POINTS, MAX_LOD_TARGET_POINTS)
+}
 
 /// Runs a `SELECT COUNT(*) ...`-shaped query and returns the single integer
 /// result. Not a general query runner - just enough to drive the Wave 2
@@ -756,6 +780,30 @@ pub fn run_detector_query(
 mod tests {
     use super::*;
     use trace_store::Connection;
+
+    #[test]
+    fn lod_tier_point_budget_snaps_to_power_of_two() {
+        assert_eq!(lod_tier_point_budget(400), 1024); // 400*2=800 -> next pow2 1024
+        assert_eq!(lod_tier_point_budget(1), 16); // clamped to the minimum tier
+    }
+
+    #[test]
+    fn lod_tier_point_budget_clamps_nonpositive_width_to_minimum() {
+        assert_eq!(lod_tier_point_budget(0), MIN_LOD_TARGET_POINTS);
+        assert_eq!(lod_tier_point_budget(-50), MIN_LOD_TARGET_POINTS);
+    }
+
+    #[test]
+    fn lod_tier_point_budget_clamps_runaway_width_to_maximum() {
+        assert_eq!(lod_tier_point_budget(1_000_000), MAX_LOD_TARGET_POINTS);
+    }
+
+    #[test]
+    fn lod_tier_point_budget_is_stable_within_a_tier() {
+        // Two widths that both map to the same power-of-two tier must produce
+        // the identical budget, so repeated requests at a similar zoom reuse it.
+        assert_eq!(lod_tier_point_budget(260), lod_tier_point_budget(300));
+    }
 
     #[test]
     fn count_returns_row_count() {
