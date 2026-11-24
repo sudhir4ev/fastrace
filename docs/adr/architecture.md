@@ -78,12 +78,30 @@ not the detail:
 
 ```
 app/ui (React) <--> app/src-tauri (commands) <--> crates/{trace-store, query, sidecar}
-                                                          |
-                                         spawns           v  reads (after write finishes)
-                                 native/cli fastrace_parse ---writes---> <stem>.duckdb
-                                                                          ^
-                                                          schema/ (DDL, version, rules) shared by both
+       ^                                                 |
+       |                                  spawns         v  reads (after write finishes)
+       |                          native/cli fastrace_parse ---writes---> <stem>.duckdb
+       |                                                                   ^
+       |                                                   schema/ (DDL, version, rules) shared by both
+       |
+       +----------------- config/config.json (LOD/query tunables) shared by crates/query and app/ui
 ```
+
+`config/config.json` at the repo root is the single source of truth for every
+LOD/query tunable (LOD Tier point budget, Anomaly Bin count, the Detector
+Query match cap, and the frontend's dot-visibility/debounce/overlay-opacity
+thresholds - `docs/adr/0009`). It is read by exactly two places:
+
+- `crates/query/src/config.rs` embeds it at **compile time** via
+  `include_str!` and parses it once into a `LazyLock<LodConfig>` - not read
+  from disk at runtime, so there's no file-path-resolution problem inside a
+  packaged Tauri app. Edit the JSON and rebuild.
+- `app/ui/src/app/config.ts` imports it directly (`resolveJsonModule`) and
+  re-exports a typed `LOD_CONFIG` object for the rest of the frontend.
+
+Values a given side doesn't need (e.g. Rust ignores the frontend-only
+rendering thresholds) are simply unused on deserialize - both sides read the
+same file, neither needs every field in it.
 
 ## Carried over from the current repo
 

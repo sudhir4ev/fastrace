@@ -1,13 +1,17 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
 import { Plus, XIcon } from "lucide-react";
 import { useWorkspaceStore } from "@/app/store";
+import { LOD_CONFIG } from "@/app/config";
 import { getSignalColor } from "@/app/signalColors";
-import { useSignalCatalog, useSignalSamplesList } from "@/shared/api/hooks";
+import { useAnomalyBinsForViewport, useSignalCatalog } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
 import { anomalyBinColor } from "./anomaly-bin-color";
-
-const ANOMALY_MARK_OPACITY = 0.28;
+import { createDebouncer } from "./debounce";
+import { buildTimelineDiagnostics } from "./diagnostics";
+import { shouldShowDots } from "./dot-visibility";
+import { useSignalPointCache } from "./useSignalPointCache";
+import { viewportFromZoomPercent } from "./viewport";
 
 const SIGNAL_LANE_HEIGHT = 100;
 const LANE_TOP_PAD = 28; // space at the top of each lane for the name label, above the grid
@@ -67,16 +71,46 @@ export default function TimelineChart({
   const activeSignalKey = activeSignalIds.join(",");
   const catalog = useSignalCatalog(blfPath);
   const trimRange = useWorkspaceStore((s) => s.appliedTrimRange);
-  const anomalyBins = useWorkspaceStore((s) => s.anomalyBins);
-  const samples = useSignalSamplesList(
-    blfPath,
-    activeSignalIds,
-    trimRange?.start ?? 0,
-    trimRange?.end ?? Number.MAX_SAFE_INTEGER
-  );
+  const signalAlgorithms = useWorkspaceStore((s) => s.signalDownsamplingAlgorithms);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
+
+  const [viewport, setViewport] = useState<{ startUs: number; endUs: number; pixelWidth: number } | null>(null);
+  const debouncerRef = useRef(
+    createDebouncer(LOD_CONFIG.viewportDebounceMs, (startUs: number, endUs: number, pixelWidth: number) =>
+      setViewport({ startUs, endUs, pixelWidth })
+    )
+  );
+
+  const effectiveViewport = viewport ?? {
+    startUs: trimRange?.start ?? 0,
+    endUs: trimRange?.end ?? Number.MAX_SAFE_INTEGER,
+    pixelWidth: LOD_CONFIG.defaultPixelWidthFallback,
+  };
+  // Per-signal point cache (`docs/adr/0011`): pan within an already-cached
+  // margin is free, zoom only refetches when the cache is too sparse for the
+  // new tier, and Trim Window changes invalidate - replaces a fresh
+  // viewport-exact fetch on every settle.
+  const samplesBySignal = useSignalPointCache(
+    blfPath,
+    activeSignalIds,
+    effectiveViewport,
+    signalAlgorithms,
+    trimRange ? { startUs: trimRange.start, endUs: trimRange.end } : null
+  );
+  // Keyed off the SQL that actually ran, never the live editor draft - the
+  // Anomaly Overlay is a Detector Query run's bins (CONTEXT.md), not a
+  // per-keystroke recompute, and `detectorRanSql` is null until a query has
+  // run at least once (the hook's own `enabled` check then stays false).
+  const detectorRanSql = useWorkspaceStore((s) => s.detectorRanSql);
+  const overlayBins = useAnomalyBinsForViewport(
+    blfPath,
+    detectorRanSql ?? "",
+    effectiveViewport.startUs,
+    effectiveViewport.endUs,
+    effectiveViewport.pixelWidth
+  );
 
   const lanes: Lane[] = useMemo(() => {
     let top = 0;
@@ -98,6 +132,18 @@ export default function TimelineChart({
     chart.group = CHART_GROUP;
     chartRef.current = chart;
     echarts.connect(CHART_GROUP);
+    // Recomputes the debounced viewport (absolute [startUs,endUs] + pixel
+    // width) that drives LOD-tiered sample/anomaly-overlay fetches - on
+    // pan-end/zoom-change and on resize, not continuously mid-drag
+    // (`docs/adr/0009`).
+    const scheduleViewportUpdate = () => {
+      const dz = currentDataZoom(chart) ?? useWorkspaceStore.getState().timelineZoomRange;
+      const trim = useWorkspaceStore.getState().appliedTrimRange;
+      if (!trim || !containerRef.current) return;
+      const { startUs, endUs } = viewportFromZoomPercent(dz, trim);
+      debouncerRef.current.call(startUs, endUs, containerRef.current.clientWidth);
+    };
+
     // Persist the zoom/pan window (percent) so it survives signal add/remove
     // option rebuilds and panel remounts - fires for drags on this chart AND
     // on TimelineZoomControl's slider (CHART_GROUP sync re-dispatches here
@@ -106,13 +152,18 @@ export default function TimelineChart({
     chart.on("dataZoom", () => {
       const dz = currentDataZoom(chart);
       if (dz) useWorkspaceStore.getState().setTimelineZoomRange(dz);
+      scheduleViewportUpdate();
     });
-    const resize = () => chart.resize();
+    const resize = () => {
+      chart.resize();
+      scheduleViewportUpdate();
+    };
     const ro = new ResizeObserver(resize);
     ro.observe(containerRef.current);
     window.addEventListener("resize", resize);
     requestAnimationFrame(resize);
     return () => {
+      debouncerRef.current.cancel();
       ro.disconnect();
       window.removeEventListener("resize", resize);
       chart.dispose();
@@ -163,7 +214,7 @@ export default function TimelineChart({
     }));
 
     const yAxis = lanes.map((lane, i) => {
-      const data = samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [];
+      const data = samplesBySignal[lane.signalId] ?? [];
       const values = data.map(([, v]: [number, number]) => v);
       const [min, max] = values.length ? minMax(values) : [0, 1];
       const pad = (max - min) * 0.1 || 1;
@@ -178,32 +229,52 @@ export default function TimelineChart({
       };
     });
 
-    // Same amber→red density as TimelineZoomControl; only bins with count > 0
-    // are stored after a detector run, so this is usually sparse (<< 500).
-    const maxCount = anomalyBins.reduce((m, b) => Math.max(m, b.count), 0);
+    // Viewport-scoped, LOD-Tier-aware Anomaly Overlay (`docs/adr/0009`) -
+    // distinct from TimelineZoomControl's fixed-500-bin heatmap, which keeps
+    // reading the store's `anomalyBins` unchanged.
+    const activeOverlayBins = overlayBins.data ?? [];
+    const maxOverlayCount = activeOverlayBins.reduce((m, b) => Math.max(m, b.count), 0);
     const markAreaData =
-      maxCount > 0
-        ? anomalyBins.map((b) => [
+      maxOverlayCount > 0
+        ? activeOverlayBins.map((b) => [
             {
               xAxis: b.startUs,
               itemStyle: {
-                color: anomalyBinColor(b.count / maxCount),
-                opacity: ANOMALY_MARK_OPACITY,
+                color: anomalyBinColor(b.count / maxOverlayCount),
+                opacity: LOD_CONFIG.anomalyMarkOpacity,
               },
             },
             { xAxis: b.endUs },
           ])
         : [];
 
+    // The cache holds the viewport plus a margin on each side (`docs/adr/0011`)
+    // so count only points inside the actual viewport here - using the whole
+    // cached count would see roughly double the on-screen density and never
+    // switch out of line mode.
+    const pointCounts: Record<number, number> = {};
+    for (const lane of lanes) {
+      const data = samplesBySignal[lane.signalId] ?? [];
+      pointCounts[lane.signalId] = data.filter(
+        ([ts]) => ts >= effectiveViewport.startUs && ts <= effectiveViewport.endUs
+      ).length;
+    }
+
+    // Line by default; dots only reveal themselves once zoomed in enough
+    // that individual points are actually spaced apart on screen - at low
+    // zoom (many points packed into few pixels) a dense scatter is noise,
+    // a line reads the signal's shape better.
     const series = lanes.map((lane, i) => ({
-      type: "scatter" as const,
+      type: "line" as const,
       name: lane.name,
       xAxisIndex: i,
       yAxisIndex: i,
-      data: samples[activeSignalIds.indexOf(lane.signalId)]?.data ?? [],
+      data: samplesBySignal[lane.signalId] ?? [],
+      showSymbol: shouldShowDots(pointCounts[lane.signalId] ?? 0, effectiveViewport.pixelWidth),
       symbolSize: 4,
       large: true,
       itemStyle: { color: lane.color },
+      lineStyle: { color: lane.color, width: 1 },
       // Vertical bands for every active anomaly bin, aligned to the shared
       // timestamp x-axis so they line up with the zoom-strip heatmap.
       markArea:
@@ -238,7 +309,18 @@ export default function TimelineChart({
     // the component has painted, catches it stuck at whatever size it was
     // wrongly measured at on init.
     chart.resize();
-  }, [lanes, samples, minTs, maxTs, activeSignalKey, anomalyBins]);
+
+    useWorkspaceStore.getState().setTimelineDiagnostics(
+      buildTimelineDiagnostics({
+        viewport: effectiveViewport,
+        lanes,
+        pointCounts,
+        algorithms: signalAlgorithms,
+        overlayBinCount: activeOverlayBins.length,
+        overlayError: overlayBins.error ? String(overlayBins.error) : null,
+      })
+    );
+  }, [lanes, samplesBySignal, minTs, maxTs, activeSignalKey, overlayBins.data, overlayBins.error]);
 
   // containerRef's div must stay mounted even with zero lanes - the init
   // effect below only runs once on mount ([] deps), so swapping it out for a
@@ -252,6 +334,11 @@ export default function TimelineChart({
             <Plus className="size-3.5" />
             Add Signal
           </Button>
+        </div>
+      )}
+      {overlayBins.error && (
+        <div className="shrink-0 border-b border-destructive/50 bg-destructive/10 px-2 py-1 text-xs text-destructive">
+          Anomaly overlay: {String(overlayBins.error)}
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -275,6 +362,19 @@ export default function TimelineChart({
               >
                 {lane.name}
               </span>
+              <select
+                className="ml-1 rounded-sm border border-border bg-background text-[10px]"
+                value={signalAlgorithms[lane.signalId] ?? "min_max"}
+                onChange={(e) =>
+                  useWorkspaceStore
+                    .getState()
+                    .setSignalDownsamplingAlgorithm(lane.signalId, e.target.value as "min_max" | "lttb")
+                }
+                aria-label={`Downsampling algorithm for ${lane.name}`}
+              >
+                <option value="min_max">Min/Max</option>
+                <option value="lttb">LTTB</option>
+              </select>
               {onChartRemove && (
                 <button
                   type="button"

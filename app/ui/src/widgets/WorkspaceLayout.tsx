@@ -1,4 +1,4 @@
-import { Activity, Database, File, List, type LucideIcon } from "lucide-react";
+import { Activity, Bug, Database, File, List, type LucideIcon } from "lucide-react";
 import { useWorkspaceStore, type WorkspaceTab } from "@/app/store";
 import { useApplyTrim, useFileSizes, useIoBusy } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
@@ -7,6 +7,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/u
 import { Skeleton } from "@/shared/ui/skeleton";
 import ActivityLog from "./ActivityLog";
 import AnalyzerPanel from "./AnalyzerPanel";
+import DiagnosticsPanel from "./DiagnosticsPanel";
 import MessageDetails from "./MessageDetails";
 import MessageGroupSelect from "./MessageGroupSelect";
 import MessageList from "./MessageList";
@@ -75,6 +76,8 @@ function StatusBar({
 }) {
   const fileSizes = useFileSizes(blfPath);
   const { blfBusy, duckdbBusy } = useIoBusy(blfPath, preparing);
+  const diagnosticsOpen = useWorkspaceStore((s) => s.diagnosticsOpen);
+  const toggleDiagnostics = useWorkspaceStore((s) => s.toggleDiagnostics);
   const fileName = blfPath.split(/[\\/]/).pop() ?? blfPath;
   return (
     <div className="flex h-[26px] shrink-0 items-center gap-4 bg-foreground px-3 text-[10px] text-background">
@@ -100,6 +103,19 @@ function StatusBar({
           />
         </span>
         <ActivityLog blfPath={blfPath} />
+        <button
+          type="button"
+          onClick={toggleDiagnostics}
+          aria-pressed={diagnosticsOpen}
+          aria-label="Toggle LOD diagnostics panel"
+          title="LOD diagnostics"
+          className={cn(
+            "inline-flex items-center rounded-sm p-0.5 hover:bg-background/20",
+            diagnosticsOpen ? "text-emerald-300" : "text-background/60"
+          )}
+        >
+          <Bug className="h-3 w-3" aria-hidden />
+        </button>
       </span>
     </div>
   );
@@ -211,6 +227,7 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
           </div>
         </main>
       </div>
+      <DiagnosticsPanel />
       <StatusBar blfPath={blfPath} preparing={preparing} prepareTotals={prepareTotals} />
       <Toaster />
     </div>

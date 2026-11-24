@@ -8,6 +8,8 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useToastStore } from "@/app/toast-store";
+import { LOD_CONFIG } from "@/app/config";
+import type { DownsamplingAlgorithm } from "./trace-source";
 import { getTraceDataSource } from "./trace-source";
 
 /** Query roots that read local JSON / filesystem, not the Trace Store. */
@@ -133,22 +135,24 @@ export function useSignalSamples(
   signalId: number | null,
   startUs: number,
   endUs: number,
-  limit = 200
+  pixelWidth = 400,
+  algorithm: DownsamplingAlgorithm = "min_max"
 ) {
   return useQuery({
-    queryKey: ["signal-samples", blfPath, signalId, startUs, endUs, limit],
-    queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId as number, limit, startUs, endUs),
+    queryKey: ["signal-samples", blfPath, signalId, startUs, endUs, pixelWidth, algorithm],
+    queryFn: () =>
+      getTraceDataSource().getSignalSamples(blfPath, signalId as number, startUs, endUs, pixelWidth, algorithm),
     enabled: signalId !== null,
   });
 }
 
 // Timeline-scale fetch: TimelineChart calls this once for every displayed
-// signal with TIMELINE_SAMPLE_LIMIT - 200k rows comfortably covers a full
-// drive per docs/adr/0005's real-trace signal_stats numbers, with no
-// server-side windowing - ECharts' own `large`/`sampling: 'lttb'` handles
-// render-time density.
-export const TIMELINE_SAMPLE_LIMIT = 200_000;
-
+// signal, scoped to the current viewport (not the whole Trim Window) and
+// downsampled server-side per the signal's chosen Downsampling Algorithm
+// (`docs/adr/0009`) - the viewport bounds and pixel width are part of the
+// queryKey, so a late-resolving stale request (from before a pan/zoom)
+// updates a cache entry nobody reads, never clobbering the current one.
+//
 // useQueries (not a loop of useSignalSamples) because the signal count
 // changes as the user adds/removes pills - a variable number of hook calls
 // would break the rules of hooks, but useQueries itself is a single hook
@@ -158,20 +162,42 @@ export function useSignalSamplesList(
   signalIds: number[],
   startUs: number,
   endUs: number,
-  limit = TIMELINE_SAMPLE_LIMIT
+  pixelWidth: number,
+  algorithms: Record<number, DownsamplingAlgorithm>
 ) {
   return useQueries({
-    queries: signalIds.map((signalId) => ({
-      queryKey: ["signal-samples", blfPath, signalId, startUs, endUs, limit],
-      queryFn: () => getTraceDataSource().getSignalSamples(blfPath, signalId, limit, startUs, endUs),
-    })),
+    queries: signalIds.map((signalId) => {
+      const algorithm = algorithms[signalId] ?? "min_max";
+      return {
+        queryKey: ["signal-samples", blfPath, signalId, startUs, endUs, pixelWidth, algorithm],
+        queryFn: () =>
+          getTraceDataSource().getSignalSamples(blfPath, signalId, startUs, endUs, pixelWidth, algorithm),
+      };
+    }),
   });
 }
 
-// Same order of magnitude as TIMELINE_SAMPLE_LIMIT - duplicated from the
-// Rust-side query::DETECTOR_QUERY_MATCH_LIMIT because there's no
-// shared-constant mechanism across the Tauri IPC boundary.
-export const DETECTOR_QUERY_MATCH_LIMIT = 200_000;
+// Feeds the main chart's Anomaly Overlay - recomputed per viewport/LOD Tier,
+// distinct from the fixed-500-bin Anomaly Bins the Detector Query run itself
+// returns (those still feed the Anomaly Heatmap unchanged, `docs/adr/0009`).
+export function useAnomalyBinsForViewport(
+  blfPath: string,
+  sql: string,
+  startUs: number,
+  endUs: number,
+  pixelWidth: number
+) {
+  return useQuery({
+    queryKey: ["anomaly-bins-viewport", blfPath, sql, startUs, endUs, pixelWidth],
+    queryFn: () => getTraceDataSource().getAnomalyBinsForViewport(blfPath, sql, startUs, endUs, pixelWidth),
+    enabled: sql.trim().length > 0,
+  });
+}
+
+// Same value the Rust side reads from config/config.json
+// (query::LOD.detector_query_match_limit) - no longer a second hardcoded
+// copy now that both sides read the one shared file.
+export const DETECTOR_QUERY_MATCH_LIMIT = LOD_CONFIG.detectorQueryMatchLimit;
 
 const detectorQueryMutationKey = (blfPath: string) => ["run-detector-query", blfPath];
 

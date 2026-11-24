@@ -78,6 +78,8 @@ export interface DetectorMatch {
   timestampUs: number;
 }
 
+export type DownsamplingAlgorithm = "min_max" | "lttb";
+
 export interface AnomalyBin {
   bin: number;
   count: number;
@@ -174,10 +176,18 @@ export interface TraceDataSource {
   getSignalSamples(
     blfPath: string,
     signalId: number,
-    limit: number,
     startUs: number,
-    endUs: number
+    endUs: number,
+    pixelWidth: number,
+    algorithm: DownsamplingAlgorithm
   ): Promise<[number, number][]>;
+  getAnomalyBinsForViewport(
+    blfPath: string,
+    sql: string,
+    startUs: number,
+    endUs: number,
+    pixelWidth: number
+  ): Promise<AnomalyBin[]>;
   runDetectorQuery(
     blfPath: string,
     sql: string,
@@ -269,11 +279,35 @@ export class TauriTraceDataSource implements TraceDataSource {
   getSignalSamples(
     blfPath: string,
     signalId: number,
-    limit: number,
     startUs: number,
-    endUs: number
+    endUs: number,
+    pixelWidth: number,
+    algorithm: DownsamplingAlgorithm
   ): Promise<[number, number][]> {
-    return invoke<[number, number][]>("get_signal_samples", { blfPath, signalId, limit, startUs, endUs });
+    return invoke<[number, number][]>("get_signal_samples", {
+      blfPath,
+      signalId,
+      startUs,
+      endUs,
+      pixelWidth,
+      algorithm,
+    });
+  }
+
+  getAnomalyBinsForViewport(
+    blfPath: string,
+    sql: string,
+    startUs: number,
+    endUs: number,
+    pixelWidth: number
+  ): Promise<AnomalyBin[]> {
+    return invoke<AnomalyBin[]>("get_anomaly_bins_for_viewport", {
+      blfPath,
+      sql,
+      startUs,
+      endUs,
+      pixelWidth,
+    });
   }
 
   runDetectorQuery(

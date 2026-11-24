@@ -1,4 +1,28 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+mod config;
+pub use config::*;
+
+/// The two user-selectable Downsampling Algorithms (`CONTEXT.md`, `docs/adr/0009`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownsamplingAlgorithm {
+    MinMax,
+    Lttb,
+}
+
+/// Point budget for a chart viewport: ~2 points per pixel, snapped up to the
+/// next power of two so repeated requests at a similar zoom reuse the same
+/// LOD Tier (`docs/adr/0009`). Clamped to `[LOD.min_lod_target_points,
+/// LOD.max_lod_target_points]` (`config/config.json`) so a not-yet-laid-out
+/// container (`pixel_width <= 0`) or a pathologically wide one can't
+/// produce a degenerate or runaway budget.
+pub fn lod_tier_point_budget(pixel_width: i64) -> i64 {
+    let raw = (pixel_width.max(1) * 2) as f64;
+    let tier_exp = raw.log2().ceil().max(0.0) as u32;
+    let budget = 1i64 << tier_exp;
+    budget.clamp(LOD.min_lod_target_points, LOD.max_lod_target_points)
+}
 
 /// Runs a `SELECT COUNT(*) ...`-shaped query and returns the single integer
 /// result. Not a general query runner - just enough to drive the Wave 2
@@ -453,6 +477,169 @@ pub fn list_signal_samples(
         .map_err(|e| e.to_string())
 }
 
+/// Min/Max decimation: groups a signal's samples in `[start_us, end_us]`
+/// into `target_points` equal-width time buckets (same bucketing shape as
+/// `compute_anomaly_bins`) and keeps each bucket's min- and max-valued
+/// sample, chronologically ordered. A bucket with a single row contributes
+/// one point, not a duplicate. Preserves outliers/spikes - the Downsampling
+/// Algorithm default for every signal (`docs/adr/0009`).
+pub fn list_signal_samples_minmax(
+    conn: &trace_store::Connection,
+    signal_id: i64,
+    start_us: i64,
+    end_us: i64,
+    target_points: i64,
+) -> Result<Vec<(i64, f64)>, String> {
+    if target_points < 1 {
+        return Err("target_points must be >= 1".to_string());
+    }
+    let (lo, hi) = if start_us <= end_us {
+        (start_us, end_us)
+    } else {
+        (end_us, start_us)
+    };
+    let sql = format!(
+        "with bucketed as (
+           select timestamp_us, phys_value,
+                  least({target_points} - 1,
+                        greatest(0, cast(floor((timestamp_us - {lo})::double * {target_points}
+                                               / ({hi} - {lo} + 1)) as bigint))) as bucket
+           from signals
+           where signal_id = ? and timestamp_us between ? and ?
+         )
+         select arg_min(timestamp_us, phys_value) as min_ts, min(phys_value) as min_val,
+                arg_max(timestamp_us, phys_value) as max_ts, max(phys_value) as max_val
+         from bucketed
+         group by bucket
+         order by bucket"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(duckdb::params![signal_id, lo, hi], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, f64>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        let (min_ts, min_val, max_ts, max_val) = r.map_err(|e| e.to_string())?;
+        match min_ts.cmp(&max_ts) {
+            std::cmp::Ordering::Equal => out.push((min_ts, min_val)),
+            std::cmp::Ordering::Less => {
+                out.push((min_ts, min_val));
+                out.push((max_ts, max_val));
+            }
+            std::cmp::Ordering::Greater => {
+                out.push((max_ts, max_val));
+                out.push((min_ts, min_val));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Largest-Triangle-Three-Buckets downsampling (Sveinn Steinarsson, 2013).
+/// Always keeps the first and last point. `target_points == 0` or `>= n`
+/// returns the input unchanged; `target_points < 3` (with `n >= 2`) returns
+/// just the first and last point, since LTTB's triangle-area selection needs
+/// at least one point strictly between the two fixed endpoints.
+pub fn lttb_downsample(points: &[(i64, f64)], target_points: usize) -> Vec<(i64, f64)> {
+    let n = points.len();
+    if target_points == 0 || target_points >= n || n <= 2 {
+        return points.to_vec();
+    }
+    if target_points < 3 {
+        return vec![points[0], points[n - 1]];
+    }
+
+    let mut sampled = Vec::with_capacity(target_points);
+    sampled.push(points[0]);
+
+    // Bucket size for the *middle* points only - first/last are fixed.
+    let bucket_size = (n - 2) as f64 / (target_points - 2) as f64;
+    let mut a = 0usize; // index of the last point actually selected
+
+    for i in 0..(target_points - 2) {
+        let bucket_start = ((i as f64) * bucket_size) as usize + 1;
+        let bucket_end = ((((i + 1) as f64) * bucket_size) as usize + 1)
+            .min(n - 1)
+            .max(bucket_start + 1);
+
+        let next_start = bucket_end;
+        let next_end = ((((i + 2) as f64) * bucket_size) as usize + 1)
+            .min(n)
+            .max(next_start + 1);
+        let slice = &points[next_start..next_end];
+        let len = slice.len() as f64;
+        let (avg_x, avg_y) = (
+            slice.iter().map(|p| p.0 as f64).sum::<f64>() / len,
+            slice.iter().map(|p| p.1).sum::<f64>() / len,
+        );
+
+        let (ax, ay) = (points[a].0 as f64, points[a].1);
+        let mut best_area = -1.0;
+        let mut best_idx = bucket_start;
+        for idx in bucket_start..bucket_end {
+            let (bx, by) = (points[idx].0 as f64, points[idx].1);
+            let area = ((ax - avg_x) * (by - ay) - (ax - bx) * (avg_y - ay)).abs();
+            if area > best_area {
+                best_area = area;
+                best_idx = idx;
+            }
+        }
+        sampled.push(points[best_idx]);
+        a = best_idx;
+    }
+    sampled.push(points[n - 1]);
+    sampled
+}
+
+/// LTTB over a capped raw-row fetch - reuses `list_signal_samples`'s
+/// existing `ORDER BY timestamp_us LIMIT` as the raw source, capped at
+/// `LOD.detector_query_match_limit` (`config/config.json`) for the same
+/// reason the Detector Query match extract is capped there (`docs/adr/0009`
+/// decision 2).
+pub fn list_signal_samples_lttb(
+    conn: &trace_store::Connection,
+    signal_id: i64,
+    start_us: i64,
+    end_us: i64,
+    target_points: i64,
+) -> Result<Vec<(i64, f64)>, String> {
+    let raw = list_signal_samples(
+        conn,
+        signal_id,
+        LOD.detector_query_match_limit,
+        start_us,
+        end_us,
+    )?;
+    Ok(lttb_downsample(&raw, target_points.max(0) as usize))
+}
+
+/// Dispatches to the signal's chosen Downsampling Algorithm - the one
+/// function the Tauri `get_signal_samples` command calls.
+pub fn list_signal_samples_for_viewport(
+    conn: &trace_store::Connection,
+    signal_id: i64,
+    start_us: i64,
+    end_us: i64,
+    target_points: i64,
+    algorithm: DownsamplingAlgorithm,
+) -> Result<Vec<(i64, f64)>, String> {
+    match algorithm {
+        DownsamplingAlgorithm::MinMax => {
+            list_signal_samples_minmax(conn, signal_id, start_us, end_us, target_points)
+        }
+        DownsamplingAlgorithm::Lttb => {
+            list_signal_samples_lttb(conn, signal_id, start_us, end_us, target_points)
+        }
+    }
+}
+
 pub fn list_ecus(conn: &trace_store::Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare("select name from arxml_ecu order by name")
@@ -533,14 +720,6 @@ pub struct DetectorQueryResult {
     pub scope_start_us: i64,
     pub scope_end_us: i64,
 }
-
-/// Default Match cap for the Analyzer's Detector Query editor - same order of
-/// magnitude as `TIMELINE_SAMPLE_LIMIT` on the frontend (both already proven
-/// at this scale via `large: true` echarts rendering).
-pub const DETECTOR_QUERY_MATCH_LIMIT: i64 = 200_000;
-
-/// Fixed anomaly-rail segmentation over a Detector Query's run scope.
-pub const ANOMALY_BIN_COUNT: i64 = 500;
 
 /// Absolute `[start, end]` bounds for bin `bin` (0-based) over
 /// `[scope_start, scope_end]`. The last bin always ends at `scope_end`.
@@ -635,8 +814,9 @@ fn detector_scoped_sql(trimmed: &str, start_us: i64, end_us: i64) -> String {
     )
 }
 
-/// Groups scoped Detector Query rows into [`ANOMALY_BIN_COUNT`] equal-width
-/// bins. Only active bins are returned. Runs the user SQL once (separate from
+/// Groups scoped Detector Query rows into `LOD.anomaly_bin_count`
+/// (`config/config.json`) equal-width bins. Only active bins are returned.
+/// Runs the user SQL once (separate from
 /// the Match extract - DuckDB read-only connections cannot create TEMP tables
 /// to share the result set).
 pub fn compute_anomaly_bins(
@@ -742,7 +922,7 @@ pub fn run_detector_query(
     }
     // Second pass for bins - TEMP tables are unavailable on the read-only
     // Trace Store connection (AccessMode::ReadOnly). Acceptable for MVP.
-    let bins = compute_anomaly_bins(conn, &trimmed, lo, hi, ANOMALY_BIN_COUNT)?;
+    let bins = compute_anomaly_bins(conn, &trimmed, lo, hi, LOD.anomaly_bin_count)?;
     Ok(DetectorQueryResult {
         matches,
         truncated,
@@ -756,6 +936,217 @@ pub fn run_detector_query(
 mod tests {
     use super::*;
     use trace_store::Connection;
+
+    #[test]
+    fn lod_tier_point_budget_snaps_to_power_of_two() {
+        assert_eq!(lod_tier_point_budget(400), 1024); // 400*2=800 -> next pow2 1024
+        assert_eq!(lod_tier_point_budget(1), 16); // clamped to the minimum tier
+    }
+
+    #[test]
+    fn lod_tier_point_budget_clamps_nonpositive_width_to_minimum() {
+        assert_eq!(lod_tier_point_budget(0), LOD.min_lod_target_points);
+        assert_eq!(lod_tier_point_budget(-50), LOD.min_lod_target_points);
+    }
+
+    #[test]
+    fn lod_tier_point_budget_clamps_runaway_width_to_maximum() {
+        assert_eq!(lod_tier_point_budget(1_000_000), LOD.max_lod_target_points);
+    }
+
+    #[test]
+    fn lod_tier_point_budget_is_stable_within_a_tier() {
+        // Two widths that both map to the same power-of-two tier must produce
+        // the identical budget, so repeated requests at a similar zoom reuse it.
+        assert_eq!(lod_tier_point_budget(260), lod_tier_point_budget(300));
+    }
+
+    #[test]
+    fn list_signal_samples_lttb_reduces_to_target_points() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);",
+        )
+        .unwrap();
+        for i in 0..200i64 {
+            conn.execute(
+                "INSERT INTO signals VALUES (0, 0, ?, 0, ?)",
+                duckdb::params![i * 1000, i as f64],
+            )
+            .unwrap();
+        }
+        let out = list_signal_samples_lttb(&conn, 0, 0, 199_000, 20).unwrap();
+        assert_eq!(out.len(), 20);
+        assert_eq!(out[0], (0, 0.0));
+        assert_eq!(out[19], (199_000, 199.0));
+    }
+
+    #[test]
+    fn list_signal_samples_for_viewport_dispatches_minmax() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 0, 1000, 0, 50.0);
+             INSERT INTO signals VALUES (0, 0, 1100, 0, 200.0);",
+        )
+        .unwrap();
+        let out = list_signal_samples_for_viewport(
+            &conn,
+            0,
+            1000,
+            1100,
+            1,
+            DownsamplingAlgorithm::MinMax,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn list_signal_samples_for_viewport_dispatches_lttb() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);",
+        )
+        .unwrap();
+        for i in 0..50i64 {
+            conn.execute(
+                "INSERT INTO signals VALUES (0, 0, ?, 0, ?)",
+                duckdb::params![i * 1000, i as f64],
+            )
+            .unwrap();
+        }
+        let out =
+            list_signal_samples_for_viewport(&conn, 0, 0, 49_000, 10, DownsamplingAlgorithm::Lttb)
+                .unwrap();
+        assert_eq!(out.len(), 10);
+    }
+
+    #[test]
+    fn lttb_downsample_keeps_first_and_last_point() {
+        let points: Vec<(i64, f64)> = (0..100).map(|i| (i * 1000, (i as f64).sin())).collect();
+        let out = lttb_downsample(&points, 10);
+        assert_eq!(out.first(), points.first());
+        assert_eq!(out.last(), points.last());
+    }
+
+    #[test]
+    fn lttb_downsample_returns_exactly_target_points_when_input_is_larger() {
+        let points: Vec<(i64, f64)> = (0..1000).map(|i| (i * 1000, i as f64)).collect();
+        let out = lttb_downsample(&points, 50);
+        assert_eq!(out.len(), 50);
+    }
+
+    #[test]
+    fn lttb_downsample_preserves_monotonic_timestamps() {
+        let points: Vec<(i64, f64)> = (0..500).map(|i| (i * 1000, (i as f64).cos())).collect();
+        let out = lttb_downsample(&points, 37);
+        for pair in out.windows(2) {
+            assert!(
+                pair[0].0 < pair[1].0,
+                "timestamps must stay strictly increasing: {pair:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lttb_downsample_returns_input_unchanged_when_target_exceeds_input_len() {
+        let points = vec![(0, 1.0), (1000, 2.0), (2000, 3.0)];
+        assert_eq!(lttb_downsample(&points, 100), points);
+    }
+
+    #[test]
+    fn lttb_downsample_empty_input_returns_empty() {
+        assert_eq!(lttb_downsample(&[], 50), Vec::<(i64, f64)>::new());
+    }
+
+    #[test]
+    fn lttb_downsample_single_point_input_returns_that_point() {
+        let points = vec![(42, 3.14)];
+        assert_eq!(lttb_downsample(&points, 50), points);
+    }
+
+    #[test]
+    fn lttb_downsample_two_point_input_returns_both() {
+        let points = vec![(0, 1.0), (1000, 2.0)];
+        assert_eq!(lttb_downsample(&points, 50), points);
+    }
+
+    #[test]
+    fn lttb_downsample_target_below_three_keeps_endpoints_only() {
+        let points: Vec<(i64, f64)> = (0..20).map(|i| (i * 1000, i as f64)).collect();
+        let out = lttb_downsample(&points, 2);
+        assert_eq!(out, vec![points[0], points[19]]);
+    }
+
+    #[test]
+    fn lttb_downsample_target_zero_returns_all_points_unchanged() {
+        let points = vec![(0, 1.0), (1000, 2.0), (2000, 3.0)];
+        assert_eq!(lttb_downsample(&points, 0), points);
+    }
+
+    #[test]
+    fn list_signal_samples_minmax_keeps_extremes_per_bucket() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 0, 1000, 0, 50.0);
+             INSERT INTO signals VALUES (0, 0, 1100, 0, 200.0);
+             INSERT INTO signals VALUES (0, 0, 1200, 0, 10.0);",
+        )
+        .unwrap();
+        // One wide bucket covering all three samples: min=10 at 1200, max=200 at 1100.
+        let out = list_signal_samples_minmax(&conn, 0, 1000, 1200, 1).unwrap();
+        assert_eq!(out.len(), 2, "both extremes kept, chronologically ordered");
+        assert_eq!(out[0], (1100, 200.0));
+        assert_eq!(out[1], (1200, 10.0));
+    }
+
+    #[test]
+    fn list_signal_samples_minmax_single_row_bucket_is_not_duplicated() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 0, 1000, 0, 42.0);",
+        )
+        .unwrap();
+        let out = list_signal_samples_minmax(&conn, 0, 1000, 1000, 500).unwrap();
+        assert_eq!(out, vec![(1000, 42.0)]);
+    }
+
+    #[test]
+    fn list_signal_samples_minmax_empty_range_returns_empty() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 0, 9000, 0, 42.0);",
+        )
+        .unwrap();
+        // Signal has samples, but none inside [0, 100] - must not panic, just empty.
+        let out = list_signal_samples_minmax(&conn, 0, 0, 100, 500).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn list_signal_samples_minmax_rejects_nonpositive_target_points() {
+        let conn = setup();
+        assert!(list_signal_samples_minmax(&conn, 0, 0, 1000, 0).is_err());
+    }
+
+    #[test]
+    fn list_signal_samples_minmax_respects_many_buckets() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 0, 0, 0, 1.0);
+             INSERT INTO signals VALUES (0, 0, 1000, 0, 2.0);
+             INSERT INTO signals VALUES (0, 0, 2000, 0, 3.0);",
+        )
+        .unwrap();
+        // 3 buckets over [0,2000] each containing exactly one sample.
+        let out = list_signal_samples_minmax(&conn, 0, 0, 2000, 3).unwrap();
+        assert_eq!(out, vec![(0, 1.0), (1000, 2.0), (2000, 3.0)]);
+    }
 
     #[test]
     fn count_returns_row_count() {

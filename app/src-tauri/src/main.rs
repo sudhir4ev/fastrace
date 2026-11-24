@@ -335,13 +335,40 @@ fn list_signal_catalog(blf_path: String) -> Result<Vec<query::SignalCatalogEntry
 fn get_signal_samples(
     blf_path: String,
     signal_id: i64,
-    limit: i64,
     start_us: i64,
     end_us: i64,
+    pixel_width: i64,
+    algorithm: query::DownsamplingAlgorithm,
 ) -> Result<Vec<(i64, f64)>, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::list_signal_samples(&conn, signal_id, limit, start_us, end_us)
+    let target_points = query::lod_tier_point_budget(pixel_width);
+    query::list_signal_samples_for_viewport(
+        &conn,
+        signal_id,
+        start_us,
+        end_us,
+        target_points,
+        algorithm,
+    )
+}
+
+/// Recomputes Anomaly Bins over just the currently-visible viewport, at the
+/// current LOD Tier - feeds the Anomaly Overlay (`CONTEXT.md`). Distinct
+/// from `run_detector_query`'s fixed-500-bin Anomaly Bins, which stay scoped
+/// to the whole run and feed the Anomaly Heatmap unchanged (`docs/adr/0009`).
+#[tauri::command]
+fn get_anomaly_bins_for_viewport(
+    blf_path: String,
+    sql: String,
+    start_us: i64,
+    end_us: i64,
+    pixel_width: i64,
+) -> Result<Vec<query::AnomalyBin>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    let bin_count = query::lod_tier_point_budget(pixel_width);
+    query::compute_anomaly_bins(&conn, &sql, start_us, end_us, bin_count)
 }
 
 #[tauri::command]
@@ -430,7 +457,7 @@ fn run_detector_query(
     let result = query::run_detector_query(
         &conn,
         &sql,
-        query::DETECTOR_QUERY_MATCH_LIMIT,
+        query::LOD.detector_query_match_limit,
         scope_start,
         scope_end,
     )?;
@@ -880,6 +907,7 @@ fn main() {
             get_message_detail,
             list_signal_catalog,
             get_signal_samples,
+            get_anomaly_bins_for_viewport,
             list_ecus,
             get_trace_time_range,
             count_messages,
@@ -910,6 +938,84 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_minimal_store_for_signal_tests(path: &std::path::Path) {
+        let conn = trace_store::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key VARCHAR, value VARCHAR);
+             INSERT INTO meta VALUES ('schema_version', '5');
+             CREATE TABLE messages (msg_id BIGINT, timestamp_us BIGINT, object_type INTEGER, arb_id INTEGER, dst_ip VARCHAR, dst_port INTEGER, dlc INTEGER, payload_len INTEGER);
+             CREATE TABLE arxml_signal (signal_id BIGINT, name VARCHAR, parent_kind VARCHAR, parent_id BIGINT, start_bit INTEGER, bit_length INTEGER, big_endian BOOLEAN, factor DOUBLE, \"offset\" DOUBLE);
+             CREATE TABLE signals (signal_id BIGINT, msg_id BIGINT, timestamp_us BIGINT, raw_value UBIGINT, phys_value DOUBLE);
+             INSERT INTO messages VALUES (0, 1000, 1, 100, NULL, NULL, 8, 8);
+             INSERT INTO messages VALUES (1, 2000, 1, 100, NULL, NULL, 8, 8);
+             INSERT INTO arxml_signal VALUES (0, 'EngineRpm', 'can', 100, 0, 16, false, 0.25, 0.0);
+             INSERT INTO signals VALUES (0, 0, 1000, 0, 10.0);
+             INSERT INTO signals VALUES (0, 1, 2000, 0, 20.0);",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn get_signal_samples_delegates_to_query_crate() {
+        let dir = std::env::temp_dir().join(format!(
+            "get_signal_samples_test_{}.duckdb",
+            std::process::id()
+        ));
+        write_minimal_store_for_signal_tests(&dir);
+        let blf_path = dir.with_extension("blf").to_string_lossy().to_string();
+        let out = get_signal_samples(
+            blf_path,
+            0,
+            0,
+            3000,
+            400,
+            query::DownsamplingAlgorithm::MinMax,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 2);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn get_anomaly_bins_for_viewport_delegates_to_query_crate() {
+        let dir = std::env::temp_dir().join(format!(
+            "get_anomaly_bins_viewport_test_{}.duckdb",
+            std::process::id()
+        ));
+        write_minimal_store_for_signal_tests(&dir);
+        let blf_path = dir.with_extension("blf").to_string_lossy().to_string();
+        let bins = get_anomaly_bins_for_viewport(
+            blf_path,
+            "select msg_id, timestamp_us from messages".to_string(),
+            0,
+            3000,
+            400,
+        )
+        .unwrap();
+        assert!(!bins.is_empty());
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn get_anomaly_bins_for_viewport_surfaces_bad_sql_as_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "get_anomaly_bins_viewport_err_test_{}.duckdb",
+            std::process::id()
+        ));
+        write_minimal_store_for_signal_tests(&dir);
+        let blf_path = dir.with_extension("blf").to_string_lossy().to_string();
+        let err = get_anomaly_bins_for_viewport(
+            blf_path,
+            "select * from no_such_table".to_string(),
+            0,
+            3000,
+            400,
+        )
+        .unwrap_err();
+        assert!(!err.is_empty());
+        let _ = std::fs::remove_file(&dir);
+    }
 
     #[test]
     fn get_trace_summary_bounds_protocol_counts_via_join() {

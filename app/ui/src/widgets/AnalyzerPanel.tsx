@@ -143,7 +143,7 @@ export default function AnalyzerPanel({ blfPath }: AnalyzerPanelProps) {
     }
     if (response.ran) {
       setNeedsDecode(null);
-      setResult(response.ran);
+      setResult(response.ran, opts.sqlText);
       recordQuery.mutate({
         sql: opts.sqlText,
         targetSignalIds: response.ran.targetSignalIds,

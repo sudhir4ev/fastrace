@@ -66,14 +66,30 @@ _Avoid_: assuming every Active Signal is shown - only the first Active Signal au
 The Signal Catalog entries the user multi-selects on a Detector Query before Run. The backend requires each target's `signal_coverage` to fully cover the run scope; otherwise it returns NeedsDecode and the UI confirms an `apply-trim` decode. Empty targets are allowed (protocol-only SQL). On a successful run, targets are unioned into Active Signals. SQL is not parsed for signal names - if the query reads `signals` without selecting those ids, the precondition cannot catch it.
 _Avoid_: inferring targets from the SQL text; treating Active Signals alone as the query's targets.
 
-**Anomaly Bin**:
-One of 500 equal-width time segments over a Detector Query's run scope. Computed in DuckDB (`docs/adr/0008`). A bin is active when any Match falls in it. Payload: `{bin, count, firstMsgId, firstTimestampUs, startUs, endUs}`.
-_Avoid_: shipping every Match to the frontend for client-side binning; re-deriving bin bounds in the UI.
+**Downsampling Algorithm**:
+The per-signal choice between Min/Max decimation (keeps each bucket's extremes, preserving outliers) and LTTB (Largest-Triangle-Three-Buckets, preserving visual shape), used to render that signal's samples at the current LOD Tier. User-selectable per signal, persisted in the Project (`docs/adr/0009`).
+_Avoid_: auto-selecting by signal type - not implemented; every signal defaults to Min/Max until the user picks otherwise.
 
-**Anomaly Rail**:
-A thin strip at the top of the Timeline panel that renders the last run's Anomaly Bins. Independent of `TrimControl` (which is untouched). Labeled with its scope; keeps the last run's bins until the next Run; shows a marker for the current Trim Window. Clicking an active bin sets and applies the Trim Window to that bin.
-_Avoid_: drawing anomaly bins on the trim rail; clearing the rail when the Trim Window changes by hand.
+**LOD Tier**:
+The point budget a signal's samples are reduced to for the current chart viewport, derived from available pixel width and snapped to a small set of discrete bands so repeated requests at a similar zoom reuse the same tier (`docs/adr/0009`). Recomputed on pan-end/zoom-change, not continuously mid-drag. Drives both signal downsampling and the Anomaly Overlay's bin width; the Anomaly Heatmap ignores it and always uses a fixed 500 bins.
+_Avoid_: "resolution level" (LOD Tier is the canonical term); recomputing on every frame of a drag.
+
+**Anomaly Bin**:
+One equal-width time segment over a Detector Query's run scope. Computed in DuckDB (`docs/adr/0008`). A bin is active when any Match falls in it. Payload: `{bin, count, firstMsgId, firstTimestampUs, startUs, endUs}`. Bin count is fixed at 500 for the Anomaly Heatmap; for the Anomaly Overlay it tracks the current LOD Tier (`docs/adr/0009`).
+_Avoid_: shipping every Match to the frontend for client-side binning; re-deriving bin bounds in the UI; assuming one bin count everywhere - it now depends on which renderer is asking.
+
+**Anomaly Overlay**:
+The colored `markArea` bands painted behind each signal's series inside the Timeline chart itself, one per active Anomaly Bin, density-mapped amber-to-red. Bin count tracks the current LOD Tier.
+_Avoid_: "Anomaly Rail" (retired term - it described a separate thin strip at the top of the panel, which was never what got built; the overlay lives inside the chart's own `markArea`, not a standalone strip).
+
+**Anomaly Heatmap**:
+The density strip drawn behind `TimelineZoomControl`'s zoom slider - same amber-to-red density mapping as the Anomaly Overlay, but deliberately plain CSS rather than an echarts series, so dragging the slider never rescales it. Always 500 bins, independent of LOD Tier.
+_Avoid_: implementing it as an echarts series - that would break the "slider drag never rescales the heatmap" property it exists for.
+
+**Project**:
+The persisted, user-resumable state for 1..N Traces - today always exactly 1; multi-trace (one logical recording split across files) is future work, not built. Stored as `<stem>.fastrace-project.json` beside the Trace Store, owned by `crates/project-store` (`docs/adr/0010`). Holds Query History, Displayed Signals, the Trim Window, and each Trace's Downsampling Algorithm choices. Rebuilt alongside the Trace Store on every Prepare - nothing in it survives a re-Prepare.
+_Avoid_: Session (considered and rejected - one noun for one concept, since a future multi-trace Project and "a session" would otherwise mean almost the same thing); persisting the Timeline's client-side pan/zoom viewport (`timelineZoomRange`) - deliberately excluded, stays app-session-only.
 
 **Query History**:
-Per-Trace list of up to 25 recent successful Detector Queries, stored on the Trace's entry in `recent_traces.json` (`queries` field). Clicking an entry restores SQL, Target Signals, and the respect-trim flag. Deduped by whitespace-normalized SQL. Dropped when the Trace is removed from Recents.
-_Avoid_: a separate history file; recording failed runs; treating history as global across traces.
+Per-Trace list of up to 25 recent successful Detector Queries, stored in the Trace's Project (not `recent_traces.json` - that file still exists for the Welcome screen's Recents MRU, but no longer carries query history, `docs/adr/0010`). Clicking an entry restores SQL, Target Signals, and the respect-trim flag. Deduped by whitespace-normalized SQL. Reset whenever the Trace is re-Prepared, along with the rest of the Project.
+_Avoid_: `recent_traces.json` as its storage location (superseded); a separate history file; recording failed runs; treating history as global across traces.

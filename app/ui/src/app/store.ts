@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import type { AnomalyBin, DetectorMatch, DetectorQueryRan } from "@/shared/api/trace-source";
+import type { AnomalyBin, DetectorMatch, DetectorQueryRan, DownsamplingAlgorithm } from "@/shared/api/trace-source";
+import type { TimelineDiagnostics } from "@/widgets/diagnostics";
 
 export type WorkspaceTab = "signals" | "messages";
 
@@ -16,6 +17,10 @@ export interface WorkspaceState {
   // `pendingSignalIds` is the draft checkbox state in SignalSelect until Apply.
   activeSignalIds: Set<number>;
   pendingSignalIds: Set<number>;
+  // Per-signal Downsampling Algorithm choice (CONTEXT.md) - defaults to
+  // Min/Max for any signal not yet present in the map.
+  signalDownsamplingAlgorithms: Record<number, DownsamplingAlgorithm>;
+  setSignalDownsamplingAlgorithm: (signalId: number, algorithm: DownsamplingAlgorithm) => void;
   setSelectedGroupKeys: (keys: string[]) => void;
   setSelectedMessage: (id: number | null) => void;
   setWorkspaceTab: (tab: WorkspaceTab) => void;
@@ -28,6 +33,12 @@ export interface WorkspaceState {
   // nothing still "ran" and the Match lane should show (empty), not stay
   // hidden as if nothing happened yet.
   detectorQuerySql: string;
+  // The SQL text of the last Detector Query that actually ran - distinct
+  // from `detectorQuerySql`, which keeps changing as the user types a new
+  // draft. The Anomaly Overlay keys off this, not the live draft, so it
+  // never recomputes from an unrun/half-typed query (CONTEXT.md's Anomaly
+  // Bin is defined over a Detector Query's *run* scope).
+  detectorRanSql: string | null;
   detectorTargetSignalIds: number[];
   detectorRespectTrim: boolean;
   detectorMatches: DetectorMatch[];
@@ -38,7 +49,7 @@ export interface WorkspaceState {
   setDetectorQuerySql: (sql: string) => void;
   setDetectorTargetSignalIds: (ids: number[]) => void;
   setDetectorRespectTrim: (respect: boolean) => void;
-  setDetectorQueryResult: (ran: DetectorQueryRan) => void;
+  setDetectorQueryResult: (ran: DetectorQueryRan, sqlText: string) => void;
   setDetectorQueryError: (error: string) => void;
   resetDetectorQuery: () => void;
   // Shared dataZoom window (percent, 0-100) for TimelineChart/TimelineZoomControl.
@@ -62,6 +73,14 @@ export interface WorkspaceState {
   resetTrimRange: () => void;
   /** Clears all workspace UI state (Close Project). Does not touch on-disk stores. */
   resetWorkspace: () => void;
+  // LOD Diagnostics panel (footer bug icon) - off by default, a dev-facing
+  // view of what the LOD/Anomaly Overlay pipeline is actually doing. Not
+  // reset by resetWorkspace()/Close Project - it's a display preference,
+  // not Trace-scoped data.
+  diagnosticsOpen: boolean;
+  toggleDiagnostics: () => void;
+  timelineDiagnostics: TimelineDiagnostics | null;
+  setTimelineDiagnostics: (diagnostics: TimelineDiagnostics) => void;
 }
 
 function sameKeys(a: string[], b: string[]): boolean {
@@ -76,6 +95,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspaceTab: "signals",
   activeSignalIds: new Set(),
   pendingSignalIds: new Set(),
+  signalDownsamplingAlgorithms: {},
+  setSignalDownsamplingAlgorithm: (signalId, algorithm) =>
+    set((s) => ({
+      signalDownsamplingAlgorithms: { ...s.signalDownsamplingAlgorithms, [signalId]: algorithm },
+    })),
   setSelectedGroupKeys: (keys) => {
     if (sameKeys(keys, get().selectedGroupKeys)) return;
     set({ selectedGroupKeys: keys, selectedMessageId: null });
@@ -93,6 +117,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       return { activeSignalIds: active, pendingSignalIds: pending };
     }),
   detectorQuerySql: "",
+  detectorRanSql: null,
   detectorTargetSignalIds: [],
   detectorRespectTrim: true,
   detectorMatches: [],
@@ -103,7 +128,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setDetectorQuerySql: (sql) => set({ detectorQuerySql: sql }),
   setDetectorTargetSignalIds: (ids) => set({ detectorTargetSignalIds: ids }),
   setDetectorRespectTrim: (respect) => set({ detectorRespectTrim: respect }),
-  setDetectorQueryResult: (ran) =>
+  setDetectorQueryResult: (ran, sqlText) =>
     set((s) => {
       // Union targets into Active Signals (never remove other actives).
       const active = new Set(s.activeSignalIds);
@@ -113,6 +138,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         detectorQueryTruncated: ran.truncated,
         detectorQueryError: null,
         detectorQueryHasRun: true,
+        detectorRanSql: sqlText,
         anomalyBins: ran.bins,
         activeSignalIds: active,
         pendingSignalIds: new Set([...s.pendingSignalIds, ...ran.targetSignalIds]),
@@ -129,6 +155,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   resetDetectorQuery: () =>
     set({
       detectorQuerySql: "",
+      detectorRanSql: null,
       detectorTargetSignalIds: [],
       detectorRespectTrim: true,
       detectorMatches: [],
@@ -172,6 +199,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       activeSignalIds: new Set(),
       pendingSignalIds: new Set(),
       detectorQuerySql: "",
+      detectorRanSql: null,
       detectorTargetSignalIds: [],
       detectorRespectTrim: true,
       detectorMatches: [],
@@ -180,7 +208,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       detectorQueryHasRun: false,
       anomalyBins: [],
       timelineZoomRange: { start: 0, end: 100 },
+      signalDownsamplingAlgorithms: {},
       appliedTrimRange: null,
       pendingTrimRange: null,
+      timelineDiagnostics: null,
     }),
+  diagnosticsOpen: false,
+  toggleDiagnostics: () => set((s) => ({ diagnosticsOpen: !s.diagnosticsOpen })),
+  timelineDiagnostics: null,
+  setTimelineDiagnostics: (diagnostics) => set({ timelineDiagnostics: diagnostics }),
 }));
