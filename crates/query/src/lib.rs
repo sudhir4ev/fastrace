@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+mod config;
+pub use config::*;
+
 /// The two user-selectable Downsampling Algorithms (`CONTEXT.md`, `docs/adr/0009`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -7,9 +10,6 @@ pub enum DownsamplingAlgorithm {
     MinMax,
     Lttb,
 }
-
-pub const MIN_LOD_TARGET_POINTS: i64 = 16;
-pub const MAX_LOD_TARGET_POINTS: i64 = 50_000;
 
 /// Point budget for a chart viewport: ~2 points per pixel, snapped up to the
 /// next power of two so repeated requests at a similar zoom reuse the same
@@ -719,14 +719,6 @@ pub struct DetectorQueryResult {
     pub scope_start_us: i64,
     pub scope_end_us: i64,
 }
-
-/// Default Match cap for the Analyzer's Detector Query editor - same order of
-/// magnitude as `TIMELINE_SAMPLE_LIMIT` on the frontend (both already proven
-/// at this scale via `large: true` echarts rendering).
-pub const DETECTOR_QUERY_MATCH_LIMIT: i64 = 200_000;
-
-/// Fixed anomaly-rail segmentation over a Detector Query's run scope.
-pub const ANOMALY_BIN_COUNT: i64 = 500;
 
 /// Absolute `[start, end]` bounds for bin `bin` (0-based) over
 /// `[scope_start, scope_end]`. The last bin always ends at `scope_end`.
