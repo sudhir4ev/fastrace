@@ -7,6 +7,7 @@ import { useAnomalyBinsForViewport, useSignalCatalog, useSignalSamplesList } fro
 import { Button } from "@/shared/ui/button";
 import { anomalyBinColor } from "./anomaly-bin-color";
 import { createDebouncer } from "./debounce";
+import { buildTimelineDiagnostics } from "./diagnostics";
 import { viewportFromZoomPercent } from "./viewport";
 
 const ANOMALY_MARK_OPACITY = 0.28;
@@ -286,7 +287,22 @@ export default function TimelineChart({
     // the component has painted, catches it stuck at whatever size it was
     // wrongly measured at on init.
     chart.resize();
-  }, [lanes, samples, minTs, maxTs, activeSignalKey, overlayBins.data]);
+
+    const pointCounts: Record<number, number> = {};
+    for (const lane of lanes) {
+      pointCounts[lane.signalId] = samples[activeSignalIds.indexOf(lane.signalId)]?.data?.length ?? 0;
+    }
+    useWorkspaceStore.getState().setTimelineDiagnostics(
+      buildTimelineDiagnostics({
+        viewport: effectiveViewport,
+        lanes,
+        pointCounts,
+        algorithms: signalAlgorithms,
+        overlayBinCount: activeOverlayBins.length,
+        overlayError: overlayBins.error ? String(overlayBins.error) : null,
+      })
+    );
+  }, [lanes, samples, minTs, maxTs, activeSignalKey, overlayBins.data, overlayBins.error]);
 
   // containerRef's div must stay mounted even with zero lanes - the init
   // effect below only runs once on mount ([] deps), so swapping it out for a

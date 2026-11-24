@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AnomalyBin, DetectorMatch, DetectorQueryRan, DownsamplingAlgorithm } from "@/shared/api/trace-source";
+import type { TimelineDiagnostics } from "@/widgets/diagnostics";
 
 export type WorkspaceTab = "signals" | "messages";
 
@@ -72,6 +73,14 @@ export interface WorkspaceState {
   resetTrimRange: () => void;
   /** Clears all workspace UI state (Close Project). Does not touch on-disk stores. */
   resetWorkspace: () => void;
+  // LOD Diagnostics panel (footer bug icon) - off by default, a dev-facing
+  // view of what the LOD/Anomaly Overlay pipeline is actually doing. Not
+  // reset by resetWorkspace()/Close Project - it's a display preference,
+  // not Trace-scoped data.
+  diagnosticsOpen: boolean;
+  toggleDiagnostics: () => void;
+  timelineDiagnostics: TimelineDiagnostics | null;
+  setTimelineDiagnostics: (diagnostics: TimelineDiagnostics) => void;
 }
 
 function sameKeys(a: string[], b: string[]): boolean {
@@ -202,5 +211,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       signalDownsamplingAlgorithms: {},
       appliedTrimRange: null,
       pendingTrimRange: null,
+      timelineDiagnostics: null,
     }),
+  diagnosticsOpen: false,
+  toggleDiagnostics: () => set((s) => ({ diagnosticsOpen: !s.diagnosticsOpen })),
+  timelineDiagnostics: null,
+  setTimelineDiagnostics: (diagnostics) => set({ timelineDiagnostics: diagnostics }),
 }));
