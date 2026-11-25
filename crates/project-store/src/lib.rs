@@ -28,6 +28,8 @@ pub struct TrimWindow {
 pub struct TraceState {
     pub path: String,
     #[serde(default)]
+    pub arxml_path: Option<String>,
+    #[serde(default)]
     pub downsampling_algorithms: HashMap<i64, String>,
 }
 
@@ -50,6 +52,7 @@ impl ProjectFile {
             version: PROJECT_VERSION,
             traces: vec![TraceState {
                 path: path.to_string(),
+                arxml_path: None,
                 downsampling_algorithms: HashMap::new(),
             }],
             displayed_signal_ids: Vec::new(),
@@ -125,6 +128,17 @@ pub fn clear_trim_window(mut project: ProjectFile) -> ProjectFile {
     project
 }
 
+/// Records which ARXML a Trace was last Prepared with, so the UI can show
+/// the pairing after reopening a Trace where the ARXML was never re-picked.
+/// Writes to the first (and, for now, only) trace, same as
+/// `set_downsampling_algorithm`.
+pub fn set_arxml_path(mut project: ProjectFile, arxml_path: String) -> ProjectFile {
+    if let Some(trace) = project.traces.first_mut() {
+        trace.arxml_path = Some(arxml_path);
+    }
+    project
+}
+
 /// Writes to the first (and, for now, only) trace - multi-trace Projects
 /// are future work (`docs/adr/0010`), not a lookup bug to fix here.
 pub fn set_downsampling_algorithm(
@@ -163,6 +177,7 @@ mod tests {
         assert_eq!(project.version, PROJECT_VERSION);
         assert_eq!(project.traces.len(), 1);
         assert_eq!(project.traces[0].path, "/traces/run1.blf");
+        assert!(project.traces[0].arxml_path.is_none());
         assert!(project.displayed_signal_ids.is_empty());
         assert!(project.trim_window.is_none());
         assert!(project.query_history.is_empty());
@@ -177,6 +192,7 @@ mod tests {
             start_us: 100,
             end_us: 200,
         });
+        project.traces[0].arxml_path = Some("/traces/run1.arxml".to_string());
         project.traces[0]
             .downsampling_algorithms
             .insert(7, "lttb".to_string());
@@ -302,6 +318,13 @@ mod tests {
         let project = set_trim_window(project, 10, 20);
         let project = clear_trim_window(project);
         assert!(project.trim_window.is_none());
+    }
+
+    #[test]
+    fn set_arxml_path_sets_it_on_the_first_trace() {
+        let project = ProjectFile::new_for_trace("/t.blf");
+        let project = set_arxml_path(project, "/t.arxml".to_string());
+        assert_eq!(project.traces[0].arxml_path, Some("/t.arxml".to_string()));
     }
 
     #[test]

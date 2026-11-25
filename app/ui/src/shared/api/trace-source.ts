@@ -134,7 +134,7 @@ export interface QueryHistoryEntry {
 
 export interface ProjectFile {
   version: number;
-  traces: { path: string; downsamplingAlgorithms: Record<number, string> }[];
+  traces: { path: string; arxmlPath: string | null; downsamplingAlgorithms: Record<number, string> }[];
   displayedSignalIds: number[];
   trimWindow: { startUs: number; endUs: number } | null;
   queryHistory: QueryHistoryEntry[];

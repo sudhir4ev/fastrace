@@ -117,6 +117,8 @@ async fn prepare_trace(
         return Err(e);
     }
     let app_for_task = app.clone();
+    let blf_path_for_save = blf_path.clone();
+    let arxml_path_for_save = arxml_path.clone();
     let joined: Result<serde_json::Value, String> =
         tauri::async_runtime::spawn_blocking(move || {
             let mut ticks = Vec::new();
@@ -134,6 +136,18 @@ async fn prepare_trace(
         .map_err(|e| e.to_string())?;
 
     app.state::<PrepareGuard>().release();
+    // Records the ARXML pairing so the footer's trace-files popup can show
+    // it after reopening a Trace, where the ARXML is never re-picked.
+    // Best-effort: a failure here doesn't invalidate a successful Prepare.
+    if joined.is_ok() {
+        let path = project_path_for(&blf_path_for_save);
+        if let Ok(project) = project_store::read_project(&path, &blf_path_for_save) {
+            let _ = project_store::write_project(
+                &path,
+                &project_store::set_arxml_path(project, arxml_path_for_save),
+            );
+        }
+    }
     joined
 }
 
@@ -1454,5 +1468,25 @@ mod tests {
         assert!(path.exists());
         delete_project_file(&blf_path_str).unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn arxml_path_persist_sequence_is_visible_via_get_project() {
+        // Exercises the same read/set/write sequence `prepare_trace` runs on
+        // a successful Prepare - can't call `prepare_trace` itself here, it
+        // shells out to the real sidecar binary.
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!("project_test_arxml_{}.blf", std::process::id()));
+        let blf_path_str = blf_path.to_string_lossy().to_string();
+        let path = project_path_for(&blf_path_str);
+        let project = project_store::read_project(&path, &blf_path_str).unwrap();
+        project_store::write_project(
+            &path,
+            &project_store::set_arxml_path(project, "/t.arxml".to_string()),
+        )
+        .unwrap();
+        let project = get_project(blf_path_str).unwrap();
+        assert_eq!(project.traces[0].arxml_path, Some("/t.arxml".to_string()));
+        let _ = std::fs::remove_file(&path);
     }
 }

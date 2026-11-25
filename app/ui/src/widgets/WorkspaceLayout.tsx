@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Activity, Bug, Database, File, List, type LucideIcon } from "lucide-react";
 import { useWorkspaceStore, type TrimRange, type WorkspaceTab } from "@/app/store";
 import { useApplyTrim, useFileSizes, useIoBusy, useProject, useSignalCatalog } from "@/shared/api/hooks";
 import { getTraceDataSource } from "@/shared/api/trace-source";
 import { Button } from "@/shared/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/shared/ui/dialog";
 import { cn, formatBytes } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 import { Skeleton } from "@/shared/ui/skeleton";
@@ -81,12 +82,37 @@ function StatusBar({
   const { blfBusy, duckdbBusy } = useIoBusy(blfPath, preparing);
   const diagnosticsOpen = useWorkspaceStore((s) => s.diagnosticsOpen);
   const toggleDiagnostics = useWorkspaceStore((s) => s.toggleDiagnostics);
+  const project = useProject(blfPath);
+  const [filesDialogOpen, setFilesDialogOpen] = useState(false);
   const fileName = blfPath.split(/[\\/]/).pop() ?? blfPath;
+  const arxmlPath = project.data?.traces[0]?.arxmlPath ?? null;
   return (
     <div className="flex h-[26px] shrink-0 items-center gap-4 bg-foreground px-3 text-[10px] text-background">
-      <span className="max-w-[40%] truncate font-medium" title={blfPath}>
+      <button
+        type="button"
+        onClick={() => setFilesDialogOpen(true)}
+        title={blfPath}
+        className="max-w-[40%] truncate font-medium hover:underline"
+      >
         {fileName}
-      </span>
+      </button>
+      <Dialog open={filesDialogOpen} onOpenChange={setFilesDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Project files</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 px-4 pb-4 text-xs">
+            <div className="flex flex-col gap-1">
+              <span className="font-medium text-muted-foreground">Trace file</span>
+              <span className="break-all">{blfPath}</span>
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="font-medium text-muted-foreground">ARXML file</span>
+              <span className="break-all">{arxmlPath ?? "Unknown (Prepared before this was tracked)"}</span>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       <span>Total messages: {prepareTotals ? prepareTotals.messages : "-"}</span>
       <span>BLF size: {fileSizes.data ? formatBytes(fileSizes.data.blfBytes) : "-"}</span>
       <span>Ingested size: {fileSizes.data ? formatBytes(fileSizes.data.duckdbBytes) : "-"}</span>
