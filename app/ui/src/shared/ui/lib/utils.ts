@@ -24,6 +24,13 @@ export function truncatePathStart(path: string, maxLength = 60): string {
   return `...${path.slice(path.length - (maxLength - 3))}`;
 }
 
+// Shows just the parent folder and file name (".../traces/run1.blf" ->
+// "traces/run1.blf") - the full path belongs in a tooltip/copy, not here.
+export function formatPathShort(path: string): string {
+  const segments = path.split(/[\\/]/).filter(Boolean);
+  return segments.slice(-2).join("/");
+}
+
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms} ms`;
   const totalSeconds = ms / 1000;

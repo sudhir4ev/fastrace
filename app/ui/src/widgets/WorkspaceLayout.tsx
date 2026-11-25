@@ -5,7 +5,7 @@ import { useApplyTrim, useFileSizes, useIoBusy, useProject, useSignalCatalog } f
 import { getTraceDataSource } from "@/shared/api/trace-source";
 import { Button } from "@/shared/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/shared/ui/dialog";
-import { cn, formatBytes } from "@/shared/ui/lib/utils";
+import { cn, formatBytes, formatPathShort } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 import { Skeleton } from "@/shared/ui/skeleton";
 import ActivityLog from "./ActivityLog";
@@ -69,6 +69,24 @@ function StatusIoLed({
   );
 }
 
+// Shows "parentFolder/file.ext", the full path on hover, and copies the
+// full path to the clipboard on click.
+function FilePathRow({ label, path }: { label: string; path: string }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="font-medium text-muted-foreground">{label}</span>
+      <button
+        type="button"
+        onClick={() => void navigator.clipboard.writeText(path)}
+        title={path}
+        className="truncate text-left hover:underline"
+      >
+        {formatPathShort(path)}
+      </button>
+    </div>
+  );
+}
+
 function StatusBar({
   blfPath,
   preparing,
@@ -102,14 +120,15 @@ function StatusBar({
             <DialogTitle>Project files</DialogTitle>
           </DialogHeader>
           <div className="flex flex-col gap-3 px-4 pb-4 text-xs">
-            <div className="flex flex-col gap-1">
-              <span className="font-medium text-muted-foreground">Trace file</span>
-              <span className="break-all">{blfPath}</span>
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="font-medium text-muted-foreground">ARXML file</span>
-              <span className="break-all">{arxmlPath ?? "Unknown (Prepared before this was tracked)"}</span>
-            </div>
+            <FilePathRow label="Trace file" path={blfPath} />
+            {arxmlPath ? (
+              <FilePathRow label="ARXML file" path={arxmlPath} />
+            ) : (
+              <div className="flex flex-col gap-1">
+                <span className="font-medium text-muted-foreground">ARXML file</span>
+                <span>Unknown (Prepared before this was tracked)</span>
+              </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>
