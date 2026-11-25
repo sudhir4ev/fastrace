@@ -1,15 +1,14 @@
-import { useEffect, useRef, useState } from "react";
-import { Activity, Bug, Database, File, List, type LucideIcon } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { Activity, List } from "lucide-react";
 import { useWorkspaceStore, type TrimRange, type WorkspaceTab } from "@/app/store";
-import { useApplyTrim, useFileSizes, useIoBusy, useProject, useSignalCatalog } from "@/shared/api/hooks";
+import { useApplyTrim, useProject, useSignalCatalog } from "@/shared/api/hooks";
 import { getTraceDataSource } from "@/shared/api/trace-source";
 import { Button } from "@/shared/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/shared/ui/dialog";
-import { cn, formatBytes, formatPathShort } from "@/shared/ui/lib/utils";
+import { cn } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 import { Skeleton } from "@/shared/ui/skeleton";
-import ActivityLog from "./ActivityLog";
 import AnalyzerPanel from "./AnalyzerPanel";
+import AppFooter from "./AppFooter";
 import { createDebouncer } from "./debounce";
 import DiagnosticsPanel from "./DiagnosticsPanel";
 import MessageDetails from "./MessageDetails";
@@ -39,132 +38,6 @@ function PanelSkeleton() {
       <Skeleton className="h-4 w-full" />
       <Skeleton className="h-4 w-5/6" />
       <Skeleton className="h-4 w-1/2" />
-    </div>
-  );
-}
-
-function StatusIoLed({
-  label,
-  Icon,
-  active,
-  title,
-}: {
-  label: string;
-  Icon: LucideIcon;
-  active: boolean;
-  title: string;
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center",
-        active ? "text-emerald-300 status-led-active" : "text-background/35"
-      )}
-      title={title}
-      aria-label={`${label}: ${active ? "busy" : "idle"}`}
-      role="status"
-    >
-      <Icon className="h-3 w-3" aria-hidden />
-    </span>
-  );
-}
-
-// Shows "parentFolder/file.ext", the full path on hover, and copies the
-// full path to the clipboard on click.
-function FilePathRow({ label, path }: { label: string; path: string }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="font-medium text-muted-foreground">{label}</span>
-      <button
-        type="button"
-        onClick={() => void navigator.clipboard.writeText(path)}
-        title={path}
-        className="truncate text-left hover:underline"
-      >
-        {formatPathShort(path)}
-      </button>
-    </div>
-  );
-}
-
-function StatusBar({
-  blfPath,
-  preparing,
-  prepareTotals,
-}: {
-  blfPath: string;
-  preparing: boolean;
-  prepareTotals: { messages: number; protocol_rows: number; elapsed_ms: number } | null;
-}) {
-  const fileSizes = useFileSizes(blfPath);
-  const { blfBusy, duckdbBusy } = useIoBusy(blfPath, preparing);
-  const diagnosticsOpen = useWorkspaceStore((s) => s.diagnosticsOpen);
-  const toggleDiagnostics = useWorkspaceStore((s) => s.toggleDiagnostics);
-  const project = useProject(blfPath);
-  const [filesDialogOpen, setFilesDialogOpen] = useState(false);
-  const fileName = blfPath.split(/[\\/]/).pop() ?? blfPath;
-  const arxmlPath = project.data?.traces[0]?.arxmlPath ?? null;
-  return (
-    <div className="flex h-[26px] shrink-0 items-center gap-4 bg-foreground px-3 text-[10px] text-background">
-      <button
-        type="button"
-        onClick={() => setFilesDialogOpen(true)}
-        title={blfPath}
-        className="max-w-[40%] truncate font-medium hover:underline"
-      >
-        {fileName}
-      </button>
-      <Dialog open={filesDialogOpen} onOpenChange={setFilesDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Project files</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-3 px-4 pb-4 text-xs">
-            <FilePathRow label="Trace file" path={blfPath} />
-            {arxmlPath ? (
-              <FilePathRow label="ARXML file" path={arxmlPath} />
-            ) : (
-              <div className="flex flex-col gap-1">
-                <span className="font-medium text-muted-foreground">ARXML file</span>
-                <span>Unknown (Prepared before this was tracked)</span>
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-      <span>Total messages: {prepareTotals ? prepareTotals.messages : "-"}</span>
-      <span>BLF size: {fileSizes.data ? formatBytes(fileSizes.data.blfBytes) : "-"}</span>
-      <span>Ingested size: {fileSizes.data ? formatBytes(fileSizes.data.duckdbBytes) : "-"}</span>
-      <span className="ml-auto flex items-center gap-3">
-        <span className="flex items-center gap-2" aria-label="I/O status">
-          <StatusIoLed
-            label="BLF"
-            Icon={File}
-            active={blfBusy}
-            title={blfBusy ? "BLF read in progress" : "BLF idle"}
-          />
-          <StatusIoLed
-            label="DuckDB"
-            Icon={Database}
-            active={duckdbBusy}
-            title={duckdbBusy ? "DuckDB busy" : "DuckDB idle"}
-          />
-        </span>
-        <ActivityLog blfPath={blfPath} />
-        <button
-          type="button"
-          onClick={toggleDiagnostics}
-          aria-pressed={diagnosticsOpen}
-          aria-label="Toggle LOD diagnostics panel"
-          title="LOD diagnostics"
-          className={cn(
-            "inline-flex items-center rounded-sm p-0.5 hover:bg-background/20",
-            diagnosticsOpen ? "text-emerald-300" : "text-background/60"
-          )}
-        >
-          <Bug className="h-3 w-3" aria-hidden />
-        </button>
-      </span>
     </div>
   );
 }
@@ -349,7 +222,7 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
         </main>
       </div>
       <DiagnosticsPanel />
-      <StatusBar blfPath={blfPath} preparing={preparing} prepareTotals={prepareTotals} />
+      <AppFooter blfPath={blfPath} preparing={preparing} prepareTotals={prepareTotals} />
       <Toaster />
     </div>
   );
