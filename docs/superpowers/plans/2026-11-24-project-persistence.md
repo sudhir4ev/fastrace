@@ -17,13 +17,16 @@
 - `crates/project-store` has zero Tauri and zero DuckDB dependency - pure structs + file I/O only (`docs/adr/0010`).
 - No `schema_version` bump - the Project file is a separate sidecar JSON with its own `version` field, independent of the DuckDB schema (`docs/adr/0010` decision 3).
 - Query History's Tauri command names and signatures (`list_query_history`, `record_query`, `remove_query`, `clear_query_history`) do not change - only their backing storage moves. No frontend call site for these four needs editing.
+- No migration from `recent_traces.json`'s old `queries` field into the Project file. Any Query History already recorded before this ships is not carried over - the first open after upgrading starts that Trace's Project file with empty Query History. Accepted, not a task.
+- Autosave writes go through exactly one Tauri command, `save_project`, taking all three mutable fields (Displayed Signals, Trim Window, algorithm map) together. This does one `read_project`/`write_project` cycle per autosave tick instead of three concurrent ones, which would otherwise race and lose whichever write's read was stalest.
 - Multi-trace is explicitly out of scope - `ProjectFile.traces` always has exactly one entry; `set_downsampling_algorithm` writing to `traces.first_mut()` is correct for v1 and is not a bug to "fix" here.
 - Run `cargo fmt --manifest-path crates/Cargo.toml` and `cargo clippy --manifest-path crates/Cargo.toml` on every Rust change; run `npm run test --prefix app/ui` on every frontend change.
 
 ## Review Focus
 
-- A corrupted or truncated Project file (app crashed mid-write) - `read_project` must return a clear `Err`, and the Tauri/frontend layer must still let the user open the Trace with default state rather than blocking the whole screen on a broken sidecar file.
+- A corrupted or truncated Project file (app crashed mid-write) - `read_project` must return a clear `Err`. On the frontend, `useProject`'s query rejecting already surfaces a toast via the existing global `QueryCache` error handler (`app/ui/src/app/query-client.ts`) - no new error UI needed. The Task 4 seeding effect must still mark the Trace as seeded and proceed with default (empty) state on `project.isError`, rather than leaving the screen waiting on data that will never arrive; the next autosave tick then overwrites the broken file with valid JSON.
 - The very first time a Trace is ever opened (no Project file exists yet) - `read_project` must return sensible defaults (empty lists, no Trim Window), not an error.
+- Clearing the Trim Window (`resetTrimRange()` sets `appliedTrimRange` back to `null`) must persist as a clear, not a no-op - `save_project`'s `trim_window: None` means "unset it," not "leave it alone." Omitting the write when `trim` is falsy would let a cleared Trim Window resurrect itself on next open.
 - Re-Preparing a Trace must delete the stale Project file, not just the stale `.duckdb` - otherwise `downsampling_algorithms` keyed by the old (positional, reassigned-on-every-Prepare) `signal_id`s would silently apply to the wrong signals in the freshly rebuilt store.
 - `displayed_signal_ids` restored from a Project file may reference a `signal_id` that no longer decodes in the current Signal Catalog (e.g. the trace was re-Prepared with a different ARXML under the same path) - the frontend must skip unknown ids when restoring, not crash on a catalog lookup miss.
 - A debounced autosave write landing in the narrow window right after `prepare_trace` deletes the Project file but before the sidecar finishes rebuilding the `.duckdb` could resurrect a stale file. Accepted as a known, narrow-window limitation for this plan (the user would have to be actively changing chart state at the exact moment they also re-Prepare) rather than engineering a cross-process lock for it - not a task, just documented here so it isn't "discovered" later as an unreported gap.
@@ -35,8 +38,8 @@
 - Create: `crates/project-store/Cargo.toml`, `crates/project-store/src/lib.rs`, `crates/project-store/README.md`.
 - Modify: `crates/Cargo.toml` - add `"project-store"` to `members`.
 - Modify: `app/src-tauri/Cargo.toml` - add `project-store` path dependency.
-- Modify: `app/src-tauri/src/main.rs` - remove `QueryHistoryEntry`/`queries` field from `RecentTraceEntry` and the now-redundant pure helpers; relocate the four Query History commands onto `project-store`; add `get_project`, `set_displayed_signals`, `set_project_trim_window`, `set_signal_downsampling_algorithm`; add `delete_project_file` and call it from `prepare_trace`, `remove_recent_trace`, and `delete_trace_store`.
-- Modify: `app/ui/src/shared/api/trace-source.ts` - add `getProject`, `setDisplayedSignals`, `setProjectTrimWindow`, `setSignalDownsamplingAlgorithm`.
+- Modify: `app/src-tauri/src/main.rs` - remove `QueryHistoryEntry`/`queries` field from `RecentTraceEntry` and the now-redundant pure helpers; relocate the four Query History commands onto `project-store`; add `get_project` and a single combined `save_project` command; add `delete_project_file` and call it from `prepare_trace`, `remove_recent_trace`, and `delete_trace_store`.
+- Modify: `app/ui/src/shared/api/trace-source.ts` - add `getProject`, `saveProject`.
 - Modify: `app/ui/src/shared/api/hooks.ts` - add `useLoadProjectOnOpen`, `useProjectAutosave`.
 - Modify: `app/ui/src/widgets/WorkspaceLayout.tsx` - call both new hooks once per open Trace.
 
@@ -51,7 +54,7 @@
 - Modify: `crates/Cargo.toml`
 
 **Interfaces:**
-- Produces: `ProjectFile { version: u32, traces: Vec<TraceState>, displayed_signal_ids: Vec<i64>, trim_window: Option<TrimWindow>, query_history: Vec<QueryHistoryEntry> }`, `TraceState { path: String, downsampling_algorithms: HashMap<i64, String> }`, `TrimWindow { start_us: i64, end_us: i64 }`, `QueryHistoryEntry { sql: String, target_signal_ids: Vec<i64>, respect_trim: bool, ran_at: i64, match_count: i64 }`, `project_file_path(blf_path: &Path) -> PathBuf`, `read_project(path: &Path, default_trace_path: &str) -> Result<ProjectFile, String>`, `write_project(path: &Path, project: &ProjectFile) -> Result<(), String>`, `push_query`, `remove_query`, `clear_query_history`, `set_displayed_signals`, `set_trim_window`, `set_downsampling_algorithm` (all `(ProjectFile, ...) -> ProjectFile`, pure).
+- Produces: `ProjectFile { version: u32, traces: Vec<TraceState>, displayed_signal_ids: Vec<i64>, trim_window: Option<TrimWindow>, query_history: Vec<QueryHistoryEntry> }`, `TraceState { path: String, downsampling_algorithms: HashMap<i64, String> }`, `TrimWindow { start_us: i64, end_us: i64 }`, `QueryHistoryEntry { sql: String, target_signal_ids: Vec<i64>, respect_trim: bool, ran_at: i64, match_count: i64 }`, `project_file_path(blf_path: &Path) -> PathBuf`, `read_project(path: &Path, default_trace_path: &str) -> Result<ProjectFile, String>`, `write_project(path: &Path, project: &ProjectFile) -> Result<(), String>`, `push_query`, `remove_query`, `clear_query_history`, `set_displayed_signals`, `set_trim_window`, `clear_trim_window`, `set_downsampling_algorithm` (all `(ProjectFile, ...) -> ProjectFile`, pure).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -173,6 +176,11 @@ pub fn set_displayed_signals(mut project: ProjectFile, signal_ids: Vec<i64>) -> 
 
 pub fn set_trim_window(mut project: ProjectFile, start_us: i64, end_us: i64) -> ProjectFile {
     project.trim_window = Some(TrimWindow { start_us, end_us });
+    project
+}
+
+pub fn clear_trim_window(mut project: ProjectFile) -> ProjectFile {
+    project.trim_window = None;
     project
 }
 
@@ -331,6 +339,14 @@ mod tests {
     }
 
     #[test]
+    fn clear_trim_window_unsets_it() {
+        let project = ProjectFile::new_for_trace("/t.blf");
+        let project = set_trim_window(project, 10, 20);
+        let project = clear_trim_window(project);
+        assert!(project.trim_window.is_none());
+    }
+
+    #[test]
     fn set_downsampling_algorithm_inserts_into_the_first_trace() {
         let project = ProjectFile::new_for_trace("/t.blf");
         let project = set_downsampling_algorithm(project, 42, "min_max".to_string());
@@ -394,7 +410,7 @@ cargo clippy --manifest-path crates/Cargo.toml -p project-store
 | `read_project` | Loads the file, or a fresh default `ProjectFile` if none exists yet |
 | `write_project` | Serializes and writes the whole file |
 | `push_query` / `remove_query` / `clear_query_history` | Query History mutations (25-entry cap, SQL-dedup) |
-| `set_displayed_signals` / `set_trim_window` / `set_downsampling_algorithm` | The other persisted fields |
+| `set_displayed_signals` / `set_trim_window` / `clear_trim_window` / `set_downsampling_algorithm` | The other persisted fields |
 
 `app/src-tauri` is the only caller - it loads the Project right after
 `trace_store::open()` succeeds and calls these pure functions before writing
@@ -406,7 +422,7 @@ plain string (`"min_max"` / `"lttb"`); this crate does not depend on
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test --manifest-path crates/Cargo.toml -p project-store`
-Expected: PASS (12 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 5: Format, lint, commit**
 
@@ -426,8 +442,8 @@ git commit -m "feat(project-store): add Project file schema and pure read/write 
 - Modify: `app/src-tauri/src/main.rs` (struct `RecentTraceEntry` ~525-539, `upsert_recent` ~560-591, `push_query`/`remove_query_entry`/`clear_queries` ~601-643, Query History commands ~769-816, `prepare_trace` ~108-134, `remove_recent_trace` ~762-767, `delete_trace_store` ~498-501, `generate_handler!` list ~882-898)
 
 **Interfaces:**
-- Consumes: `project_store::{ProjectFile, QueryHistoryEntry, project_file_path, read_project, write_project, push_query, remove_query, clear_query_history, set_displayed_signals, set_trim_window, set_downsampling_algorithm}` (Task 1).
-- Produces: unchanged `list_query_history`/`record_query`/`remove_query`/`clear_query_history` command signatures (now backed by the Project file); new `get_project`, `set_displayed_signals`, `set_project_trim_window`, `set_signal_downsampling_algorithm` commands; `delete_project_file` helper called from `prepare_trace`, `remove_recent_trace`, `delete_trace_store`.
+- Consumes: `project_store::{ProjectFile, QueryHistoryEntry, project_file_path, read_project, write_project, push_query, remove_query, clear_query_history, set_displayed_signals, set_trim_window, clear_trim_window, set_downsampling_algorithm}` (Task 1).
+- Produces: unchanged `list_query_history`/`record_query`/`remove_query`/`clear_query_history` command signatures (now backed by the Project file); new `get_project` and `save_project` commands; `delete_project_file` helper called from `prepare_trace`, `remove_recent_trace`, `delete_trace_store`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -445,13 +461,19 @@ fn get_project_returns_defaults_for_a_brand_new_trace() {
 }
 
 #[test]
-fn set_and_get_project_round_trips_displayed_signals_and_trim_window() {
+fn save_project_round_trips_displayed_signals_trim_window_and_algorithms() {
     let dir = std::env::temp_dir();
     let blf_path = dir.join(format!("project_test_roundtrip_{}.blf", std::process::id()));
     let blf_path = blf_path.to_string_lossy().to_string();
-    set_displayed_signals(blf_path.clone(), vec![1, 2]).unwrap();
-    set_project_trim_window(blf_path.clone(), 100, 200).unwrap();
-    set_signal_downsampling_algorithm(blf_path.clone(), 1, "lttb".to_string()).unwrap();
+    let mut algorithms = std::collections::HashMap::new();
+    algorithms.insert(1i64, "lttb".to_string());
+    save_project(
+        blf_path.clone(),
+        vec![1, 2],
+        Some(project_store::TrimWindow { start_us: 100, end_us: 200 }),
+        algorithms,
+    )
+    .unwrap();
     let project = get_project(blf_path.clone()).unwrap();
     assert_eq!(project.displayed_signal_ids, vec![1, 2]);
     assert_eq!(
@@ -462,6 +484,24 @@ fn set_and_get_project_round_trips_displayed_signals_and_trim_window() {
         project.traces[0].downsampling_algorithms.get(&1),
         Some(&"lttb".to_string())
     );
+    let _ = std::fs::remove_file(project_store::project_file_path(std::path::Path::new(&blf_path)));
+}
+
+#[test]
+fn save_project_with_none_trim_window_clears_a_previously_set_one() {
+    let dir = std::env::temp_dir();
+    let blf_path = dir.join(format!("project_test_clear_trim_{}.blf", std::process::id()));
+    let blf_path = blf_path.to_string_lossy().to_string();
+    save_project(
+        blf_path.clone(),
+        vec![],
+        Some(project_store::TrimWindow { start_us: 1, end_us: 2 }),
+        std::collections::HashMap::new(),
+    )
+    .unwrap();
+    save_project(blf_path.clone(), vec![], None, std::collections::HashMap::new()).unwrap();
+    let project = get_project(blf_path.clone()).unwrap();
+    assert!(project.trim_window.is_none());
     let _ = std::fs::remove_file(project_store::project_file_path(std::path::Path::new(&blf_path)));
 }
 
@@ -491,7 +531,7 @@ fn delete_project_file_removes_an_existing_file() {
     let dir = std::env::temp_dir();
     let blf_path = dir.join(format!("project_test_delete_existing_{}.blf", std::process::id()));
     let blf_path_str = blf_path.to_string_lossy().to_string();
-    set_displayed_signals(blf_path_str.clone(), vec![1]).unwrap();
+    save_project(blf_path_str.clone(), vec![1], None, std::collections::HashMap::new()).unwrap();
     let path = project_store::project_file_path(&blf_path);
     assert!(path.exists());
     delete_project_file(&blf_path_str).unwrap();
@@ -501,7 +541,7 @@ fn delete_project_file_removes_an_existing_file() {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test --manifest-path app/src-tauri/Cargo.toml get_project set_displayed_signals set_project_trim_window set_signal_downsampling_algorithm query_history_commands delete_project_file`
+Run: `cargo test --manifest-path app/src-tauri/Cargo.toml get_project save_project query_history_commands delete_project_file`
 Expected: FAIL to compile - none of these functions exist yet with these signatures.
 
 - [ ] **Step 3: Write the implementation**
@@ -547,32 +587,30 @@ fn get_project(blf_path: String) -> Result<project_store::ProjectFile, String> {
     project_store::read_project(&path, &blf_path)
 }
 
+/// Single autosave entry point - one `read_project`/`write_project` cycle
+/// for all three mutable fields together. The frontend's debounced autosave
+/// (Task 5) calls this instead of three separate commands so concurrent
+/// fire-and-forget writes can't race and clobber each other's read.
+/// `trim_window: None` explicitly clears a previously-set Trim Window
+/// (`resetTrimRange()` on the frontend) rather than leaving it untouched.
 #[tauri::command]
-fn set_displayed_signals(blf_path: String, signal_ids: Vec<i64>) -> Result<(), String> {
-    let path = project_path_for(&blf_path);
-    let project = project_store::read_project(&path, &blf_path)?;
-    project_store::write_project(&path, &project_store::set_displayed_signals(project, signal_ids))
-}
-
-#[tauri::command]
-fn set_project_trim_window(blf_path: String, start_us: i64, end_us: i64) -> Result<(), String> {
-    let path = project_path_for(&blf_path);
-    let project = project_store::read_project(&path, &blf_path)?;
-    project_store::write_project(&path, &project_store::set_trim_window(project, start_us, end_us))
-}
-
-#[tauri::command]
-fn set_signal_downsampling_algorithm(
+fn save_project(
     blf_path: String,
-    signal_id: i64,
-    algorithm: String,
+    displayed_signal_ids: Vec<i64>,
+    trim_window: Option<project_store::TrimWindow>,
+    downsampling_algorithms: std::collections::HashMap<i64, String>,
 ) -> Result<(), String> {
     let path = project_path_for(&blf_path);
-    let project = project_store::read_project(&path, &blf_path)?;
-    project_store::write_project(
-        &path,
-        &project_store::set_downsampling_algorithm(project, signal_id, algorithm),
-    )
+    let mut project = project_store::read_project(&path, &blf_path)?;
+    project = project_store::set_displayed_signals(project, displayed_signal_ids);
+    project = match trim_window {
+        Some(tw) => project_store::set_trim_window(project, tw.start_us, tw.end_us),
+        None => project_store::clear_trim_window(project),
+    };
+    for (signal_id, algorithm) in downsampling_algorithms {
+        project = project_store::set_downsampling_algorithm(project, signal_id, algorithm);
+    }
+    project_store::write_project(&path, &project)
 }
 
 #[tauri::command]
@@ -666,7 +704,7 @@ fn remove_recent_trace(app: tauri::AppHandle, blf_path: String) -> Result<(), St
 }
 ```
 
-Add `get_project, set_displayed_signals, set_project_trim_window, set_signal_downsampling_algorithm` to the `tauri::generate_handler![...]` list (the four Query History commands are already registered there - leave those four lines as-is).
+Add `get_project, save_project` to the `tauri::generate_handler![...]` list (the four Query History commands are already registered there - leave those four lines as-is).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -691,7 +729,7 @@ git commit -m "feat(app): back Query History with the Project file, add Displaye
 
 **Interfaces:**
 - Consumes: Tauri commands from Task 2.
-- Produces: `export interface ProjectFile { version: number; traces: { path: string; downsamplingAlgorithms: Record<number, string> }[]; displayedSignalIds: number[]; trimWindow: { startUs: number; endUs: number } | null; queryHistory: QueryHistoryEntry[]; }`, `TraceDataSource.getProject(blfPath)`, `.setDisplayedSignals(blfPath, signalIds)`, `.setProjectTrimWindow(blfPath, startUs, endUs)`, `.setSignalDownsamplingAlgorithm(blfPath, signalId, algorithm)`.
+- Produces: `export interface ProjectFile { version: number; traces: { path: string; downsamplingAlgorithms: Record<number, string> }[]; displayedSignalIds: number[]; trimWindow: { startUs: number; endUs: number } | null; queryHistory: QueryHistoryEntry[]; }`, `TraceDataSource.getProject(blfPath)`, `.saveProject(blfPath, signalIds, trimWindow, downsamplingAlgorithms)`.
 
 No new test file - same reasoning as Plan 1 Task 6 (pure `invoke` plumbing, no branching logic); exercised by Task 4/5's manual verification.
 
@@ -713,30 +751,35 @@ Add to `TraceDataSource` (near `listQueryHistory`):
 
 ```ts
   getProject(blfPath: string): Promise<ProjectFile>;
-  setDisplayedSignals(blfPath: string, signalIds: number[]): Promise<void>;
-  setProjectTrimWindow(blfPath: string, startUs: number, endUs: number): Promise<void>;
-  setSignalDownsamplingAlgorithm(blfPath: string, signalId: number, algorithm: string): Promise<void>;
+  saveProject(
+    blfPath: string,
+    signalIds: number[],
+    trimWindow: { startUs: number; endUs: number } | null,
+    downsamplingAlgorithms: Record<number, string>
+  ): Promise<void>;
 ```
 
 - [ ] **Step 2: Implement on `TauriTraceDataSource`**
 
-Add near `listQueryHistory`'s implementation:
+Add near `listQueryHistory`'s implementation. A single command call so the backend does one `read_project`/`write_project` cycle per autosave tick, not three concurrent ones:
 
 ```ts
   getProject(blfPath: string): Promise<ProjectFile> {
     return invoke<ProjectFile>("get_project", { blfPath });
   }
 
-  setDisplayedSignals(blfPath: string, signalIds: number[]): Promise<void> {
-    return invoke<void>("set_displayed_signals", { blfPath, signalIds });
-  }
-
-  setProjectTrimWindow(blfPath: string, startUs: number, endUs: number): Promise<void> {
-    return invoke<void>("set_project_trim_window", { blfPath, startUs, endUs });
-  }
-
-  setSignalDownsamplingAlgorithm(blfPath: string, signalId: number, algorithm: string): Promise<void> {
-    return invoke<void>("set_signal_downsampling_algorithm", { blfPath, signalId, algorithm });
+  saveProject(
+    blfPath: string,
+    signalIds: number[],
+    trimWindow: { startUs: number; endUs: number } | null,
+    downsamplingAlgorithms: Record<number, string>
+  ): Promise<void> {
+    return invoke<void>("save_project", {
+      blfPath,
+      displayedSignalIds: signalIds,
+      trimWindow,
+      downsamplingAlgorithms,
+    });
   }
 ```
 
@@ -753,7 +796,7 @@ export function useProject(blfPath: string) {
 }
 ```
 
-(The write-side mutations are called directly, not via `useMutation`, from the autosave effect in Task 5 - see that task for why.)
+(`saveProject` is called directly, not via `useMutation`, from the autosave effect in Task 5 - see that task for why.)
 
 - [ ] **Step 4: Typecheck**
 
@@ -789,8 +832,20 @@ Inside the `WorkspaceLayout` function body, near its other hook calls:
   const seededRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!project.data || !catalog.data) return;
     if (seededRef.current === blfPath) return; // already seeded for this Trace
+
+    if (project.isError) {
+      // Fatal Project-file read error (corrupt/truncated JSON). The global
+      // QueryCache error handler (app/ui/src/app/query-client.ts) already
+      // toasts this in the existing bottom-right stack - nothing more to
+      // show here. Reset to defaults by just not restoring anything, and
+      // mark seeded so the autosave effect (Task 5) takes over and
+      // overwrites the broken file with valid JSON on the next change.
+      seededRef.current = blfPath;
+      return;
+    }
+
+    if (!project.data || !catalog.data) return;
     seededRef.current = blfPath;
 
     const knownIds = new Set(catalog.data.map((c) => c.signalId));
@@ -813,7 +868,7 @@ Inside the `WorkspaceLayout` function body, near its other hook calls:
         }
       }
     }
-  }, [project.data, catalog.data, blfPath]);
+  }, [project.data, project.isError, catalog.data, blfPath]);
 ```
 
 Add `useEffect, useRef` to the existing React import if not already present, and `useProject` to the existing `@/shared/api/hooks` import.
@@ -838,7 +893,7 @@ git commit -m "feat(ui): restore Displayed Signals, Trim Window, and algorithm c
 - Modify: `app/ui/src/widgets/WorkspaceLayout.tsx`
 
 **Interfaces:**
-- Consumes: `createDebouncer` (Plan 1 Task 7), `WorkspaceState.activeSignalIds`, `.appliedTrimRange`, `.signalDownsamplingAlgorithms`, `TauriTraceDataSource.setDisplayedSignals`/`.setProjectTrimWindow`/`.setSignalDownsamplingAlgorithm` (Task 3).
+- Consumes: `createDebouncer` (Plan 1 Task 7), `WorkspaceState.activeSignalIds`, `.appliedTrimRange`, `.signalDownsamplingAlgorithms`, `TauriTraceDataSource.saveProject` (Task 3).
 
 No new test file - same reasoning as Task 4. Verified manually in Task 6.
 
@@ -851,14 +906,20 @@ Add, after the seeding effect from Task 4:
   const appliedTrimRange = useWorkspaceStore((s) => s.appliedTrimRange);
   const signalDownsamplingAlgorithms = useWorkspaceStore((s) => s.signalDownsamplingAlgorithms);
   const saveDebouncerRef = useRef(
-    createDebouncer(1000, (path: string, signalIds: number[], trim: TrimRange | null, algos: Record<number, "min_max" | "lttb">) => {
-      const source = getTraceDataSource();
-      void source.setDisplayedSignals(path, signalIds);
-      if (trim) void source.setProjectTrimWindow(path, trim.start, trim.end);
-      for (const [signalIdStr, algorithm] of Object.entries(algos)) {
-        void source.setSignalDownsamplingAlgorithm(path, Number(signalIdStr), algorithm);
+    createDebouncer(
+      1000,
+      (path: string, signalIds: number[], trim: TrimRange | null, algos: Record<number, "min_max" | "lttb">) => {
+        // One call, one backend read-modify-write cycle - firing three
+        // separate fire-and-forget commands here would race each other's
+        // read and lose whichever write landed on the stalest state.
+        void getTraceDataSource().saveProject(
+          path,
+          signalIds,
+          trim ? { startUs: trim.start, endUs: trim.end } : null,
+          algos
+        );
       }
-    })
+    )
   );
 
   useEffect(() => {
@@ -912,7 +973,7 @@ With the same Trace open and state restored, re-run Prepare on it (e.g. via what
 
 - [ ] **Step 4: Verify graceful handling of a corrupt Project file**
 
-With the app closed, manually edit `<stem>.fastrace-project.json` to contain invalid JSON (e.g. `{broken`). Reopen that Trace. Confirm the app does not hang or show a blank error screen - it should still open the Trace (falling back to default Project state, per Review Focus), and report the corrupt-file error somewhere visible (console/activity log) rather than silently losing it.
+With the app closed, manually edit `<stem>.fastrace-project.json` to contain invalid JSON (e.g. `{broken`). Reopen that Trace. Confirm the app does not hang or show a blank error screen - it should still open the Trace with default state (no Displayed Signals, no Trim Window), and a toast error appears in the existing bottom-right stack (same mechanism as any other failed query) rather than the error being silently lost. Then make any change (e.g. toggle a Displayed Signal) and confirm, after the debounce, that `<stem>.fastrace-project.json` now contains valid JSON again - the autosave healed the broken file.
 
 - [ ] **Step 5: Confirm Query History's existing UI still works unchanged**
 
