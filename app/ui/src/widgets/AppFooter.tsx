@@ -1,8 +1,7 @@
-import { useState } from "react";
 import { Bug, Database, File, type LucideIcon } from "lucide-react";
 import { useWorkspaceStore } from "@/app/store";
 import { useFileSizes, useIoBusy, useProject } from "@/shared/api/hooks";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/shared/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { cn, formatBytes, formatPathShort } from "@/shared/ui/lib/utils";
 import ActivityLog from "./ActivityLog";
 
@@ -59,30 +58,22 @@ export default function AppFooter({ blfPath, preparing, prepareTotals }: AppFoot
   const diagnosticsOpen = useWorkspaceStore((s) => s.diagnosticsOpen);
   const toggleDiagnostics = useWorkspaceStore((s) => s.toggleDiagnostics);
   const project = useProject(blfPath);
-  const [traceContextOpen, setTraceContextOpen] = useState(false);
   const fileName = blfPath.split(/[\\/]/).pop() ?? blfPath;
   const arxmlPath = project.data?.traces[0]?.arxmlPath ?? null;
 
   return (
     <div className="flex h-[26px] shrink-0 items-center gap-4 bg-foreground px-3 text-[10px] text-background">
-      <button
-        type="button"
-        onClick={() => setTraceContextOpen(true)}
-        title={blfPath}
-        className="max-w-[40%] truncate font-medium hover:underline"
-      >
-        {fileName}
-      </button>
-      <Dialog open={traceContextOpen} onOpenChange={setTraceContextOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Trace context</DialogTitle>
-          </DialogHeader>
+      <Popover>
+        <PopoverTrigger className="max-w-[40%] truncate text-left font-medium text-background hover:text-background/80">
+          {fileName}
+        </PopoverTrigger>
+        <PopoverContent side="top" align="start" className="w-96">
+          <p className="mb-2 text-xs font-medium text-foreground">Trace context</p>
           <table className="w-full text-xs">
             <tbody>
               <tr className="border-b border-border">
-                <td className="w-32 px-4 py-2 font-medium text-muted-foreground">BLF file</td>
-                <td className="px-4 py-2">
+                <td className="w-28 py-1.5 pr-2 font-medium text-muted-foreground">BLF file</td>
+                <td className="py-1.5">
                   <FilePathCell path={blfPath} />
                   {fileSizes.data && (
                     <span className="ml-2 text-muted-foreground">({formatBytes(fileSizes.data.blfBytes)})</span>
@@ -90,8 +81,8 @@ export default function AppFooter({ blfPath, preparing, prepareTotals }: AppFoot
                 </td>
               </tr>
               <tr className="border-b border-border">
-                <td className="px-4 py-2 font-medium text-muted-foreground">ARXML file</td>
-                <td className="px-4 py-2">
+                <td className="py-1.5 pr-2 font-medium text-muted-foreground">ARXML file</td>
+                <td className="py-1.5">
                   {arxmlPath ? (
                     <FilePathCell path={arxmlPath} />
                   ) : (
@@ -100,17 +91,17 @@ export default function AppFooter({ blfPath, preparing, prepareTotals }: AppFoot
                 </td>
               </tr>
               <tr className="border-b border-border">
-                <td className="px-4 py-2 font-medium text-muted-foreground">Total messages</td>
-                <td className="px-4 py-2">{prepareTotals ? prepareTotals.messages : "-"}</td>
+                <td className="py-1.5 pr-2 font-medium text-muted-foreground">Total messages</td>
+                <td className="py-1.5">{prepareTotals ? prepareTotals.messages : "-"}</td>
               </tr>
               <tr>
-                <td className="px-4 py-2 font-medium text-muted-foreground">Ingested size</td>
-                <td className="px-4 py-2">{fileSizes.data ? formatBytes(fileSizes.data.duckdbBytes) : "-"}</td>
+                <td className="py-1.5 pr-2 font-medium text-muted-foreground">Ingested size</td>
+                <td className="py-1.5">{fileSizes.data ? formatBytes(fileSizes.data.duckdbBytes) : "-"}</td>
               </tr>
             </tbody>
           </table>
-        </DialogContent>
-      </Dialog>
+        </PopoverContent>
+      </Popover>
       <span className="ml-auto flex items-center gap-3">
         <span className="flex items-center gap-2" aria-label="I/O status">
           <StatusIoLed
