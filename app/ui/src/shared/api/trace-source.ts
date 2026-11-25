@@ -132,6 +132,14 @@ export interface QueryHistoryEntry {
   matchCount: number;
 }
 
+export interface ProjectFile {
+  version: number;
+  traces: { path: string; arxmlPath: string | null; downsamplingAlgorithms: Record<number, string> }[];
+  displayedSignalIds: number[];
+  trimWindow: { startUs: number; endUs: number } | null;
+  queryHistory: QueryHistoryEntry[];
+}
+
 export interface TraceTimeRange {
   minTimestampUs: number;
   maxTimestampUs: number;
@@ -217,6 +225,13 @@ export interface TraceDataSource {
   ): Promise<void>;
   removeQuery(blfPath: string, sql: string): Promise<void>;
   clearQueryHistory(blfPath: string): Promise<void>;
+  getProject(blfPath: string): Promise<ProjectFile>;
+  saveProject(
+    blfPath: string,
+    signalIds: number[],
+    trimWindow: { startUs: number; endUs: number } | null,
+    downsamplingAlgorithms: Record<number, string>
+  ): Promise<void>;
 }
 
 export class TauriTraceDataSource implements TraceDataSource {
@@ -416,6 +431,24 @@ export class TauriTraceDataSource implements TraceDataSource {
 
   clearQueryHistory(blfPath: string): Promise<void> {
     return invoke<void>("clear_query_history", { blfPath });
+  }
+
+  getProject(blfPath: string): Promise<ProjectFile> {
+    return invoke<ProjectFile>("get_project", { blfPath });
+  }
+
+  saveProject(
+    blfPath: string,
+    signalIds: number[],
+    trimWindow: { startUs: number; endUs: number } | null,
+    downsamplingAlgorithms: Record<number, string>
+  ): Promise<void> {
+    return invoke<void>("save_project", {
+      blfPath,
+      displayedSignalIds: signalIds,
+      trimWindow,
+      downsamplingAlgorithms,
+    });
   }
 }
 

@@ -9,7 +9,7 @@ import {
 } from "@tanstack/react-query";
 import { useToastStore } from "@/app/toast-store";
 import { LOD_CONFIG } from "@/app/config";
-import type { DownsamplingAlgorithm } from "./trace-source";
+import type { DownsamplingAlgorithm, ProjectFile } from "./trace-source";
 import { getTraceDataSource } from "./trace-source";
 
 /** Query roots that read local JSON / filesystem, not the Trace Store. */
@@ -351,6 +351,13 @@ export function useQueryHistory(blfPath: string) {
   return useQuery({
     queryKey: QUERY_HISTORY_KEY(blfPath),
     queryFn: () => getTraceDataSource().listQueryHistory(blfPath),
+  });
+}
+
+export function useProject(blfPath: string) {
+  return useQuery({
+    queryKey: ["project", blfPath],
+    queryFn: () => getTraceDataSource().getProject(blfPath),
   });
 }
 

@@ -112,7 +112,13 @@ async fn prepare_trace(
     arxml_path: String,
 ) -> Result<serde_json::Value, String> {
     let bin = begin_prepare(app.state::<PrepareGuard>().inner(), fastrace_parse_bin())?;
+    if let Err(e) = delete_project_file(&blf_path) {
+        app.state::<PrepareGuard>().release();
+        return Err(e);
+    }
     let app_for_task = app.clone();
+    let blf_path_for_save = blf_path.clone();
+    let arxml_path_for_save = arxml_path.clone();
     let joined: Result<serde_json::Value, String> =
         tauri::async_runtime::spawn_blocking(move || {
             let mut ticks = Vec::new();
@@ -130,6 +136,18 @@ async fn prepare_trace(
         .map_err(|e| e.to_string())?;
 
     app.state::<PrepareGuard>().release();
+    // Records the ARXML pairing so the footer's trace-files popup can show
+    // it after reopening a Trace, where the ARXML is never re-picked.
+    // Best-effort: a failure here doesn't invalidate a successful Prepare.
+    if joined.is_ok() {
+        let path = project_path_for(&blf_path_for_save);
+        if let Ok(project) = project_store::read_project(&path, &blf_path_for_save) {
+            let _ = project_store::write_project(
+                &path,
+                &project_store::set_arxml_path(project, arxml_path_for_save),
+            );
+        }
+    }
     joined
 }
 
@@ -522,8 +540,20 @@ fn delete_trace_store_file(blf_path: &str) -> Result<(), String> {
     }
 }
 
+/// Deletes `<stem>.fastrace-project.json` for `blf_path`, if present. Missing
+/// file is not an error - same contract as `delete_trace_store_file`.
+fn delete_project_file(blf_path: &str) -> Result<(), String> {
+    let path = project_store::project_file_path(std::path::Path::new(blf_path));
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[tauri::command]
 fn delete_trace_store(blf_path: String) -> Result<(), String> {
+    delete_project_file(&blf_path)?;
     delete_trace_store_file(&blf_path)
 }
 
@@ -538,17 +568,6 @@ struct ActivityEntry {
     detail: String,
 }
 
-/// One Detector Query remembered against a recent Trace - max 25 per trace.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct QueryHistoryEntry {
-    sql: String,
-    target_signal_ids: Vec<i64>,
-    respect_trim: bool,
-    ran_at: i64,
-    match_count: i64,
-}
-
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct RecentTraceEntry {
     blf_path: String,
@@ -561,8 +580,6 @@ struct RecentTraceEntry {
     elapsed_ms: Option<i64>,
     #[serde(default)]
     activities: Vec<ActivityEntry>,
-    #[serde(default)]
-    queries: Vec<QueryHistoryEntry>,
 }
 
 #[derive(serde::Serialize)]
@@ -577,7 +594,6 @@ struct RecentTraceInfo {
 }
 
 const MAX_RECENT_TRACES: usize = 5;
-const MAX_QUERY_HISTORY: usize = 25;
 
 /// Moves `blf_path` to the front, deduping by path, capped at
 /// `MAX_RECENT_TRACES`. Pure so it's unit-testable without a Tauri app handle.
@@ -604,68 +620,15 @@ fn upsert_recent(
                 .or_else(|| previous.as_ref().and_then(|p| p.protocol_rows)),
             elapsed_ms: elapsed_ms.or_else(|| previous.as_ref().and_then(|p| p.elapsed_ms)),
             // Re-opening a trace rebuilds this entry from scratch (see the
-            // `retain` above) - without carrying the old activity log and
-            // query history forward, every reopen would silently wipe them.
+            // `retain` above) - without carrying the old activity log
+            // forward, every reopen would silently wipe it.
             activities: previous
                 .as_ref()
                 .map(|p| p.activities.clone())
                 .unwrap_or_default(),
-            queries: previous.map(|p| p.queries).unwrap_or_default(),
         },
     );
     list.truncate(MAX_RECENT_TRACES);
-    list
-}
-
-fn normalize_query_sql(sql: &str) -> String {
-    sql.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Inserts `entry` at the front of the matching trace's query history,
-/// deduping by whitespace-normalized SQL (a changed target set replaces the
-/// prior entry), capped at `MAX_QUERY_HISTORY`. Creates a minimal recent
-/// entry when none exists yet.
-fn push_query(
-    mut list: Vec<RecentTraceEntry>,
-    blf_path: &str,
-    entry: QueryHistoryEntry,
-) -> Vec<RecentTraceEntry> {
-    let norm = normalize_query_sql(&entry.sql);
-    match list.iter_mut().find(|e| e.blf_path == blf_path) {
-        Some(e) => {
-            e.queries.retain(|q| normalize_query_sql(&q.sql) != norm);
-            e.queries.insert(0, entry);
-            e.queries.truncate(MAX_QUERY_HISTORY);
-        }
-        None => list.push(RecentTraceEntry {
-            blf_path: blf_path.to_string(),
-            opened_at: entry.ran_at,
-            messages: None,
-            protocol_rows: None,
-            elapsed_ms: None,
-            activities: vec![],
-            queries: vec![entry],
-        }),
-    }
-    list
-}
-
-fn remove_query_entry(
-    mut list: Vec<RecentTraceEntry>,
-    blf_path: &str,
-    sql: &str,
-) -> Vec<RecentTraceEntry> {
-    let norm = normalize_query_sql(sql);
-    if let Some(e) = list.iter_mut().find(|e| e.blf_path == blf_path) {
-        e.queries.retain(|q| normalize_query_sql(&q.sql) != norm);
-    }
-    list
-}
-
-fn clear_queries(mut list: Vec<RecentTraceEntry>, blf_path: &str) -> Vec<RecentTraceEntry> {
-    if let Some(e) = list.iter_mut().find(|e| e.blf_path == blf_path) {
-        e.queries.clear();
-    }
     list
 }
 
@@ -693,7 +656,6 @@ fn push_activity(
             protocol_rows: None,
             elapsed_ms: None,
             activities: vec![entry],
-            queries: vec![],
         }),
     }
     list
@@ -788,58 +750,90 @@ fn list_activities(app: tauri::AppHandle, blf_path: String) -> Result<Vec<Activi
 #[tauri::command]
 fn remove_recent_trace(app: tauri::AppHandle, blf_path: String) -> Result<(), String> {
     delete_trace_store_file(&blf_path)?;
+    delete_project_file(&blf_path)?;
     let path = recent_traces_path(&app)?;
     let list = read_recent_traces(&path)?;
     write_recent_traces(&path, &remove_recent(list, &blf_path))
 }
 
+fn project_path_for(blf_path: &str) -> PathBuf {
+    project_store::project_file_path(std::path::Path::new(blf_path))
+}
+
 #[tauri::command]
-fn list_query_history(
-    app: tauri::AppHandle,
+fn get_project(blf_path: String) -> Result<project_store::ProjectFile, String> {
+    let path = project_path_for(&blf_path);
+    project_store::read_project(&path, &blf_path)
+}
+
+/// Single autosave entry point - one `read_project`/`write_project` cycle
+/// for all three mutable fields together. The frontend's debounced autosave
+/// (Task 5) calls this instead of three separate commands so concurrent
+/// fire-and-forget writes can't race and clobber each other's read.
+/// `trim_window: None` explicitly clears a previously-set Trim Window
+/// (`resetTrimRange()` on the frontend) rather than leaving it untouched.
+/// Residual gap (accepted): this still has no lock against concurrent
+/// record_query/remove_query/clear_query_history read-modify-write cycles on
+/// the same file; in practice the ~1s autosave debounce and near-instant file
+/// ops make an actual race very unlikely.
+#[tauri::command]
+fn save_project(
     blf_path: String,
-) -> Result<Vec<QueryHistoryEntry>, String> {
-    let path = recent_traces_path(&app)?;
-    let list = read_recent_traces(&path)?;
-    Ok(list
-        .into_iter()
-        .find(|e| e.blf_path == blf_path)
-        .map(|e| e.queries)
-        .unwrap_or_default())
+    displayed_signal_ids: Vec<i64>,
+    trim_window: Option<project_store::TrimWindow>,
+    downsampling_algorithms: std::collections::HashMap<i64, String>,
+) -> Result<(), String> {
+    let path = project_path_for(&blf_path);
+    let mut project = project_store::read_project(&path, &blf_path)?;
+    project = project_store::set_displayed_signals(project, displayed_signal_ids);
+    project = match trim_window {
+        Some(tw) => project_store::set_trim_window(project, tw.start_us, tw.end_us),
+        None => project_store::clear_trim_window(project),
+    };
+    for (signal_id, algorithm) in downsampling_algorithms {
+        project = project_store::set_downsampling_algorithm(project, signal_id, algorithm);
+    }
+    project_store::write_project(&path, &project)
+}
+
+#[tauri::command]
+fn list_query_history(blf_path: String) -> Result<Vec<project_store::QueryHistoryEntry>, String> {
+    let path = project_path_for(&blf_path);
+    Ok(project_store::read_project(&path, &blf_path)?.query_history)
 }
 
 #[tauri::command]
 fn record_query(
-    app: tauri::AppHandle,
     blf_path: String,
     sql: String,
     target_signal_ids: Vec<i64>,
     respect_trim: bool,
     match_count: i64,
 ) -> Result<(), String> {
-    let path = recent_traces_path(&app)?;
-    let list = read_recent_traces(&path)?;
-    let entry = QueryHistoryEntry {
+    let path = project_path_for(&blf_path);
+    let project = project_store::read_project(&path, &blf_path)?;
+    let entry = project_store::QueryHistoryEntry {
         sql,
         target_signal_ids,
         respect_trim,
         ran_at: now_ms(),
         match_count,
     };
-    write_recent_traces(&path, &push_query(list, &blf_path, entry))
+    project_store::write_project(&path, &project_store::push_query(project, entry))
 }
 
 #[tauri::command]
-fn remove_query(app: tauri::AppHandle, blf_path: String, sql: String) -> Result<(), String> {
-    let path = recent_traces_path(&app)?;
-    let list = read_recent_traces(&path)?;
-    write_recent_traces(&path, &remove_query_entry(list, &blf_path, &sql))
+fn remove_query(blf_path: String, sql: String) -> Result<(), String> {
+    let path = project_path_for(&blf_path);
+    let project = project_store::read_project(&path, &blf_path)?;
+    project_store::write_project(&path, &project_store::remove_query(project, &sql))
 }
 
 #[tauri::command]
-fn clear_query_history(app: tauri::AppHandle, blf_path: String) -> Result<(), String> {
-    let path = recent_traces_path(&app)?;
-    let list = read_recent_traces(&path)?;
-    write_recent_traces(&path, &clear_queries(list, &blf_path))
+fn clear_query_history(blf_path: String) -> Result<(), String> {
+    let path = project_path_for(&blf_path);
+    let project = project_store::read_project(&path, &blf_path)?;
+    project_store::write_project(&path, &project_store::clear_query_history(project))
 }
 
 #[tauri::command]
@@ -929,7 +923,9 @@ fn main() {
             list_query_history,
             record_query,
             remove_query,
-            clear_query_history
+            clear_query_history,
+            get_project,
+            save_project
         ])
         .run(tauri::generate_context!())
         .expect("error while running fastrace");
@@ -1172,7 +1168,6 @@ mod tests {
                 protocol_rows: None,
                 elapsed_ms: None,
                 activities: vec![],
-                queries: vec![],
             },
             RecentTraceEntry {
                 blf_path: "b.blf".into(),
@@ -1181,7 +1176,6 @@ mod tests {
                 protocol_rows: None,
                 elapsed_ms: None,
                 activities: vec![],
-                queries: vec![],
             },
         ];
         let result = upsert_recent(list, "a.blf", 99, None, None, None);
@@ -1200,7 +1194,6 @@ mod tests {
             protocol_rows: Some(5),
             elapsed_ms: Some(2500),
             activities: vec![],
-            queries: vec![],
         }];
         let result = upsert_recent(list, "a.blf", 99, None, None, None);
         assert_eq!(result[0].messages, Some(1000));
@@ -1222,84 +1215,12 @@ mod tests {
                 elapsed_ms: 2500,
                 detail: "1000 messages".into(),
             }],
-            queries: vec![QueryHistoryEntry {
-                sql: "select msg_id, timestamp_us from messages".into(),
-                target_signal_ids: vec![1],
-                respect_trim: true,
-                ran_at: 1,
-                match_count: 3,
-            }],
         }];
         let result = upsert_recent(list, "a.blf", 99, None, None, None);
         assert_eq!(
             result[0].activities.len(),
             1,
             "reopening must not wipe the activity log"
-        );
-        assert_eq!(
-            result[0].queries.len(),
-            1,
-            "reopening must not wipe the query history"
-        );
-    }
-
-    #[test]
-    fn push_query_dedupes_by_normalized_sql_and_caps() {
-        let list = vec![RecentTraceEntry {
-            blf_path: "a.blf".into(),
-            opened_at: 1,
-            messages: None,
-            protocol_rows: None,
-            elapsed_ms: None,
-            activities: vec![],
-            queries: vec![],
-        }];
-        let mut list = push_query(
-            list,
-            "a.blf",
-            QueryHistoryEntry {
-                sql: "select  msg_id,  timestamp_us from messages".into(),
-                target_signal_ids: vec![1],
-                respect_trim: true,
-                ran_at: 1,
-                match_count: 1,
-            },
-        );
-        list = push_query(
-            list,
-            "a.blf",
-            QueryHistoryEntry {
-                sql: "select msg_id, timestamp_us from messages".into(),
-                target_signal_ids: vec![2],
-                respect_trim: false,
-                ran_at: 2,
-                match_count: 5,
-            },
-        );
-        assert_eq!(
-            list[0].queries.len(),
-            1,
-            "whitespace-normalized SQL dedupes"
-        );
-        assert_eq!(list[0].queries[0].target_signal_ids, vec![2]);
-        assert!(!list[0].queries[0].respect_trim);
-        for i in 0..MAX_QUERY_HISTORY + 5 {
-            list = push_query(
-                list,
-                "a.blf",
-                QueryHistoryEntry {
-                    sql: format!("select {i}"),
-                    target_signal_ids: vec![],
-                    respect_trim: true,
-                    ran_at: i as i64,
-                    match_count: 0,
-                },
-            );
-        }
-        assert_eq!(list[0].queries.len(), MAX_QUERY_HISTORY);
-        assert_eq!(
-            list[0].queries[0].sql,
-            format!("select {}", MAX_QUERY_HISTORY + 4)
         );
     }
 
@@ -1312,7 +1233,6 @@ mod tests {
             protocol_rows: Some(5),
             elapsed_ms: Some(2500),
             activities: vec![],
-            queries: vec![],
         }];
         let result = push_activity(
             list,
@@ -1367,7 +1287,6 @@ mod tests {
                 protocol_rows: None,
                 elapsed_ms: None,
                 activities: vec![],
-                queries: vec![],
             },
             RecentTraceEntry {
                 blf_path: "b.blf".into(),
@@ -1376,7 +1295,6 @@ mod tests {
                 protocol_rows: None,
                 elapsed_ms: None,
                 activities: vec![],
-                queries: vec![],
             },
         ];
         let result = remove_recent(list, "a.blf");
@@ -1426,5 +1344,149 @@ mod tests {
         drop(conn);
         assert!(check_existing_store(blf_path.to_string_lossy().to_string()));
         let _ = std::fs::remove_file(&duckdb_path);
+    }
+
+    #[test]
+    fn get_project_returns_defaults_for_a_brand_new_trace() {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!("project_test_fresh_{}.blf", std::process::id()));
+        let blf_path = blf_path.to_string_lossy().to_string();
+        let project = get_project(blf_path).unwrap();
+        assert_eq!(project.displayed_signal_ids, Vec::<i64>::new());
+        assert!(project.trim_window.is_none());
+    }
+
+    #[test]
+    fn save_project_round_trips_displayed_signals_trim_window_and_algorithms() {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!("project_test_roundtrip_{}.blf", std::process::id()));
+        let blf_path = blf_path.to_string_lossy().to_string();
+        let mut algorithms = std::collections::HashMap::new();
+        algorithms.insert(1i64, "lttb".to_string());
+        save_project(
+            blf_path.clone(),
+            vec![1, 2],
+            Some(project_store::TrimWindow {
+                start_us: 100,
+                end_us: 200,
+            }),
+            algorithms,
+        )
+        .unwrap();
+        let project = get_project(blf_path.clone()).unwrap();
+        assert_eq!(project.displayed_signal_ids, vec![1, 2]);
+        assert_eq!(
+            project.trim_window,
+            Some(project_store::TrimWindow {
+                start_us: 100,
+                end_us: 200
+            })
+        );
+        assert_eq!(
+            project.traces[0].downsampling_algorithms.get(&1),
+            Some(&"lttb".to_string())
+        );
+        let _ = std::fs::remove_file(project_store::project_file_path(std::path::Path::new(
+            &blf_path,
+        )));
+    }
+
+    #[test]
+    fn save_project_with_none_trim_window_clears_a_previously_set_one() {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!(
+            "project_test_clear_trim_{}.blf",
+            std::process::id()
+        ));
+        let blf_path = blf_path.to_string_lossy().to_string();
+        save_project(
+            blf_path.clone(),
+            vec![],
+            Some(project_store::TrimWindow {
+                start_us: 1,
+                end_us: 2,
+            }),
+            std::collections::HashMap::new(),
+        )
+        .unwrap();
+        save_project(
+            blf_path.clone(),
+            vec![],
+            None,
+            std::collections::HashMap::new(),
+        )
+        .unwrap();
+        let project = get_project(blf_path.clone()).unwrap();
+        assert!(project.trim_window.is_none());
+        let _ = std::fs::remove_file(project_store::project_file_path(std::path::Path::new(
+            &blf_path,
+        )));
+    }
+
+    #[test]
+    fn query_history_commands_persist_to_the_project_file_not_recent_traces() {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!("project_test_queries_{}.blf", std::process::id()));
+        let blf_path = blf_path.to_string_lossy().to_string();
+        record_query(blf_path.clone(), "select 1".to_string(), vec![], true, 3).unwrap();
+        let history = list_query_history(blf_path.clone()).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].match_count, 3);
+        remove_query(blf_path.clone(), "select 1".to_string()).unwrap();
+        assert!(list_query_history(blf_path.clone()).unwrap().is_empty());
+        let _ = std::fs::remove_file(project_store::project_file_path(std::path::Path::new(
+            &blf_path,
+        )));
+    }
+
+    #[test]
+    fn delete_project_file_is_not_an_error_when_file_is_absent() {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!(
+            "project_test_delete_missing_{}.blf",
+            std::process::id()
+        ));
+        assert!(delete_project_file(&blf_path.to_string_lossy()).is_ok());
+    }
+
+    #[test]
+    fn delete_project_file_removes_an_existing_file() {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!(
+            "project_test_delete_existing_{}.blf",
+            std::process::id()
+        ));
+        let blf_path_str = blf_path.to_string_lossy().to_string();
+        save_project(
+            blf_path_str.clone(),
+            vec![1],
+            None,
+            std::collections::HashMap::new(),
+        )
+        .unwrap();
+        let path = project_store::project_file_path(&blf_path);
+        assert!(path.exists());
+        delete_project_file(&blf_path_str).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn arxml_path_persist_sequence_is_visible_via_get_project() {
+        // Exercises the same read/set/write sequence `prepare_trace` runs on
+        // a successful Prepare - can't call `prepare_trace` itself here, it
+        // shells out to the real sidecar binary.
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!("project_test_arxml_{}.blf", std::process::id()));
+        let blf_path_str = blf_path.to_string_lossy().to_string();
+        let path = project_path_for(&blf_path_str);
+        let project = project_store::read_project(&path, &blf_path_str).unwrap();
+        project_store::write_project(
+            &path,
+            &project_store::set_arxml_path(project, "/t.arxml".to_string()),
+        )
+        .unwrap();
+        let project = get_project(blf_path_str).unwrap();
+        assert_eq!(project.traces[0].arxml_path, Some("/t.arxml".to_string()));
+        let _ = std::fs::remove_file(&path);
     }
 }

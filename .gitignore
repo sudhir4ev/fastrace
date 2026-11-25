@@ -45,3 +45,5 @@ app/src-tauri/gen/
 # app/ui (Vite/npm)
 app/ui/node_modules/
 app/ui/dist/
+# superpowers SDD workspace (scratch, per-plan)
+.superpowers/

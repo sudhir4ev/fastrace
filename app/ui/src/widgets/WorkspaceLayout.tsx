@@ -1,12 +1,15 @@
-import { Activity, Bug, Database, File, List, type LucideIcon } from "lucide-react";
-import { useWorkspaceStore, type WorkspaceTab } from "@/app/store";
-import { useApplyTrim, useFileSizes, useIoBusy } from "@/shared/api/hooks";
+import { useEffect, useRef } from "react";
+import { Activity, List } from "lucide-react";
+import { useWorkspaceStore, type TrimRange, type WorkspaceTab } from "@/app/store";
+import { useApplyTrim, useProject, useSignalCatalog } from "@/shared/api/hooks";
+import { getTraceDataSource } from "@/shared/api/trace-source";
 import { Button } from "@/shared/ui/button";
-import { cn, formatBytes } from "@/shared/ui/lib/utils";
+import { cn } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 import { Skeleton } from "@/shared/ui/skeleton";
-import ActivityLog from "./ActivityLog";
 import AnalyzerPanel from "./AnalyzerPanel";
+import AppFooter from "./AppFooter";
+import { createDebouncer } from "./debounce";
 import DiagnosticsPanel from "./DiagnosticsPanel";
 import MessageDetails from "./MessageDetails";
 import MessageGroupSelect from "./MessageGroupSelect";
@@ -35,88 +38,6 @@ function PanelSkeleton() {
       <Skeleton className="h-4 w-full" />
       <Skeleton className="h-4 w-5/6" />
       <Skeleton className="h-4 w-1/2" />
-    </div>
-  );
-}
-
-function StatusIoLed({
-  label,
-  Icon,
-  active,
-  title,
-}: {
-  label: string;
-  Icon: LucideIcon;
-  active: boolean;
-  title: string;
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center",
-        active ? "text-emerald-300 status-led-active" : "text-background/35"
-      )}
-      title={title}
-      aria-label={`${label}: ${active ? "busy" : "idle"}`}
-      role="status"
-    >
-      <Icon className="h-3 w-3" aria-hidden />
-    </span>
-  );
-}
-
-function StatusBar({
-  blfPath,
-  preparing,
-  prepareTotals,
-}: {
-  blfPath: string;
-  preparing: boolean;
-  prepareTotals: { messages: number; protocol_rows: number; elapsed_ms: number } | null;
-}) {
-  const fileSizes = useFileSizes(blfPath);
-  const { blfBusy, duckdbBusy } = useIoBusy(blfPath, preparing);
-  const diagnosticsOpen = useWorkspaceStore((s) => s.diagnosticsOpen);
-  const toggleDiagnostics = useWorkspaceStore((s) => s.toggleDiagnostics);
-  const fileName = blfPath.split(/[\\/]/).pop() ?? blfPath;
-  return (
-    <div className="flex h-[26px] shrink-0 items-center gap-4 bg-foreground px-3 text-[10px] text-background">
-      <span className="max-w-[40%] truncate font-medium" title={blfPath}>
-        {fileName}
-      </span>
-      <span>Total messages: {prepareTotals ? prepareTotals.messages : "-"}</span>
-      <span>BLF size: {fileSizes.data ? formatBytes(fileSizes.data.blfBytes) : "-"}</span>
-      <span>Ingested size: {fileSizes.data ? formatBytes(fileSizes.data.duckdbBytes) : "-"}</span>
-      <span className="ml-auto flex items-center gap-3">
-        <span className="flex items-center gap-2" aria-label="I/O status">
-          <StatusIoLed
-            label="BLF"
-            Icon={File}
-            active={blfBusy}
-            title={blfBusy ? "BLF read in progress" : "BLF idle"}
-          />
-          <StatusIoLed
-            label="DuckDB"
-            Icon={Database}
-            active={duckdbBusy}
-            title={duckdbBusy ? "DuckDB busy" : "DuckDB idle"}
-          />
-        </span>
-        <ActivityLog blfPath={blfPath} />
-        <button
-          type="button"
-          onClick={toggleDiagnostics}
-          aria-pressed={diagnosticsOpen}
-          aria-label="Toggle LOD diagnostics panel"
-          title="LOD diagnostics"
-          className={cn(
-            "inline-flex items-center rounded-sm p-0.5 hover:bg-background/20",
-            diagnosticsOpen ? "text-emerald-300" : "text-background/60"
-          )}
-        >
-          <Bug className="h-3 w-3" aria-hidden />
-        </button>
-      </span>
     </div>
   );
 }
@@ -173,6 +94,79 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
   const workspaceTab = useWorkspaceStore((s) => s.workspaceTab);
   const setWorkspaceTab = useWorkspaceStore((s) => s.setWorkspaceTab);
 
+  const project = useProject(blfPath);
+  const catalog = useSignalCatalog(blfPath);
+  const seededRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (seededRef.current === blfPath) return; // already seeded for this Trace
+
+    if (project.isError) {
+      // Fatal Project-file read error (corrupt/truncated JSON). The global
+      // QueryCache error handler (app/ui/src/app/query-client.ts) already
+      // toasts this in the existing bottom-right stack - nothing more to
+      // show here. Reset to defaults by just not restoring anything, and
+      // mark seeded so the autosave effect (Task 5) takes over and
+      // overwrites the broken file with valid JSON on the next change.
+      seededRef.current = blfPath;
+      return;
+    }
+
+    if (!project.data || !catalog.data) return;
+    seededRef.current = blfPath;
+
+    const knownIds = new Set(catalog.data.map((c) => c.signalId));
+    const restoredSignals = new Set(project.data.displayedSignalIds.filter((id) => knownIds.has(id)));
+    if (restoredSignals.size > 0) {
+      useWorkspaceStore.getState().commitActiveSignalIds(restoredSignals);
+    }
+
+    if (project.data.trimWindow) {
+      useWorkspaceStore
+        .getState()
+        .commitTrimRange({ start: project.data.trimWindow.startUs, end: project.data.trimWindow.endUs });
+    }
+
+    const [trace] = project.data.traces;
+    if (trace) {
+      for (const [signalIdStr, algorithm] of Object.entries(trace.downsamplingAlgorithms)) {
+        if (algorithm === "min_max" || algorithm === "lttb") {
+          useWorkspaceStore.getState().setSignalDownsamplingAlgorithm(Number(signalIdStr), algorithm);
+        }
+      }
+    }
+  }, [project.data, project.isError, catalog.data, blfPath]);
+
+  const activeSignalIds = useWorkspaceStore((s) => s.activeSignalIds);
+  const appliedTrimRange = useWorkspaceStore((s) => s.appliedTrimRange);
+  const signalDownsamplingAlgorithms = useWorkspaceStore((s) => s.signalDownsamplingAlgorithms);
+  const saveDebouncerRef = useRef(
+    createDebouncer(
+      1000,
+      (path: string, signalIds: number[], trim: TrimRange | null, algos: Record<number, "min_max" | "lttb">) => {
+        // One call, one backend read-modify-write cycle - firing three
+        // separate fire-and-forget commands here would race each other's
+        // read and lose whichever write landed on the stalest state.
+        void getTraceDataSource().saveProject(
+          path,
+          signalIds,
+          trim ? { startUs: trim.start, endUs: trim.end } : null,
+          algos
+        );
+      }
+    )
+  );
+
+  useEffect(() => {
+    if (seededRef.current !== blfPath) return; // don't autosave until the initial load has applied
+    saveDebouncerRef.current.call(blfPath, Array.from(activeSignalIds), appliedTrimRange, signalDownsamplingAlgorithms);
+  }, [blfPath, activeSignalIds, appliedTrimRange, signalDownsamplingAlgorithms]);
+
+  // flush (not cancel): ADR 0010 requires autosave flushed on project-close.
+  // Unmount happens when closeProject() in App.tsx leaves the workspace -
+  // covers in-app Close Project, not OS-level app-quit (accepted gap).
+  useEffect(() => () => saveDebouncerRef.current.flush(), []);
+
   function handleApplyTrim(range: { start: number; end: number }) {
     const { activeSignalIds } = useWorkspaceStore.getState();
     // Use the range Apply just committed - do not re-read the store (message
@@ -228,7 +222,7 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
         </main>
       </div>
       <DiagnosticsPanel />
-      <StatusBar blfPath={blfPath} preparing={preparing} prepareTotals={prepareTotals} />
+      <AppFooter blfPath={blfPath} preparing={preparing} prepareTotals={prepareTotals} />
       <Toaster />
     </div>
   );
