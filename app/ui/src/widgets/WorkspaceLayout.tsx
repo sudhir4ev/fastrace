@@ -1,13 +1,15 @@
 import { useEffect, useRef } from "react";
 import { Activity, Bug, Database, File, List, type LucideIcon } from "lucide-react";
-import { useWorkspaceStore, type WorkspaceTab } from "@/app/store";
+import { useWorkspaceStore, type TrimRange, type WorkspaceTab } from "@/app/store";
 import { useApplyTrim, useFileSizes, useIoBusy, useProject, useSignalCatalog } from "@/shared/api/hooks";
+import { getTraceDataSource } from "@/shared/api/trace-source";
 import { Button } from "@/shared/ui/button";
 import { cn, formatBytes } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 import { Skeleton } from "@/shared/ui/skeleton";
 import ActivityLog from "./ActivityLog";
 import AnalyzerPanel from "./AnalyzerPanel";
+import { createDebouncer } from "./debounce";
 import DiagnosticsPanel from "./DiagnosticsPanel";
 import MessageDetails from "./MessageDetails";
 import MessageGroupSelect from "./MessageGroupSelect";
@@ -216,6 +218,33 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
       }
     }
   }, [project.data, project.isError, catalog.data, blfPath]);
+
+  const activeSignalIds = useWorkspaceStore((s) => s.activeSignalIds);
+  const appliedTrimRange = useWorkspaceStore((s) => s.appliedTrimRange);
+  const signalDownsamplingAlgorithms = useWorkspaceStore((s) => s.signalDownsamplingAlgorithms);
+  const saveDebouncerRef = useRef(
+    createDebouncer(
+      1000,
+      (path: string, signalIds: number[], trim: TrimRange | null, algos: Record<number, "min_max" | "lttb">) => {
+        // One call, one backend read-modify-write cycle - firing three
+        // separate fire-and-forget commands here would race each other's
+        // read and lose whichever write landed on the stalest state.
+        void getTraceDataSource().saveProject(
+          path,
+          signalIds,
+          trim ? { startUs: trim.start, endUs: trim.end } : null,
+          algos
+        );
+      }
+    )
+  );
+
+  useEffect(() => {
+    if (seededRef.current !== blfPath) return; // don't autosave until the initial load has applied
+    saveDebouncerRef.current.call(blfPath, Array.from(activeSignalIds), appliedTrimRange, signalDownsamplingAlgorithms);
+  }, [blfPath, activeSignalIds, appliedTrimRange, signalDownsamplingAlgorithms]);
+
+  useEffect(() => () => saveDebouncerRef.current.cancel(), []);
 
   function handleApplyTrim(range: { start: number; end: number }) {
     const { activeSignalIds } = useWorkspaceStore.getState();
