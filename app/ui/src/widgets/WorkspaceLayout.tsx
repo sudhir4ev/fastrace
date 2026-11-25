@@ -1,6 +1,7 @@
+import { useEffect, useRef } from "react";
 import { Activity, Bug, Database, File, List, type LucideIcon } from "lucide-react";
 import { useWorkspaceStore, type WorkspaceTab } from "@/app/store";
-import { useApplyTrim, useFileSizes, useIoBusy } from "@/shared/api/hooks";
+import { useApplyTrim, useFileSizes, useIoBusy, useProject, useSignalCatalog } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
 import { cn, formatBytes } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
@@ -172,6 +173,49 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
   const applyTrim = useApplyTrim(blfPath);
   const workspaceTab = useWorkspaceStore((s) => s.workspaceTab);
   const setWorkspaceTab = useWorkspaceStore((s) => s.setWorkspaceTab);
+
+  const project = useProject(blfPath);
+  const catalog = useSignalCatalog(blfPath);
+  const seededRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (seededRef.current === blfPath) return; // already seeded for this Trace
+
+    if (project.isError) {
+      // Fatal Project-file read error (corrupt/truncated JSON). The global
+      // QueryCache error handler (app/ui/src/app/query-client.ts) already
+      // toasts this in the existing bottom-right stack - nothing more to
+      // show here. Reset to defaults by just not restoring anything, and
+      // mark seeded so the autosave effect (Task 5) takes over and
+      // overwrites the broken file with valid JSON on the next change.
+      seededRef.current = blfPath;
+      return;
+    }
+
+    if (!project.data || !catalog.data) return;
+    seededRef.current = blfPath;
+
+    const knownIds = new Set(catalog.data.map((c) => c.signalId));
+    const restoredSignals = new Set(project.data.displayedSignalIds.filter((id) => knownIds.has(id)));
+    if (restoredSignals.size > 0) {
+      useWorkspaceStore.getState().commitActiveSignalIds(restoredSignals);
+    }
+
+    if (project.data.trimWindow) {
+      useWorkspaceStore
+        .getState()
+        .commitTrimRange({ start: project.data.trimWindow.startUs, end: project.data.trimWindow.endUs });
+    }
+
+    const [trace] = project.data.traces;
+    if (trace) {
+      for (const [signalIdStr, algorithm] of Object.entries(trace.downsamplingAlgorithms)) {
+        if (algorithm === "min_max" || algorithm === "lttb") {
+          useWorkspaceStore.getState().setSignalDownsamplingAlgorithm(Number(signalIdStr), algorithm);
+        }
+      }
+    }
+  }, [project.data, project.isError, catalog.data, blfPath]);
 
   function handleApplyTrim(range: { start: number; end: number }) {
     const { activeSignalIds } = useWorkspaceStore.getState();
