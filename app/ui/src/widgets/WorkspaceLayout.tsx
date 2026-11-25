@@ -244,7 +244,10 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
     saveDebouncerRef.current.call(blfPath, Array.from(activeSignalIds), appliedTrimRange, signalDownsamplingAlgorithms);
   }, [blfPath, activeSignalIds, appliedTrimRange, signalDownsamplingAlgorithms]);
 
-  useEffect(() => () => saveDebouncerRef.current.cancel(), []);
+  // flush (not cancel): ADR 0010 requires autosave flushed on project-close.
+  // Unmount happens when closeProject() in App.tsx leaves the workspace -
+  // covers in-app Close Project, not OS-level app-quit (accepted gap).
+  useEffect(() => () => saveDebouncerRef.current.flush(), []);
 
   function handleApplyTrim(range: { start: number; end: number }) {
     const { activeSignalIds } = useWorkspaceStore.getState();

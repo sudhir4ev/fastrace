@@ -758,6 +758,10 @@ fn get_project(blf_path: String) -> Result<project_store::ProjectFile, String> {
 /// fire-and-forget writes can't race and clobber each other's read.
 /// `trim_window: None` explicitly clears a previously-set Trim Window
 /// (`resetTrimRange()` on the frontend) rather than leaving it untouched.
+/// Residual gap (accepted): this still has no lock against concurrent
+/// record_query/remove_query/clear_query_history read-modify-write cycles on
+/// the same file; in practice the ~1s autosave debounce and near-instant file
+/// ops make an actual race very unlikely.
 #[tauri::command]
 fn save_project(
     blf_path: String,
