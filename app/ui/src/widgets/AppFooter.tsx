@@ -45,7 +45,7 @@ function FilePathCell({ path }: { path: string }) {
       type="button"
       onClick={() => void navigator.clipboard.writeText(path)}
       title={path}
-      className="truncate text-left hover:underline"
+      className="whitespace-nowrap hover:underline"
     >
       {formatPathShort(path)}
     </button>
@@ -67,13 +67,13 @@ export default function AppFooter({ blfPath, preparing, prepareTotals }: AppFoot
         <PopoverTrigger className="max-w-[40%] truncate text-left font-medium text-background hover:text-background/80">
           {fileName}
         </PopoverTrigger>
-        <PopoverContent side="top" align="start" className="w-96">
+        <PopoverContent side="top" align="start" className="w-auto max-w-xl">
           <p className="mb-2 text-xs font-medium text-foreground">Trace context</p>
-          <table className="w-full text-xs">
+          <table className="text-xs">
             <tbody>
               <tr className="border-b border-border">
-                <td className="w-28 py-1.5 pr-2 font-medium text-muted-foreground">BLF file</td>
-                <td className="py-1.5">
+                <td className="whitespace-nowrap py-1.5 pr-4 font-medium text-muted-foreground">BLF file</td>
+                <td className="py-1.5 text-right">
                   <FilePathCell path={blfPath} />
                   {fileSizes.data && (
                     <span className="ml-2 text-muted-foreground">({formatBytes(fileSizes.data.blfBytes)})</span>
@@ -81,8 +81,8 @@ export default function AppFooter({ blfPath, preparing, prepareTotals }: AppFoot
                 </td>
               </tr>
               <tr className="border-b border-border">
-                <td className="py-1.5 pr-2 font-medium text-muted-foreground">ARXML file</td>
-                <td className="py-1.5">
+                <td className="whitespace-nowrap py-1.5 pr-4 font-medium text-muted-foreground">ARXML file</td>
+                <td className="py-1.5 text-right">
                   {arxmlPath ? (
                     <FilePathCell path={arxmlPath} />
                   ) : (
@@ -91,12 +91,14 @@ export default function AppFooter({ blfPath, preparing, prepareTotals }: AppFoot
                 </td>
               </tr>
               <tr className="border-b border-border">
-                <td className="py-1.5 pr-2 font-medium text-muted-foreground">Total messages</td>
-                <td className="py-1.5">{prepareTotals ? prepareTotals.messages : "-"}</td>
+                <td className="whitespace-nowrap py-1.5 pr-4 font-medium text-muted-foreground">Total messages</td>
+                <td className="py-1.5 text-right">{prepareTotals ? prepareTotals.messages : "-"}</td>
               </tr>
               <tr>
-                <td className="py-1.5 pr-2 font-medium text-muted-foreground">Ingested size</td>
-                <td className="py-1.5">{fileSizes.data ? formatBytes(fileSizes.data.duckdbBytes) : "-"}</td>
+                <td className="whitespace-nowrap py-1.5 pr-4 font-medium text-muted-foreground">Ingested size</td>
+                <td className="py-1.5 text-right">
+                  {fileSizes.data ? formatBytes(fileSizes.data.duckdbBytes) : "-"}
+                </td>
               </tr>
             </tbody>
           </table>
