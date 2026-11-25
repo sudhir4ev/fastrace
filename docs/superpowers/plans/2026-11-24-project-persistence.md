@@ -422,7 +422,7 @@ plain string (`"min_max"` / `"lttb"`); this crate does not depend on
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test --manifest-path crates/Cargo.toml -p project-store`
-Expected: PASS (13 tests)
+Expected: PASS (12 tests)
 
 - [ ] **Step 5: Format, lint, commit**
 
