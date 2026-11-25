@@ -112,7 +112,10 @@ async fn prepare_trace(
     arxml_path: String,
 ) -> Result<serde_json::Value, String> {
     let bin = begin_prepare(app.state::<PrepareGuard>().inner(), fastrace_parse_bin())?;
-    delete_project_file(&blf_path)?;
+    if let Err(e) = delete_project_file(&blf_path) {
+        app.state::<PrepareGuard>().release();
+        return Err(e);
+    }
     let app_for_task = app.clone();
     let joined: Result<serde_json::Value, String> =
         tauri::async_runtime::spawn_blocking(move || {
