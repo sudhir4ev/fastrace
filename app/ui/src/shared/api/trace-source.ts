@@ -132,6 +132,17 @@ export interface QueryHistoryEntry {
   matchCount: number;
 }
 
+export interface ExplorerColumn {
+  name: string;
+  numeric: boolean;
+}
+
+export interface ExplorerTablePage {
+  columns: ExplorerColumn[];
+  rows: string[][];
+  totalRows: number;
+}
+
 export interface ProjectFile {
   version: number;
   traces: { path: string; arxmlPath: string | null; downsamplingAlgorithms: Record<number, string> }[];
@@ -216,6 +227,14 @@ export interface TraceDataSource {
   recordRecentTrace(blfPath: string, meta?: PrepareMeta): Promise<void>;
   removeRecentTrace(blfPath: string): Promise<void>;
   listQueryHistory(blfPath: string): Promise<QueryHistoryEntry[]>;
+  runExplorerTablePage(
+    blfPath: string,
+    sql: string,
+    pageSize: number,
+    offset: number,
+    orderByColumn: string | null,
+    orderByDesc: boolean
+  ): Promise<ExplorerTablePage>;
   recordQuery(
     blfPath: string,
     sql: string,
@@ -407,6 +426,24 @@ export class TauriTraceDataSource implements TraceDataSource {
 
   listQueryHistory(blfPath: string): Promise<QueryHistoryEntry[]> {
     return invoke<QueryHistoryEntry[]>("list_query_history", { blfPath });
+  }
+
+  runExplorerTablePage(
+    blfPath: string,
+    sql: string,
+    pageSize: number,
+    offset: number,
+    orderByColumn: string | null,
+    orderByDesc: boolean
+  ): Promise<ExplorerTablePage> {
+    return invoke<ExplorerTablePage>("run_explorer_table_page", {
+      blfPath,
+      sql,
+      pageSize,
+      offset,
+      orderByColumn,
+      orderByDesc,
+    });
   }
 
   recordQuery(

@@ -232,6 +232,26 @@ export function useRunDetectorQuery(blfPath: string) {
 // without this, each chart auto-scales to its own series' extent, and
 // CHART_GROUP's percentage-based zoom sync maps the same percentage to
 // different absolute time windows per chart (the misalignment this fixes).
+export function useRunExplorerTablePage(blfPath: string) {
+  return useMutation({
+    mutationKey: ["run-explorer-table-page", blfPath],
+    mutationFn: ({
+      sql,
+      pageSize,
+      offset,
+      orderByColumn,
+      orderByDesc,
+    }: {
+      sql: string;
+      pageSize: number;
+      offset: number;
+      orderByColumn: string | null;
+      orderByDesc: boolean;
+    }) =>
+      getTraceDataSource().runExplorerTablePage(blfPath, sql, pageSize, offset, orderByColumn, orderByDesc),
+  });
+}
+
 export function useTraceTimeRange(blfPath: string, enabled = true) {
   return useQuery({
     queryKey: TRACE_TIME_RANGE_KEY(blfPath),
