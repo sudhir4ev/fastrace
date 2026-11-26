@@ -166,6 +166,11 @@ export interface ExplorerChartResult {
   truncated: boolean;
 }
 
+export interface ExplorerChartMetric {
+  agg: "count" | "sum" | "avg" | "min" | "max";
+  column: string | null;
+}
+
 export interface ProjectFile {
   version: number;
   traces: { path: string; arxmlPath: string | null; downsamplingAlgorithms: Record<number, string> }[];
@@ -268,6 +273,7 @@ export interface TraceDataSource {
     blfPath: string,
     baseSql: string,
     config: ExplorerChartConfig,
+    metric: ExplorerChartMetric | null,
     rowLimit: number
   ): Promise<ExplorerChartResult>;
   recordQuery(
@@ -509,12 +515,14 @@ export class TauriTraceDataSource implements TraceDataSource {
     blfPath: string,
     baseSql: string,
     config: ExplorerChartConfig,
+    metric: ExplorerChartMetric | null,
     rowLimit: number
   ): Promise<ExplorerChartResult> {
     return invoke<ExplorerChartResult>("run_explorer_chart_query", {
       blfPath,
       baseSql,
       config: { x: config.x, seriesBy: config.seriesBy, y: config.y },
+      metric,
       rowLimit,
     });
   }

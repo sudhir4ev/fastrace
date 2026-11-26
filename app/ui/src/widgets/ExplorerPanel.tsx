@@ -92,14 +92,19 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
   const [chartY, setChartY] = useState<string | null>(null);
   const [vizType, setVizType] = useState<"bar" | "line">("line");
   const [chartResult, setChartResult] = useState<ExplorerChartResult | null>(null);
+  const [seriesBy, setSeriesBy] = useState<string | null>(null);
+  const [grouped, setGrouped] = useState(false);
+  const [aggFn, setAggFn] = useState<"count" | "sum" | "avg" | "min" | "max">("count");
+  const [aggColumn, setAggColumn] = useState<string | null>(null);
   const chartMutation = useRunExplorerChartQuery(blfPath);
 
   function applyChart() {
-    if (!ranSql || !chartX || !chartY) return;
-    chartMutation.mutate(
-      { baseSql: ranSql, config: { x: chartX, seriesBy: null, y: chartY }, rowLimit: 5000 },
-      { onSuccess: setChartResult }
-    );
+    if (!ranSql || !chartX) return;
+    const config = { x: chartX, seriesBy, y: grouped ? "" : (chartY ?? "") };
+    const metric = grouped ? { agg: aggFn, column: aggFn === "count" ? null : aggColumn } : null;
+    if (!grouped && !chartY) return;
+    if (grouped && aggFn !== "count" && !aggColumn) return;
+    chartMutation.mutate({ baseSql: ranSql, config, metric, rowLimit: 5000 }, { onSuccess: setChartResult });
   }
 
   function fetchPage(sqlText: string, index: number, size: number, col: string | null, desc: boolean) {
@@ -381,23 +386,89 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
               </select>
             </label>
             <label className="flex items-center gap-1">
-              Y
+              Group by (optional)
               <select
                 className="rounded border border-border bg-background px-1 py-0.5"
-                value={chartY ?? ""}
-                onChange={(e) => setChartY(e.target.value || null)}
+                value={seriesBy ?? ""}
+                onChange={(e) => setSeriesBy(e.target.value || null)}
               >
-                <option value="" disabled>
-                  Choose a numeric column
-                </option>
-                {page.columns.filter((c) => c.numeric).map((c) => (
+                <option value="">None</option>
+                {page.columns.map((c) => (
                   <option key={c.name} value={c.name}>
                     {c.name}
                   </option>
                 ))}
               </select>
             </label>
-            <Button size="sm" onClick={applyChart} disabled={!chartX || !chartY || chartMutation.isPending}>
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)} />
+              Group results
+            </label>
+            {!grouped ? (
+              <label className="flex items-center gap-1">
+                Y
+                <select
+                  className="rounded border border-border bg-background px-1 py-0.5"
+                  value={chartY ?? ""}
+                  onChange={(e) => setChartY(e.target.value || null)}
+                >
+                  <option value="" disabled>
+                    Choose a numeric column
+                  </option>
+                  {page.columns.filter((c) => c.numeric).map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <>
+                <label className="flex items-center gap-1">
+                  Aggregate
+                  <select
+                    className="rounded border border-border bg-background px-1 py-0.5"
+                    value={aggFn}
+                    onChange={(e) => setAggFn(e.target.value as typeof aggFn)}
+                  >
+                    <option value="count">Count</option>
+                    <option value="sum">Sum</option>
+                    <option value="avg">Avg</option>
+                    <option value="min">Min</option>
+                    <option value="max">Max</option>
+                  </select>
+                </label>
+                {aggFn !== "count" && (
+                  <label className="flex items-center gap-1">
+                    of
+                    <select
+                      className="rounded border border-border bg-background px-1 py-0.5"
+                      value={aggColumn ?? ""}
+                      onChange={(e) => setAggColumn(e.target.value || null)}
+                    >
+                      <option value="" disabled>
+                        Choose a numeric column
+                      </option>
+                      {page.columns.filter((c) => c.numeric).map((c) => (
+                        <option key={c.name} value={c.name}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+              </>
+            )}
+            <Button
+              size="sm"
+              onClick={applyChart}
+              disabled={
+                !chartX ||
+                (!grouped && !chartY) ||
+                (grouped && aggFn !== "count" && !aggColumn) ||
+                chartMutation.isPending
+              }
+            >
               Apply
             </Button>
             {chartResult?.truncated && (
@@ -405,7 +476,7 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
             )}
           </div>
           <div className="min-h-0 flex-1 rounded border border-border">
-            {chartResult && <ExplorerChart result={chartResult} vizType={vizType} hasSeries={false} />}
+            {chartResult && <ExplorerChart result={chartResult} vizType={vizType} hasSeries={seriesBy !== null} />}
           </div>
         </div>
       )}

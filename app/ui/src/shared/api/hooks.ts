@@ -9,7 +9,7 @@ import {
 } from "@tanstack/react-query";
 import { useToastStore } from "@/app/toast-store";
 import { LOD_CONFIG } from "@/app/config";
-import type { DownsamplingAlgorithm, ExplorerChartConfig, ProjectFile } from "./trace-source";
+import type { DownsamplingAlgorithm, ExplorerChartConfig, ExplorerChartMetric, ProjectFile } from "./trace-source";
 import { getTraceDataSource } from "./trace-source";
 
 /** Query roots that read local JSON / filesystem, not the Trace Store. */
@@ -432,12 +432,14 @@ export function useRunExplorerChartQuery(blfPath: string) {
     mutationFn: ({
       baseSql,
       config,
+      metric,
       rowLimit,
     }: {
       baseSql: string;
       config: ExplorerChartConfig;
+      metric: ExplorerChartMetric | null;
       rowLimit: number;
-    }) => getTraceDataSource().runExplorerChartQuery(blfPath, baseSql, config, rowLimit),
+    }) => getTraceDataSource().runExplorerChartQuery(blfPath, baseSql, config, metric, rowLimit),
   });
 }
 
