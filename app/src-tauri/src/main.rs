@@ -460,6 +460,18 @@ fn run_explorer_table_page(
 }
 
 #[tauri::command]
+fn run_explorer_chart_query(
+    blf_path: String,
+    base_sql: String,
+    config: query::ExplorerChartConfig,
+    row_limit: i64,
+) -> Result<query::ExplorerChartResult, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::run_explorer_chart_query_ungrouped(&conn, &base_sql, &config, row_limit)
+}
+
+#[tauri::command]
 fn run_detector_query(
     blf_path: String,
     sql: String,
@@ -974,6 +986,7 @@ fn main() {
             resolve_message_position,
             resolve_message_range,
             run_explorer_table_page,
+            run_explorer_chart_query,
             run_detector_query,
             get_file_sizes,
             get_path_size,
@@ -1624,6 +1637,21 @@ mod tests {
         assert_eq!(saved[0].sql, "select 1");
 
         let _ = std::fs::remove_file(project_store::project_file_path(std::path::Path::new(&blf_path)));
+    }
+
+    #[test]
+    fn run_explorer_chart_query_reads_from_the_open_store() {
+        let blf_path = fixture_trace_store("chart_query");
+        let config = query::ExplorerChartConfig {
+            x: "timestamp_us".to_string(),
+            series_by: None,
+            y: "timestamp_us".to_string(),
+        };
+        let result =
+            run_explorer_chart_query(blf_path.clone(), "select * from messages".to_string(), config, 1000)
+                .unwrap();
+        assert!(!result.rows.is_empty());
+        let _ = std::fs::remove_file(std::path::Path::new(&blf_path).with_extension("duckdb"));
     }
 
     #[test]
