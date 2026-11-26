@@ -439,6 +439,27 @@ struct DetectorQueryResponse {
 }
 
 #[tauri::command]
+fn run_explorer_table_page(
+    blf_path: String,
+    sql: String,
+    page_size: i64,
+    offset: i64,
+    order_by_column: Option<String>,
+    order_by_desc: bool,
+) -> Result<query::ExplorerTablePage, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::run_explorer_table_page(
+        &conn,
+        &sql,
+        page_size,
+        offset,
+        order_by_column.as_deref(),
+        order_by_desc,
+    )
+}
+
+#[tauri::command]
 fn run_detector_query(
     blf_path: String,
     sql: String,
@@ -910,6 +931,7 @@ fn main() {
             list_signal_coverage,
             resolve_message_position,
             resolve_message_range,
+            run_explorer_table_page,
             run_detector_query,
             get_file_sizes,
             get_path_size,
@@ -1488,5 +1510,45 @@ mod tests {
         let project = get_project(blf_path_str).unwrap();
         assert_eq!(project.traces[0].arxml_path, Some("/t.arxml".to_string()));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Builds a minimal real `.duckdb` Trace Store (right schema_version, a
+    /// `messages` table) at a unique temp path, for commands that actually
+    /// call `trace_store::open` and run SQL against it. `name` must be
+    /// unique per test (same convention as the other fixture paths in this
+    /// module, e.g. `project_test_queries_*`) so concurrently-run tests
+    /// never collide on the same file. Returns the `.blf` path; the caller
+    /// is responsible for removing the `.duckdb` file afterward, same as
+    /// every other fixture-cleanup test in this module.
+    fn fixture_trace_store(name: &str) -> String {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!("explorer_fixture_{name}_{}.blf", std::process::id()));
+        let duckdb_path = blf_path.with_extension("duckdb");
+        let conn = trace_store::Connection::open(&duckdb_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key VARCHAR, value VARCHAR);
+             INSERT INTO meta VALUES ('schema_version', '5');
+             CREATE TABLE messages (msg_id BIGINT, timestamp_us BIGINT);
+             INSERT INTO messages VALUES (0, 1000), (1, 2000), (2, 3000);",
+        )
+        .unwrap();
+        drop(conn);
+        blf_path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn run_explorer_table_page_reads_from_the_open_store() {
+        let blf_path = fixture_trace_store("table_page");
+        let page = run_explorer_table_page(
+            blf_path.clone(),
+            "select msg_id, timestamp_us from messages".to_string(),
+            10,
+            0,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(!page.columns.is_empty());
+        let _ = std::fs::remove_file(std::path::Path::new(&blf_path).with_extension("duckdb"));
     }
 }
