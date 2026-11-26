@@ -2,9 +2,24 @@
 
 - Status: Design agreed - ready for `writing-plans`.
 - Date: 2026-11-26
-- Phasing: **Phase 1** = paginated table only (MVP section below). **Phase
-  2** = chart view (fast-follow, separate plan against this same spec,
-  once Phase 1 is proven against a real trace).
+- Phasing: 6 small phases, each one a working increment a human can check
+  by hand before the next starts. Phases 1-4 build the table (old
+  "Phase 1"). Phases 5-6 build the chart (old "Phase 2"), after.
+
+## Implementation phases
+
+| # | Builds | Manual check |
+|---|---|---|
+| 1 | `run_explorer_table_page` cmd + `crates/query` fn, plus Explorer tab: SQL editor + Run + raw result table (fixed page size, no controls). | `cargo test`, then open Explorer tab, type `select * from messages limit 50`, Run, see rows. |
+| 2 | Pagination controls (page size, prev/next, total row count) + click column header to sort (`order_by` wired up). | Query a table with >1 page of rows, page through, counts match. Click a header, rows re-order asc, click again, desc. |
+| 3 | Query history: auto-record on run, history popover, click to reload. | Run 2-3 queries, close + reopen project, history still there, click one, SQL loads back into editor. |
+| 4 | Saved queries: Save button w/ name, list, click to load. | Save a query by name, reopen project, find it in saved list, load it back. |
+| 5 | Chart view (basic): `[Table \| Chart]` toggle, X/Y pickers, bar/line, no grouping. | Run a query, switch to Chart, pick X/Y, see a plotted line or bar. |
+| 6 | Chart grouping: "Group results" toggle, Group-by picker, aggregate fn. | Toggle grouping on, pick aggregate (e.g. count per `src_ip`), see grouped chart. |
+
+Each phase ships working code end to end (backend + wiring), not a layer
+across all phases at once - so phase N+1 always starts from something
+already clickable.
 
 ## Goal
 
