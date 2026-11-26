@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Activity, List } from "lucide-react";
+import { Activity, List, Terminal } from "lucide-react";
 import { useWorkspaceStore, type TrimRange, type WorkspaceTab } from "@/app/store";
 import { useApplyTrim, useProject, useSignalCatalog } from "@/shared/api/hooks";
 import { getTraceDataSource } from "@/shared/api/trace-source";
@@ -11,6 +11,7 @@ import AnalyzerPanel from "./AnalyzerPanel";
 import AppFooter from "./AppFooter";
 import { createDebouncer } from "./debounce";
 import DiagnosticsPanel from "./DiagnosticsPanel";
+import ExplorerPanel from "./ExplorerPanel";
 import MessageDetails from "./MessageDetails";
 import MessageGroupSelect from "./MessageGroupSelect";
 import MessageList from "./MessageList";
@@ -22,6 +23,7 @@ import type { ProgressTick } from "@/types";
 const NAV_ITEMS: { id: WorkspaceTab; label: string; icon: typeof Activity }[] = [
   { id: "signals", label: "Signals", icon: Activity },
   { id: "messages", label: "Messages", icon: List },
+  { id: "explorer", label: "Explorer", icon: Terminal },
 ];
 
 interface WorkspaceLayoutProps {
@@ -218,6 +220,9 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
           </div>
           <div className={cn("absolute inset-0", workspaceTab !== "messages" && "hidden")} aria-hidden={workspaceTab !== "messages"}>
             <MessagesTab blfPath={blfPath} preparing={preparing} />
+          </div>
+          <div className={cn("absolute inset-0", workspaceTab !== "explorer" && "hidden")} aria-hidden={workspaceTab !== "explorer"}>
+            <ExplorerPanel blfPath={blfPath} />
           </div>
         </main>
       </div>
