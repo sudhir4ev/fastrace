@@ -932,6 +932,158 @@ pub fn run_detector_query(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerColumn {
+    pub name: String,
+    pub numeric: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerTablePage {
+    pub columns: Vec<ExplorerColumn>,
+    pub rows: Vec<Vec<String>>,
+    pub total_rows: i64,
+}
+
+fn normalize_explorer_sql(sql: &str) -> Result<String, String> {
+    let trimmed = sql.trim();
+    let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed).trim();
+    if trimmed.is_empty() {
+        return Err("query is empty".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Quotes a DuckDB identifier so it can never be read as anything but a
+/// column reference - doubling an embedded `"` is DuckDB/SQL's own escape
+/// for a literal quote inside a quoted identifier.
+fn quote_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn is_numeric_type(ty: &duckdb::types::Type) -> bool {
+    use duckdb::types::Type;
+    matches!(
+        ty,
+        Type::TinyInt
+            | Type::SmallInt
+            | Type::Int
+            | Type::BigInt
+            | Type::HugeInt
+            | Type::UTinyInt
+            | Type::USmallInt
+            | Type::UInt
+            | Type::UBigInt
+            | Type::Float
+            | Type::Double
+            | Type::Decimal
+    )
+}
+
+/// Renders any DuckDB cell to a display string - the result schema is
+/// different per Explorer query, so there's no fixed type to deserialize
+/// each column into.
+/// shortcut: Timestamp/Date32/Time64/nested types fall back to Rust's Debug
+/// format (not calendar-formatted); upgrade if Explorer is used heavily
+/// against timestamp/date columns and the raw form proves confusing.
+fn value_ref_to_display_string(v: duckdb::types::ValueRef) -> String {
+    use duckdb::types::ValueRef;
+    match v {
+        ValueRef::Null => String::new(),
+        ValueRef::Boolean(b) => b.to_string(),
+        ValueRef::TinyInt(i) => i.to_string(),
+        ValueRef::SmallInt(i) => i.to_string(),
+        ValueRef::Int(i) => i.to_string(),
+        ValueRef::BigInt(i) => i.to_string(),
+        ValueRef::HugeInt(i) => i.to_string(),
+        ValueRef::UTinyInt(i) => i.to_string(),
+        ValueRef::USmallInt(i) => i.to_string(),
+        ValueRef::UInt(i) => i.to_string(),
+        ValueRef::UBigInt(i) => i.to_string(),
+        ValueRef::Float(f) => f.to_string(),
+        ValueRef::Double(f) => f.to_string(),
+        ValueRef::Decimal(d) => d.to_string(),
+        ValueRef::Text(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        ValueRef::Blob(bytes) => format!("<blob {} bytes>", bytes.len()),
+        other => format!("{other:?}"),
+    }
+}
+
+/// One page of arbitrary user SQL, re-executed against DuckDB per page -
+/// the base SQL could return millions of rows, so results are never
+/// materialized fully into the frontend (`2026-11-26-trace-explorer-design.md`).
+/// `order_by_column`, when present, must name an actual output column of
+/// `sql`; it is quoted as an identifier, never concatenated as raw SQL, so a
+/// malformed or hostile value fails as a DuckDB binder error instead of
+/// executing.
+pub fn run_explorer_table_page(
+    conn: &trace_store::Connection,
+    sql: &str,
+    page_size: i64,
+    offset: i64,
+    order_by_column: Option<&str>,
+    order_by_desc: bool,
+) -> Result<ExplorerTablePage, String> {
+    let trimmed = normalize_explorer_sql(sql)?;
+    if page_size < 1 {
+        return Err("page_size must be >= 1".to_string());
+    }
+    if offset < 0 {
+        return Err("offset must be >= 0".to_string());
+    }
+
+    let total_rows: i64 = conn
+        .query_row(
+            &format!("select count(*) from ({trimmed}\n) as explorer_base"),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let order_clause = match order_by_column {
+        Some(col) => {
+            let dir = if order_by_desc { "desc" } else { "asc" };
+            format!("order by {} {dir}\n", quote_identifier(col))
+        }
+        None => String::new(),
+    };
+    let page_sql = format!(
+        "select * from ({trimmed}\n) as explorer_base\n{order_clause}limit {page_size} offset {offset}"
+    );
+
+    let mut stmt = conn.prepare(&page_sql).map_err(|e| e.to_string())?;
+    let mut result_rows = stmt.query([]).map_err(|e| e.to_string())?;
+    // Grabbed before the row loop below, while `result_rows` is only
+    // shared-borrowed (no `Row` held yet) - `Statement::column_count`/
+    // `column_name`/`column_type` panic if the query has never been
+    // executed, which `stmt.query([])` above already satisfied.
+    let stmt_ref = result_rows.as_ref().expect("statement executed above");
+    let col_count = stmt_ref.column_count();
+    let columns: Vec<ExplorerColumn> = (0..col_count)
+        .map(|i| {
+            let data_type = stmt_ref.column_type(i);
+            ExplorerColumn {
+                name: stmt_ref.column_name(i).cloned().unwrap_or_default(),
+                numeric: is_numeric_type(&duckdb::types::Type::from(&data_type)),
+            }
+        })
+        .collect();
+
+    let mut rows = Vec::new();
+    while let Some(row) = result_rows.next().map_err(|e| e.to_string())? {
+        let mut cells = Vec::with_capacity(col_count);
+        for i in 0..col_count {
+            let value = row.get_ref(i).map_err(|e| e.to_string())?;
+            cells.push(value_ref_to_display_string(value));
+        }
+        rows.push(cells);
+    }
+
+    Ok(ExplorerTablePage { columns, rows, total_rows })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1793,5 +1945,137 @@ mod tests {
             result.bins.iter().map(|b| b.count).sum::<i64>(),
             result.matches.len() as i64
         );
+    }
+
+    fn explorer_fixture() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE widgets (id INTEGER, label VARCHAR, price DOUBLE);
+             INSERT INTO widgets VALUES
+                (1, 'a', 1.5), (2, 'b', 2.5), (3, 'c', 3.5), (4, 'd', 4.5), (5, 'e', 5.5);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn run_explorer_table_page_returns_requested_page_and_total() {
+        let conn = explorer_fixture();
+        let page = run_explorer_table_page(
+            &conn,
+            "select * from widgets",
+            2,
+            0,
+            Some("id"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(page.total_rows, 5);
+        assert_eq!(
+            page.columns,
+            vec![
+                ExplorerColumn { name: "id".to_string(), numeric: true },
+                ExplorerColumn { name: "label".to_string(), numeric: false },
+                ExplorerColumn { name: "price".to_string(), numeric: true },
+            ]
+        );
+        assert_eq!(
+            page.rows,
+            vec![
+                vec!["1".to_string(), "a".to_string(), "1.5".to_string()],
+                vec!["2".to_string(), "b".to_string(), "2.5".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn run_explorer_table_page_returns_the_second_page() {
+        let conn = explorer_fixture();
+        let page =
+            run_explorer_table_page(&conn, "select * from widgets", 2, 2, Some("id"), false).unwrap();
+        assert_eq!(page.rows[0][0], "3");
+        assert_eq!(page.rows[1][0], "4");
+    }
+
+    #[test]
+    fn run_explorer_table_page_sorts_descending() {
+        let conn = explorer_fixture();
+        let page =
+            run_explorer_table_page(&conn, "select * from widgets", 1, 0, Some("id"), true).unwrap();
+        assert_eq!(page.rows[0][0], "5");
+    }
+
+    #[test]
+    fn run_explorer_table_page_quotes_the_order_by_identifier() {
+        let conn = Connection::open_in_memory().unwrap();
+        // "order" is a reserved word - only safe as a quoted identifier.
+        conn.execute_batch(r#"CREATE TABLE t ("order" INTEGER); INSERT INTO t VALUES (2), (1);"#)
+            .unwrap();
+        let page = run_explorer_table_page(&conn, "select * from t", 10, 0, Some("order"), false).unwrap();
+        assert_eq!(page.rows, vec![vec!["1".to_string()], vec!["2".to_string()]]);
+    }
+
+    #[test]
+    fn run_explorer_table_page_rejects_an_order_by_column_that_would_inject_sql() {
+        let conn = explorer_fixture();
+        let result = run_explorer_table_page(
+            &conn,
+            "select * from widgets",
+            10,
+            0,
+            Some(r#"id"; drop table widgets; --"#),
+            false,
+        );
+        assert!(result.is_err(), "malformed identifier must be a binder error, not executed SQL");
+        // The quoting must have prevented the DROP TABLE from ever running.
+        assert_eq!(count_messages_placeholder(&conn), 5);
+    }
+
+    fn count_messages_placeholder(conn: &Connection) -> i64 {
+        conn.query_row("select count(*) from widgets", [], |row| row.get(0)).unwrap()
+    }
+
+    #[test]
+    fn run_explorer_table_page_handles_zero_matching_rows() {
+        let conn = explorer_fixture();
+        let page =
+            run_explorer_table_page(&conn, "select * from widgets where id > 100", 10, 0, None, false)
+                .unwrap();
+        assert_eq!(page.total_rows, 0);
+        assert!(page.rows.is_empty());
+        assert_eq!(page.columns.len(), 3, "columns are still reported for an empty result");
+    }
+
+    #[test]
+    fn run_explorer_table_page_renders_null_as_empty_string() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (label VARCHAR); INSERT INTO t VALUES (NULL);")
+            .unwrap();
+        let page = run_explorer_table_page(&conn, "select * from t", 10, 0, None, false).unwrap();
+        assert_eq!(page.rows, vec![vec!["".to_string()]]);
+    }
+
+    #[test]
+    fn run_explorer_table_page_rejects_empty_sql() {
+        let conn = explorer_fixture();
+        assert!(run_explorer_table_page(&conn, "   ", 10, 0, None, false).is_err());
+    }
+
+    #[test]
+    fn run_explorer_table_page_rejects_nonpositive_page_size() {
+        let conn = explorer_fixture();
+        assert!(run_explorer_table_page(&conn, "select * from widgets", 0, 0, None, false).is_err());
+    }
+
+    #[test]
+    fn run_explorer_table_page_rejects_negative_offset() {
+        let conn = explorer_fixture();
+        assert!(run_explorer_table_page(&conn, "select * from widgets", 10, -1, None, false).is_err());
+    }
+
+    #[test]
+    fn run_explorer_table_page_surfaces_duckdb_errors_for_bad_sql() {
+        let conn = explorer_fixture();
+        assert!(run_explorer_table_page(&conn, "select * from no_such_table", 10, 0, None, false).is_err());
     }
 }
