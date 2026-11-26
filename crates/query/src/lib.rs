@@ -1084,6 +1084,76 @@ pub fn run_explorer_table_page(
     Ok(ExplorerTablePage { columns, rows, total_rows })
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerChartConfig {
+    pub x: String,
+    pub series_by: Option<String>,
+    pub y: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerChartResult {
+    pub rows: Vec<(String, Option<String>, f64)>,
+    pub truncated: bool,
+}
+
+/// Reshape/order/cap only - no `GROUP BY`. The wrapper always aliases its
+/// output as `x`/`g`/`y` regardless of the user's column names, so callers
+/// never have to infer which returned column is which
+/// (`2026-11-26-trace-explorer-design.md`, Phase 2).
+pub fn run_explorer_chart_query_ungrouped(
+    conn: &trace_store::Connection,
+    base_sql: &str,
+    config: &ExplorerChartConfig,
+    row_limit: i64,
+) -> Result<ExplorerChartResult, String> {
+    let trimmed = normalize_explorer_sql(base_sql)?;
+    let series_select = match &config.series_by {
+        Some(col) => format!("{} as g, ", quote_identifier(col)),
+        None => String::new(),
+    };
+    let sql = format!(
+        "select {} as x, {series_select}{} as y
+         from ({trimmed}\n) as explorer_base
+         order by x
+         limit {}",
+        quote_identifier(&config.x),
+        quote_identifier(&config.y),
+        row_limit + 1,
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let has_series = config.series_by.is_some();
+    let rows = stmt
+        .query_map([], |row| {
+            let x: String = row.get::<_, duckdb::types::Value>(0).map(value_to_display_string)?;
+            let g: Option<String> = if has_series {
+                Some(row.get::<_, duckdb::types::Value>(1).map(value_to_display_string)?)
+            } else {
+                None
+            };
+            let y: f64 = row.get(if has_series { 2 } else { 1 })?;
+            Ok((x, g, y))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let truncated = rows.len() as i64 > row_limit;
+    if truncated {
+        rows.truncate(row_limit as usize);
+    }
+    Ok(ExplorerChartResult { rows, truncated })
+}
+
+// shortcut: duckdb's `From<&Value> for ValueRef` panics on List/Struct/Map/
+// Array/Union/Enum values. Chart X/Group-by columns are expected to be
+// simple scalars (the picker is just "any column" from the result set);
+// upgrade to a non-panicking match here if Explorer charts are ever used
+// against a nested-type column and this proves to be a real problem.
+fn value_to_display_string(v: duckdb::types::Value) -> String {
+    value_ref_to_display_string((&v).into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2077,5 +2147,44 @@ mod tests {
     fn run_explorer_table_page_surfaces_duckdb_errors_for_bad_sql() {
         let conn = explorer_fixture();
         assert!(run_explorer_table_page(&conn, "select * from no_such_table", 10, 0, None, false).is_err());
+    }
+
+    #[test]
+    fn run_explorer_chart_query_ungrouped_returns_x_and_y_ordered_by_x() {
+        let conn = explorer_fixture();
+        let config = ExplorerChartConfig { x: "id".to_string(), series_by: None, y: "price".to_string() };
+        let result =
+            run_explorer_chart_query_ungrouped(&conn, "select * from widgets", &config, 100).unwrap();
+        assert!(!result.truncated);
+        assert_eq!(result.rows.len(), 5);
+        assert_eq!(result.rows[0], ("1".to_string(), None, 1.5));
+        assert_eq!(result.rows[4], ("5".to_string(), None, 5.5));
+    }
+
+    #[test]
+    fn run_explorer_chart_query_ungrouped_includes_series_by_when_set() {
+        let conn = explorer_fixture();
+        let config =
+            ExplorerChartConfig { x: "id".to_string(), series_by: Some("label".to_string()), y: "price".to_string() };
+        let result =
+            run_explorer_chart_query_ungrouped(&conn, "select * from widgets", &config, 100).unwrap();
+        assert_eq!(result.rows[0].1, Some("a".to_string()));
+    }
+
+    #[test]
+    fn run_explorer_chart_query_ungrouped_truncates_at_row_limit() {
+        let conn = explorer_fixture();
+        let config = ExplorerChartConfig { x: "id".to_string(), series_by: None, y: "price".to_string() };
+        let result =
+            run_explorer_chart_query_ungrouped(&conn, "select * from widgets", &config, 3).unwrap();
+        assert!(result.truncated);
+        assert_eq!(result.rows.len(), 3);
+    }
+
+    #[test]
+    fn run_explorer_chart_query_ungrouped_rejects_a_y_column_that_does_not_exist() {
+        let conn = explorer_fixture();
+        let config = ExplorerChartConfig { x: "id".to_string(), series_by: None, y: "no_such_col".to_string() };
+        assert!(run_explorer_chart_query_ungrouped(&conn, "select * from widgets", &config, 100).is_err());
     }
 }
