@@ -886,6 +886,20 @@ fn clear_explorer_query_history(blf_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn list_explorer_saved_queries(blf_path: String) -> Result<Vec<project_store::SavedExplorerQuery>, String> {
+    let path = project_path_for(&blf_path);
+    Ok(project_store::read_project(&path, &blf_path)?.explorer_saved_queries)
+}
+
+#[tauri::command]
+fn save_explorer_query(blf_path: String, name: String, sql: String) -> Result<(), String> {
+    let path = project_path_for(&blf_path);
+    let project = project_store::read_project(&path, &blf_path)?;
+    let entry = project_store::SavedExplorerQuery { name, sql, saved_at: now_ms() };
+    project_store::write_project(&path, &project_store::save_explorer_query(project, entry))
+}
+
+#[tauri::command]
 fn list_recent_traces(app: tauri::AppHandle) -> Result<Vec<RecentTraceInfo>, String> {
     let path = recent_traces_path(&app)?;
     let list = read_recent_traces(&path)?;
@@ -978,6 +992,8 @@ fn main() {
             record_explorer_query,
             remove_explorer_query,
             clear_explorer_query_history,
+            list_explorer_saved_queries,
+            save_explorer_query,
             get_project,
             save_project
         ])
@@ -1591,6 +1607,21 @@ mod tests {
         record_explorer_query(blf_path.clone(), "select 3".to_string(), 1).unwrap();
         clear_explorer_query_history(blf_path.clone()).unwrap();
         assert!(list_explorer_query_history(blf_path.clone()).unwrap().is_empty());
+
+        let _ = std::fs::remove_file(project_store::project_file_path(std::path::Path::new(&blf_path)));
+    }
+
+    #[test]
+    fn explorer_saved_query_commands_persist_a_named_query() {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!("project_test_explorer_saved_{}.blf", std::process::id()));
+        let blf_path = blf_path.to_string_lossy().to_string();
+
+        save_explorer_query(blf_path.clone(), "Idle gaps".to_string(), "select 1".to_string()).unwrap();
+        let saved = list_explorer_saved_queries(blf_path.clone()).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].name, "Idle gaps");
+        assert_eq!(saved[0].sql, "select 1");
 
         let _ = std::fs::remove_file(project_store::project_file_path(std::path::Path::new(&blf_path)));
     }
