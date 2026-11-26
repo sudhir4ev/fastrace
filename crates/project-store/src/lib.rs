@@ -24,6 +24,14 @@ pub struct ExplorerQueryEntry {
     pub row_count: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedExplorerQuery {
+    pub name: String,
+    pub sql: String,
+    pub saved_at: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrimWindow {
@@ -54,6 +62,8 @@ pub struct ProjectFile {
     pub query_history: Vec<QueryHistoryEntry>,
     #[serde(default)]
     pub explorer_query_history: Vec<ExplorerQueryEntry>,
+    #[serde(default)]
+    pub explorer_saved_queries: Vec<SavedExplorerQuery>,
 }
 
 impl ProjectFile {
@@ -69,6 +79,7 @@ impl ProjectFile {
             trim_window: None,
             query_history: Vec::new(),
             explorer_query_history: Vec::new(),
+            explorer_saved_queries: Vec::new(),
         }
     }
 }
@@ -146,6 +157,14 @@ pub fn remove_explorer_query(mut project: ProjectFile, sql: &str) -> ProjectFile
 
 pub fn clear_explorer_query_history(mut project: ProjectFile) -> ProjectFile {
     project.explorer_query_history.clear();
+    project
+}
+
+/// Appends a user-named, intentionally pinned query - never capped or
+/// deduped, unlike the rolling `explorer_query_history` (an explicit Save
+/// is a different act than an automatic recent-run record).
+pub fn save_explorer_query(mut project: ProjectFile, entry: SavedExplorerQuery) -> ProjectFile {
+    project.explorer_saved_queries.push(entry);
     project
 }
 
@@ -447,6 +466,48 @@ mod tests {
         .unwrap();
         let loaded = read_project(&path, "/t.blf").unwrap();
         assert!(loaded.explorer_query_history.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_explorer_query_appends_without_capping_or_deduping() {
+        let mut project = ProjectFile::new_for_trace("/t.blf");
+        project = save_explorer_query(
+            project,
+            SavedExplorerQuery { name: "A".to_string(), sql: "select 1".to_string(), saved_at: 1 },
+        );
+        project = save_explorer_query(
+            project,
+            SavedExplorerQuery { name: "A".to_string(), sql: "select 1".to_string(), saved_at: 2 },
+        );
+        assert_eq!(project.explorer_saved_queries.len(), 2, "saved queries are never deduped/evicted");
+    }
+
+    #[test]
+    fn explorer_saved_queries_round_trip_through_json() {
+        let path = temp_path("explorer_saved_roundtrip");
+        let mut project = ProjectFile::new_for_trace("/traces/run1.blf");
+        project = save_explorer_query(
+            project,
+            SavedExplorerQuery { name: "Idle gaps".to_string(), sql: "select 1".to_string(), saved_at: 42 },
+        );
+        write_project(&path, &project).unwrap();
+        let loaded = read_project(&path, "/traces/run1.blf").unwrap();
+        assert_eq!(loaded, project);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn explorer_saved_queries_defaults_to_empty_for_old_project_files() {
+        let path = temp_path("explorer_saved_old_format");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"traces":[{"path":"/t.blf","arxmlPath":null,"downsamplingAlgorithms":{}}],
+               "displayedSignalIds":[],"trimWindow":null,"queryHistory":[]}"#,
+        )
+        .unwrap();
+        let loaded = read_project(&path, "/t.blf").unwrap();
+        assert!(loaded.explorer_saved_queries.is_empty());
         let _ = std::fs::remove_file(&path);
     }
 }
