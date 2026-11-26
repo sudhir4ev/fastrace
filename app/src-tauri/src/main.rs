@@ -464,11 +464,15 @@ fn run_explorer_chart_query(
     blf_path: String,
     base_sql: String,
     config: query::ExplorerChartConfig,
+    metric: Option<query::ExplorerChartMetric>,
     row_limit: i64,
 ) -> Result<query::ExplorerChartResult, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::run_explorer_chart_query_ungrouped(&conn, &base_sql, &config, row_limit)
+    match metric {
+        Some(m) => query::run_explorer_chart_query_grouped(&conn, &base_sql, &config, &m, row_limit),
+        None => query::run_explorer_chart_query_ungrouped(&conn, &base_sql, &config, row_limit),
+    }
 }
 
 #[tauri::command]
@@ -1647,9 +1651,14 @@ mod tests {
             series_by: None,
             y: "timestamp_us".to_string(),
         };
-        let result =
-            run_explorer_chart_query(blf_path.clone(), "select * from messages".to_string(), config, 1000)
-                .unwrap();
+        let result = run_explorer_chart_query(
+            blf_path.clone(),
+            "select * from messages".to_string(),
+            config,
+            None,
+            1000,
+        )
+        .unwrap();
         assert!(!result.rows.is_empty());
         let _ = std::fs::remove_file(std::path::Path::new(&blf_path).with_extension("duckdb"));
     }

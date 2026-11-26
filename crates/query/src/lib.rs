@@ -1154,6 +1154,78 @@ fn value_to_display_string(v: duckdb::types::Value) -> String {
     value_ref_to_display_string((&v).into())
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerChartMetric {
+    pub agg: String,
+    pub column: Option<String>,
+}
+
+/// `agg` is matched against a fixed allow-list, never interpolated as
+/// arbitrary SQL - an unrecognized aggregate is a clean error, not a chance
+/// to inject a function call.
+fn aggregate_sql(metric: &ExplorerChartMetric) -> Result<String, String> {
+    let column_expr = match &metric.column {
+        Some(col) => quote_identifier(col),
+        None => "*".to_string(),
+    };
+    match metric.agg.as_str() {
+        "count" => Ok("count(*)".to_string()),
+        "sum" => Ok(format!("sum({column_expr})")),
+        "avg" => Ok(format!("avg({column_expr})")),
+        "min" => Ok(format!("min({column_expr})")),
+        "max" => Ok(format!("max({column_expr})")),
+        other => Err(format!("unknown aggregate: {other}")),
+    }
+}
+
+/// Only reached when the Explorer's "Group results" toggle is on - a plain
+/// line/bar plot of two existing columns never takes this path
+/// (`2026-11-26-trace-explorer-design.md`, Phase 2).
+pub fn run_explorer_chart_query_grouped(
+    conn: &trace_store::Connection,
+    base_sql: &str,
+    config: &ExplorerChartConfig,
+    metric: &ExplorerChartMetric,
+    row_limit: i64,
+) -> Result<ExplorerChartResult, String> {
+    let trimmed = normalize_explorer_sql(base_sql)?;
+    let agg_sql = aggregate_sql(metric)?;
+    let group_cols = quote_identifier(&config.x);
+    let (series_select, group_by) = match &config.series_by {
+        Some(col) => (format!("{} as g, ", quote_identifier(col)), format!("{group_cols}, {}", quote_identifier(col))),
+        None => (String::new(), group_cols.clone()),
+    };
+    let sql = format!(
+        "select {group_cols} as x, {series_select}{agg_sql} as y
+         from ({trimmed}\n) as explorer_base
+         group by {group_by}
+         order by x
+         limit {}",
+        row_limit + 1,
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let has_series = config.series_by.is_some();
+    let rows = stmt
+        .query_map([], |row| {
+            let x: String = row.get::<_, duckdb::types::Value>(0).map(value_to_display_string)?;
+            let g: Option<String> = if has_series {
+                Some(row.get::<_, duckdb::types::Value>(1).map(value_to_display_string)?)
+            } else {
+                None
+            };
+            let y: f64 = row.get(if has_series { 2 } else { 1 })?;
+            Ok((x, g, y))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let truncated = rows.len() as i64 > row_limit;
+    if truncated {
+        rows.truncate(row_limit as usize);
+    }
+    Ok(ExplorerChartResult { rows, truncated })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2186,5 +2258,49 @@ mod tests {
         let conn = explorer_fixture();
         let config = ExplorerChartConfig { x: "id".to_string(), series_by: None, y: "no_such_col".to_string() };
         assert!(run_explorer_chart_query_ungrouped(&conn, "select * from widgets", &config, 100).is_err());
+    }
+
+    #[test]
+    fn run_explorer_chart_query_grouped_counts_rows_per_x() {
+        let conn = explorer_fixture();
+        conn.execute("INSERT INTO widgets VALUES (6, 'a', 6.5)", []).unwrap();
+        let config = ExplorerChartConfig { x: "label".to_string(), series_by: None, y: String::new() };
+        let metric = ExplorerChartMetric { agg: "count".to_string(), column: None };
+        let result =
+            run_explorer_chart_query_grouped(&conn, "select * from widgets", &config, &metric, 100).unwrap();
+        let a = result.rows.iter().find(|r| r.0 == "a").unwrap();
+        assert_eq!(a.2, 2.0, "two widgets labeled 'a'");
+    }
+
+    #[test]
+    fn run_explorer_chart_query_grouped_sums_a_metric_column() {
+        let conn = explorer_fixture();
+        let config = ExplorerChartConfig { x: "label".to_string(), series_by: None, y: String::new() };
+        let metric = ExplorerChartMetric { agg: "sum".to_string(), column: Some("price".to_string()) };
+        let result =
+            run_explorer_chart_query_grouped(&conn, "select * from widgets", &config, &metric, 100).unwrap();
+        let a = result.rows.iter().find(|r| r.0 == "a").unwrap();
+        assert_eq!(a.2, 1.5);
+    }
+
+    #[test]
+    fn run_explorer_chart_query_grouped_rejects_an_unknown_aggregate() {
+        let conn = explorer_fixture();
+        let config = ExplorerChartConfig { x: "label".to_string(), series_by: None, y: String::new() };
+        let metric = ExplorerChartMetric { agg: "median".to_string(), column: Some("price".to_string()) };
+        assert!(
+            run_explorer_chart_query_grouped(&conn, "select * from widgets", &config, &metric, 100).is_err()
+        );
+    }
+
+    #[test]
+    fn run_explorer_chart_query_grouped_groups_by_series_too_when_set() {
+        let conn = explorer_fixture();
+        let config =
+            ExplorerChartConfig { x: "id".to_string(), series_by: Some("label".to_string()), y: String::new() };
+        let metric = ExplorerChartMetric { agg: "count".to_string(), column: None };
+        let result =
+            run_explorer_chart_query_grouped(&conn, "select * from widgets", &config, &metric, 100).unwrap();
+        assert_eq!(result.rows.len(), 5, "one group per distinct (id, label) pair");
     }
 }
