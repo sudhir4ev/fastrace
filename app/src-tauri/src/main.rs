@@ -858,6 +858,34 @@ fn clear_query_history(blf_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn list_explorer_query_history(blf_path: String) -> Result<Vec<project_store::ExplorerQueryEntry>, String> {
+    let path = project_path_for(&blf_path);
+    Ok(project_store::read_project(&path, &blf_path)?.explorer_query_history)
+}
+
+#[tauri::command]
+fn record_explorer_query(blf_path: String, sql: String, row_count: i64) -> Result<(), String> {
+    let path = project_path_for(&blf_path);
+    let project = project_store::read_project(&path, &blf_path)?;
+    let entry = project_store::ExplorerQueryEntry { sql, ran_at: now_ms(), row_count };
+    project_store::write_project(&path, &project_store::push_explorer_query(project, entry))
+}
+
+#[tauri::command]
+fn remove_explorer_query(blf_path: String, sql: String) -> Result<(), String> {
+    let path = project_path_for(&blf_path);
+    let project = project_store::read_project(&path, &blf_path)?;
+    project_store::write_project(&path, &project_store::remove_explorer_query(project, &sql))
+}
+
+#[tauri::command]
+fn clear_explorer_query_history(blf_path: String) -> Result<(), String> {
+    let path = project_path_for(&blf_path);
+    let project = project_store::read_project(&path, &blf_path)?;
+    project_store::write_project(&path, &project_store::clear_explorer_query_history(project))
+}
+
+#[tauri::command]
 fn list_recent_traces(app: tauri::AppHandle) -> Result<Vec<RecentTraceInfo>, String> {
     let path = recent_traces_path(&app)?;
     let list = read_recent_traces(&path)?;
@@ -946,6 +974,10 @@ fn main() {
             record_query,
             remove_query,
             clear_query_history,
+            list_explorer_query_history,
+            record_explorer_query,
+            remove_explorer_query,
+            clear_explorer_query_history,
             get_project,
             save_project
         ])
@@ -1534,6 +1566,33 @@ mod tests {
         .unwrap();
         drop(conn);
         blf_path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn explorer_query_history_commands_persist_independently_of_analyzer_history() {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!("project_test_explorer_queries_{}.blf", std::process::id()));
+        let blf_path = blf_path.to_string_lossy().to_string();
+
+        record_query(blf_path.clone(), "select 1".to_string(), vec![], true, 3).unwrap();
+        record_explorer_query(blf_path.clone(), "select 2".to_string(), 7).unwrap();
+
+        let analyzer_history = list_query_history(blf_path.clone()).unwrap();
+        let explorer_history = list_explorer_query_history(blf_path.clone()).unwrap();
+        assert_eq!(analyzer_history.len(), 1);
+        assert_eq!(explorer_history.len(), 1);
+        assert_eq!(explorer_history[0].sql, "select 2");
+        assert_eq!(explorer_history[0].row_count, 7);
+
+        remove_explorer_query(blf_path.clone(), "select 2".to_string()).unwrap();
+        assert!(list_explorer_query_history(blf_path.clone()).unwrap().is_empty());
+        assert_eq!(list_query_history(blf_path.clone()).unwrap().len(), 1, "Analyzer history untouched");
+
+        record_explorer_query(blf_path.clone(), "select 3".to_string(), 1).unwrap();
+        clear_explorer_query_history(blf_path.clone()).unwrap();
+        assert!(list_explorer_query_history(blf_path.clone()).unwrap().is_empty());
+
+        let _ = std::fs::remove_file(project_store::project_file_path(std::path::Path::new(&blf_path)));
     }
 
     #[test]
