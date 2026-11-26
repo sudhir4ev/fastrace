@@ -143,6 +143,12 @@ export interface ExplorerTablePage {
   totalRows: number;
 }
 
+export interface ExplorerQueryEntry {
+  sql: string;
+  ranAt: number;
+  rowCount: number;
+}
+
 export interface ProjectFile {
   version: number;
   traces: { path: string; arxmlPath: string | null; downsamplingAlgorithms: Record<number, string> }[];
@@ -235,6 +241,10 @@ export interface TraceDataSource {
     orderByColumn: string | null,
     orderByDesc: boolean
   ): Promise<ExplorerTablePage>;
+  listExplorerQueryHistory(blfPath: string): Promise<ExplorerQueryEntry[]>;
+  recordExplorerQuery(blfPath: string, sql: string, rowCount: number): Promise<void>;
+  removeExplorerQuery(blfPath: string, sql: string): Promise<void>;
+  clearExplorerQueryHistory(blfPath: string): Promise<void>;
   recordQuery(
     blfPath: string,
     sql: string,
@@ -444,6 +454,22 @@ export class TauriTraceDataSource implements TraceDataSource {
       orderByColumn,
       orderByDesc,
     });
+  }
+
+  listExplorerQueryHistory(blfPath: string): Promise<ExplorerQueryEntry[]> {
+    return invoke<ExplorerQueryEntry[]>("list_explorer_query_history", { blfPath });
+  }
+
+  recordExplorerQuery(blfPath: string, sql: string, rowCount: number): Promise<void> {
+    return invoke<void>("record_explorer_query", { blfPath, sql, rowCount });
+  }
+
+  removeExplorerQuery(blfPath: string, sql: string): Promise<void> {
+    return invoke<void>("remove_explorer_query", { blfPath, sql });
+  }
+
+  clearExplorerQueryHistory(blfPath: string): Promise<void> {
+    return invoke<void>("clear_explorer_query_history", { blfPath });
   }
 
   recordQuery(

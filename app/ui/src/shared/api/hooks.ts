@@ -374,6 +374,40 @@ export function useQueryHistory(blfPath: string) {
   });
 }
 
+const EXPLORER_QUERY_HISTORY_KEY = (blfPath: string) => ["explorer-query-history", blfPath];
+
+export function useExplorerQueryHistory(blfPath: string) {
+  return useQuery({
+    queryKey: EXPLORER_QUERY_HISTORY_KEY(blfPath),
+    queryFn: () => getTraceDataSource().listExplorerQueryHistory(blfPath),
+  });
+}
+
+export function useRecordExplorerQuery(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sql, rowCount }: { sql: string; rowCount: number }) =>
+      getTraceDataSource().recordExplorerQuery(blfPath, sql, rowCount),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: EXPLORER_QUERY_HISTORY_KEY(blfPath) }),
+  });
+}
+
+export function useRemoveExplorerQuery(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sql: string) => getTraceDataSource().removeExplorerQuery(blfPath, sql),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: EXPLORER_QUERY_HISTORY_KEY(blfPath) }),
+  });
+}
+
+export function useClearExplorerQueryHistory(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => getTraceDataSource().clearExplorerQueryHistory(blfPath),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: EXPLORER_QUERY_HISTORY_KEY(blfPath) }),
+  });
+}
+
 export function useProject(blfPath: string) {
   return useQuery({
     queryKey: ["project", blfPath],

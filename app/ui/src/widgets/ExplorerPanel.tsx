@@ -1,12 +1,20 @@
 import { useState } from "react";
+import { Copy, History } from "lucide-react";
 import { Editor } from "prism-react-editor";
 import "prism-react-editor/prism/languages/sql";
 import "prism-react-editor/languages/sql";
 import "prism-react-editor/layout.css";
 import "prism-react-editor/themes/github-light.css";
-import { useRunExplorerTablePage } from "@/shared/api/hooks";
-import type { ExplorerTablePage } from "@/shared/api/trace-source";
+import {
+  useClearExplorerQueryHistory,
+  useExplorerQueryHistory,
+  useRecordExplorerQuery,
+  useRemoveExplorerQuery,
+  useRunExplorerTablePage,
+} from "@/shared/api/hooks";
+import type { ExplorerQueryEntry, ExplorerTablePage } from "@/shared/api/trace-source";
 import { Button } from "@/shared/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 
 interface ExplorerPanelProps {
   blfPath: string;
@@ -30,6 +38,16 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDesc, setSortDesc] = useState(false);
   const mutation = useRunExplorerTablePage(blfPath);
+  const history = useExplorerQueryHistory(blfPath);
+  const recordQuery = useRecordExplorerQuery(blfPath);
+  const removeQuery = useRemoveExplorerQuery(blfPath);
+  const clearHistory = useClearExplorerQueryHistory(blfPath);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  function loadHistoryEntry(entry: ExplorerQueryEntry) {
+    setSql(entry.sql);
+    setHistoryOpen(false);
+  }
 
   function fetchPage(sqlText: string, index: number, size: number, col: string | null, desc: boolean) {
     mutation.mutate(
@@ -39,6 +57,7 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
           setError(null);
           setPage(result);
           setRanSql(sqlText);
+          recordQuery.mutate({ sql: sqlText, rowCount: result.totalRows });
         },
         onError: (e) => {
           setError(String(e));
@@ -80,9 +99,79 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
 
   return (
     <div className="flex h-full flex-col gap-2 p-2">
-      <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-        Explorer
-      </span>
+      <div className="flex shrink-0 items-center justify-between gap-2">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          Explorer
+        </span>
+        <Popover open={historyOpen} onOpenChange={setHistoryOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-muted-foreground"
+              aria-label="Recent queries"
+              title="Recent queries"
+            >
+              <History className="h-3.5 w-3.5" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-[40rem] max-w-[min(40rem,calc(100vw-2rem))] p-2">
+            <div className="mb-1 flex items-center justify-between px-1">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Recent queries
+              </div>
+              {(history.data?.length ?? 0) > 0 && (
+                <button
+                  type="button"
+                  className="text-[10px] text-muted-foreground underline"
+                  onClick={() => clearHistory.mutate()}
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
+            <div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
+              {(history.data?.length ?? 0) === 0 && (
+                <div className="px-1 text-xs text-muted-foreground">No recent queries for this trace.</div>
+              )}
+              {history.data?.map((entry) => (
+                <div
+                  key={`${entry.ranAt}-${entry.sql}`}
+                  className="flex items-start gap-2 rounded border border-border/60 px-3 py-2.5 hover:bg-accent"
+                >
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 whitespace-pre-wrap break-all text-left font-mono text-[10px] hover:underline"
+                    onClick={() => loadHistoryEntry(entry)}
+                  >
+                    {entry.sql.trim()}
+                  </button>
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <button
+                      type="button"
+                      className="rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+                      aria-label="Copy query"
+                      title="Copy query"
+                      onClick={() => void navigator.clipboard.writeText(entry.sql)}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-background hover:text-destructive"
+                      aria-label="Remove query from history"
+                      onClick={() => removeQuery.mutate(entry.sql)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
       <div className="min-h-0 flex-1 overflow-hidden rounded border border-border [&_.prism-code-editor]:h-full [&_.prism-code-editor]:rounded [&_.prism-code-editor]:text-xs [&_.prism-code-editor]:[font-family:var(--font-mono)]">
         <Editor
           language="sql"
