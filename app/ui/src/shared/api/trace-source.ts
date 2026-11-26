@@ -149,6 +149,12 @@ export interface ExplorerQueryEntry {
   rowCount: number;
 }
 
+export interface SavedExplorerQuery {
+  name: string;
+  sql: string;
+  savedAt: number;
+}
+
 export interface ProjectFile {
   version: number;
   traces: { path: string; arxmlPath: string | null; downsamplingAlgorithms: Record<number, string> }[];
@@ -245,6 +251,8 @@ export interface TraceDataSource {
   recordExplorerQuery(blfPath: string, sql: string, rowCount: number): Promise<void>;
   removeExplorerQuery(blfPath: string, sql: string): Promise<void>;
   clearExplorerQueryHistory(blfPath: string): Promise<void>;
+  listExplorerSavedQueries(blfPath: string): Promise<SavedExplorerQuery[]>;
+  saveExplorerQuery(blfPath: string, name: string, sql: string): Promise<void>;
   recordQuery(
     blfPath: string,
     sql: string,
@@ -470,6 +478,14 @@ export class TauriTraceDataSource implements TraceDataSource {
 
   clearExplorerQueryHistory(blfPath: string): Promise<void> {
     return invoke<void>("clear_explorer_query_history", { blfPath });
+  }
+
+  listExplorerSavedQueries(blfPath: string): Promise<SavedExplorerQuery[]> {
+    return invoke<SavedExplorerQuery[]>("list_explorer_saved_queries", { blfPath });
+  }
+
+  saveExplorerQuery(blfPath: string, name: string, sql: string): Promise<void> {
+    return invoke<void>("save_explorer_query", { blfPath, name, sql });
   }
 
   recordQuery(

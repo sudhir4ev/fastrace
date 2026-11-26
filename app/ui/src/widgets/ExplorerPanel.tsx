@@ -8,12 +8,21 @@ import "prism-react-editor/themes/github-light.css";
 import {
   useClearExplorerQueryHistory,
   useExplorerQueryHistory,
+  useExplorerSavedQueries,
   useRecordExplorerQuery,
   useRemoveExplorerQuery,
   useRunExplorerTablePage,
+  useSaveExplorerQuery,
 } from "@/shared/api/hooks";
-import type { ExplorerQueryEntry, ExplorerTablePage } from "@/shared/api/trace-source";
+import type { ExplorerQueryEntry, ExplorerTablePage, SavedExplorerQuery } from "@/shared/api/trace-source";
 import { Button } from "@/shared/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/shared/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 
 interface ExplorerPanelProps {
@@ -47,6 +56,28 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
   function loadHistoryEntry(entry: ExplorerQueryEntry) {
     setSql(entry.sql);
     setHistoryOpen(false);
+  }
+
+  const savedQueries = useExplorerSavedQueries(blfPath);
+  const saveQuery = useSaveExplorerQuery(blfPath);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
+
+  function openSaveDialog() {
+    if (!ranSql) return;
+    setSaveName("");
+    setSaveDialogOpen(true);
+  }
+
+  function confirmSave() {
+    const name = saveName.trim();
+    if (name === "" || !ranSql) return; // blank names are rejected before the Tauri call
+    saveQuery.mutate({ name, sql: ranSql });
+    setSaveDialogOpen(false);
+  }
+
+  function loadSavedQuery(entry: SavedExplorerQuery) {
+    setSql(entry.sql);
   }
 
   function fetchPage(sqlText: string, index: number, size: number, col: string | null, desc: boolean) {
@@ -183,11 +214,29 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
           textareaProps={{ placeholder: "select * from messages limit 50", spellCheck: false }}
         />
       </div>
-      <div className="shrink-0">
+      <div className="flex shrink-0 items-center gap-2">
         <Button size="sm" onClick={run} disabled={mutation.isPending}>
           {mutation.isPending ? "Running..." : "Run"}
         </Button>
+        <Button size="sm" variant="outline" onClick={openSaveDialog} disabled={!ranSql}>
+          Save
+        </Button>
       </div>
+      {(savedQueries.data?.length ?? 0) > 0 && (
+        <div className="flex shrink-0 flex-wrap gap-1 text-xs">
+          {savedQueries.data?.map((entry) => (
+            <button
+              key={`${entry.savedAt}-${entry.name}`}
+              type="button"
+              className="rounded border border-border/60 px-2 py-1 hover:bg-accent"
+              title={entry.sql}
+              onClick={() => loadSavedQuery(entry)}
+            >
+              {entry.name}
+            </button>
+          ))}
+        </div>
+      )}
       {error && (
         <div className="shrink-0 rounded border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
           {error}
@@ -259,6 +308,32 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
           </table>
         </div>
       )}
+
+      <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Save query</DialogTitle>
+          </DialogHeader>
+          <div className="px-4 pb-2">
+            <input
+              autoFocus
+              className="w-full rounded border border-border bg-background px-2 py-1 text-sm"
+              placeholder="Name this query"
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && confirmSave()}
+            />
+          </div>
+          <DialogFooter className="gap-2 p-4 pt-0">
+            <Button variant="outline" onClick={() => setSaveDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={confirmSave} disabled={saveName.trim() === ""}>
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

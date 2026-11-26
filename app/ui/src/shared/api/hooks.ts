@@ -408,6 +408,24 @@ export function useClearExplorerQueryHistory(blfPath: string) {
   });
 }
 
+const EXPLORER_SAVED_QUERIES_KEY = (blfPath: string) => ["explorer-saved-queries", blfPath];
+
+export function useExplorerSavedQueries(blfPath: string) {
+  return useQuery({
+    queryKey: EXPLORER_SAVED_QUERIES_KEY(blfPath),
+    queryFn: () => getTraceDataSource().listExplorerSavedQueries(blfPath),
+  });
+}
+
+export function useSaveExplorerQuery(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, sql }: { name: string; sql: string }) =>
+      getTraceDataSource().saveExplorerQuery(blfPath, name, sql),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: EXPLORER_SAVED_QUERIES_KEY(blfPath) }),
+  });
+}
+
 export function useProject(blfPath: string) {
   return useQuery({
     queryKey: ["project", blfPath],
