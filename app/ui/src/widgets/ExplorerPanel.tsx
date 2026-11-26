@@ -11,10 +11,16 @@ import {
   useExplorerSavedQueries,
   useRecordExplorerQuery,
   useRemoveExplorerQuery,
+  useRunExplorerChartQuery,
   useRunExplorerTablePage,
   useSaveExplorerQuery,
 } from "@/shared/api/hooks";
-import type { ExplorerQueryEntry, ExplorerTablePage, SavedExplorerQuery } from "@/shared/api/trace-source";
+import type {
+  ExplorerChartResult,
+  ExplorerQueryEntry,
+  ExplorerTablePage,
+  SavedExplorerQuery,
+} from "@/shared/api/trace-source";
 import { Button } from "@/shared/ui/button";
 import {
   Dialog,
@@ -24,6 +30,7 @@ import {
   DialogTitle,
 } from "@/shared/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
+import ExplorerChart from "./ExplorerChart";
 
 interface ExplorerPanelProps {
   blfPath: string;
@@ -78,6 +85,21 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
 
   function loadSavedQuery(entry: SavedExplorerQuery) {
     setSql(entry.sql);
+  }
+
+  const [viewMode, setViewMode] = useState<"table" | "chart">("table");
+  const [chartX, setChartX] = useState<string | null>(null);
+  const [chartY, setChartY] = useState<string | null>(null);
+  const [vizType, setVizType] = useState<"bar" | "line">("line");
+  const [chartResult, setChartResult] = useState<ExplorerChartResult | null>(null);
+  const chartMutation = useRunExplorerChartQuery(blfPath);
+
+  function applyChart() {
+    if (!ranSql || !chartX || !chartY) return;
+    chartMutation.mutate(
+      { baseSql: ranSql, config: { x: chartX, seriesBy: null, y: chartY }, rowLimit: 5000 },
+      { onSuccess: setChartResult }
+    );
   }
 
   function fetchPage(sqlText: string, index: number, size: number, col: string | null, desc: boolean) {
@@ -221,6 +243,24 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
         <Button size="sm" variant="outline" onClick={openSaveDialog} disabled={!ranSql}>
           Save
         </Button>
+        {page && (
+          <div className="flex items-center gap-1 rounded border border-border p-0.5">
+            <button
+              type="button"
+              className={`rounded px-2 py-0.5 text-xs ${viewMode === "table" ? "bg-muted" : ""}`}
+              onClick={() => setViewMode("table")}
+            >
+              Table
+            </button>
+            <button
+              type="button"
+              className={`rounded px-2 py-0.5 text-xs ${viewMode === "chart" ? "bg-muted" : ""}`}
+              onClick={() => setViewMode("chart")}
+            >
+              Chart
+            </button>
+          </div>
+        )}
       </div>
       {(savedQueries.data?.length ?? 0) > 0 && (
         <div className="flex shrink-0 flex-wrap gap-1 text-xs">
@@ -242,7 +282,7 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
           {error}
         </div>
       )}
-      {page && (
+      {page && viewMode === "table" && (
         <div className="min-h-0 flex-1 overflow-auto rounded border border-border">
           <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-2 py-1 text-xs text-muted-foreground">
             <span>
@@ -306,6 +346,67 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {page && viewMode === "chart" && (
+        <div className="flex min-h-0 flex-1 flex-col gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs">
+            <label className="flex items-center gap-1">
+              Chart type
+              <select
+                className="rounded border border-border bg-background px-1 py-0.5"
+                value={vizType}
+                onChange={(e) => setVizType(e.target.value as "bar" | "line")}
+              >
+                <option value="bar">Bar</option>
+                <option value="line">Line</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-1">
+              X
+              <select
+                className="rounded border border-border bg-background px-1 py-0.5"
+                value={chartX ?? ""}
+                onChange={(e) => setChartX(e.target.value || null)}
+              >
+                <option value="" disabled>
+                  Choose a column
+                </option>
+                {page.columns.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1">
+              Y
+              <select
+                className="rounded border border-border bg-background px-1 py-0.5"
+                value={chartY ?? ""}
+                onChange={(e) => setChartY(e.target.value || null)}
+              >
+                <option value="" disabled>
+                  Choose a numeric column
+                </option>
+                {page.columns.filter((c) => c.numeric).map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button size="sm" onClick={applyChart} disabled={!chartX || !chartY || chartMutation.isPending}>
+              Apply
+            </Button>
+            {chartResult?.truncated && (
+              <span className="text-muted-foreground">(showing first {chartResult.rows.length})</span>
+            )}
+          </div>
+          <div className="min-h-0 flex-1 rounded border border-border">
+            {chartResult && <ExplorerChart result={chartResult} vizType={vizType} hasSeries={false} />}
+          </div>
         </div>
       )}
 

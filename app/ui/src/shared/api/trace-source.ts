@@ -155,6 +155,17 @@ export interface SavedExplorerQuery {
   savedAt: number;
 }
 
+export interface ExplorerChartConfig {
+  x: string;
+  seriesBy: string | null;
+  y: string;
+}
+
+export interface ExplorerChartResult {
+  rows: [string, string | null, number][];
+  truncated: boolean;
+}
+
 export interface ProjectFile {
   version: number;
   traces: { path: string; arxmlPath: string | null; downsamplingAlgorithms: Record<number, string> }[];
@@ -253,6 +264,12 @@ export interface TraceDataSource {
   clearExplorerQueryHistory(blfPath: string): Promise<void>;
   listExplorerSavedQueries(blfPath: string): Promise<SavedExplorerQuery[]>;
   saveExplorerQuery(blfPath: string, name: string, sql: string): Promise<void>;
+  runExplorerChartQuery(
+    blfPath: string,
+    baseSql: string,
+    config: ExplorerChartConfig,
+    rowLimit: number
+  ): Promise<ExplorerChartResult>;
   recordQuery(
     blfPath: string,
     sql: string,
@@ -486,6 +503,20 @@ export class TauriTraceDataSource implements TraceDataSource {
 
   saveExplorerQuery(blfPath: string, name: string, sql: string): Promise<void> {
     return invoke<void>("save_explorer_query", { blfPath, name, sql });
+  }
+
+  runExplorerChartQuery(
+    blfPath: string,
+    baseSql: string,
+    config: ExplorerChartConfig,
+    rowLimit: number
+  ): Promise<ExplorerChartResult> {
+    return invoke<ExplorerChartResult>("run_explorer_chart_query", {
+      blfPath,
+      baseSql,
+      config: { x: config.x, seriesBy: config.seriesBy, y: config.y },
+      rowLimit,
+    });
   }
 
   recordQuery(
