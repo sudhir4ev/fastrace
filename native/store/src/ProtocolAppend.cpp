@@ -9,7 +9,8 @@ bool isEthernet(uint32_t objectType)
     return objectType == ETHERNET_FRAME || objectType == ETHERNET_FRAME_EX || objectType == ETHERNET_FRAME_FORWARDED;
 }
 
-bool appendProto(const ProtocolMessage& pm, Appender& pdu, Appender& someip, Appender& sd, Appender& doip)
+bool appendProto(
+    const ProtocolMessage& pm, Appender& pdu, Appender& someip, Appender& sd, Appender& doip, Appender& tcp)
 {
     const int64_t msgId = pm.sourceIndices.empty() ? -1 : static_cast<int64_t>(pm.sourceIndices.front());
     switch (pm.type) {
@@ -43,6 +44,11 @@ bool appendProto(const ProtocolMessage& pm, Appender& pdu, Appender& someip, App
         doip.i64(pm.data.doip.sourceAddress);
         doip.i64(pm.data.doip.targetAddress);
         return doip.endRow();
+    case ProtocolType::Tcp:
+        tcp.i64(msgId);
+        tcp.i32(static_cast<int32_t>(pm.data.tcp.flags));
+        tcp.i32(static_cast<int32_t>(pm.data.tcp.length));
+        return tcp.endRow();
     }
     return true;
 }

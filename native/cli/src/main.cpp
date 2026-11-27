@@ -58,10 +58,10 @@ void printError(const std::string& message)
 }
 
 bool appendProtocolRows(const std::vector<ProtocolMessage>& protos, fastrace::Appender& pdu, fastrace::Appender& someip,
-    fastrace::Appender& sd, fastrace::Appender& doip)
+    fastrace::Appender& sd, fastrace::Appender& doip, fastrace::Appender& tcp)
 {
     for (const auto& pm : protos) {
-        if (!fastrace::appendProto(pm, pdu, someip, sd, doip)) {
+        if (!fastrace::appendProto(pm, pdu, someip, sd, doip, tcp)) {
             return false;
         }
     }
@@ -536,9 +536,10 @@ int runPrepare(int argc, char** argv)
         fastrace::Appender someipApp(db.con(), "protocol_someip");
         fastrace::Appender sdApp(db.con(), "protocol_someip_sd");
         fastrace::Appender doipApp(db.con(), "protocol_doip");
+        fastrace::Appender tcpApp(db.con(), "protocol_tcp");
         fastrace::Appender ciApp(db.con(), "container_index");
         failed = !msgApp.valid() || !pduApp.valid() || !someipApp.valid() || !sdApp.valid() || !doipApp.valid()
-            || !ciApp.valid();
+            || !tcpApp.valid() || !ciApp.valid();
 
         uint64_t nextMsgId = 0;
         auto lastProgress = Clock::now();
@@ -574,10 +575,12 @@ int runPrepare(int argc, char** argv)
             msgApp.i32(static_cast<int32_t>(msg.arbId));
             msgApp.b(msg.extendedId);
             msgApp.i32(static_cast<int32_t>(msg.dlc));
+            msgApp.str(msg.srcIp);
+            msgApp.i32(msg.srcPort);
             msgApp.str(msg.dstIp);
             msgApp.i32(msg.dstPort);
             msgApp.i32(static_cast<int32_t>(msg.data.size()));
-            if (!msgApp.endRow() || !appendProtocolRows(protos, pduApp, someipApp, sdApp, doipApp)) {
+            if (!msgApp.endRow() || !appendProtocolRows(protos, pduApp, someipApp, sdApp, doipApp, tcpApp)) {
                 failed = true;
                 return;
             }
