@@ -30,6 +30,7 @@ import {
   DialogTitle,
 } from "@/shared/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 import ExplorerChart from "./ExplorerChart";
 
 interface ExplorerPanelProps {
@@ -46,6 +47,13 @@ function hasEmbeddedSemicolon(sql: string): boolean {
 
 export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
   const [sql, setSql] = useState("");
+  // Editor is uncontrolled (same library/pattern as AnalyzerPanel.tsx): binding
+  // `value` straight to the live typed state creates a feedback loop where the
+  // editor resets its cursor to the start on every keystroke, reversing
+  // whatever gets typed. `editorSeed`/`editorEpoch` only change on an explicit
+  // load (history/saved-query), never while typing.
+  const [editorSeed, setEditorSeed] = useState("");
+  const [editorEpoch, setEditorEpoch] = useState(0);
   const [ranSql, setRanSql] = useState<string | null>(null);
   const [page, setPage] = useState<ExplorerTablePage | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +70,8 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
 
   function loadHistoryEntry(entry: ExplorerQueryEntry) {
     setSql(entry.sql);
+    setEditorSeed(entry.sql);
+    setEditorEpoch((e) => e + 1);
     setHistoryOpen(false);
   }
 
@@ -85,6 +95,8 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
 
   function loadSavedQuery(entry: SavedExplorerQuery) {
     setSql(entry.sql);
+    setEditorSeed(entry.sql);
+    setEditorEpoch((e) => e + 1);
   }
 
   const [viewMode, setViewMode] = useState<"table" | "chart">("table");
@@ -230,256 +242,295 @@ export default function ExplorerPanel({ blfPath }: ExplorerPanelProps) {
           </PopoverContent>
         </Popover>
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden rounded border border-border [&_.prism-code-editor]:h-full [&_.prism-code-editor]:rounded [&_.prism-code-editor]:text-xs [&_.prism-code-editor]:[font-family:var(--font-mono)]">
-        <Editor
-          language="sql"
-          value={sql}
-          onUpdate={setSql}
-          lineNumbers
-          wordWrap
-          style={{ height: "100%" }}
-          textareaProps={{ placeholder: "select * from messages limit 50", spellCheck: false }}
-        />
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <Button size="sm" onClick={run} disabled={mutation.isPending}>
-          {mutation.isPending ? "Running..." : "Run"}
-        </Button>
-        <Button size="sm" variant="outline" onClick={openSaveDialog} disabled={!ranSql}>
-          Save
-        </Button>
-        {page && (
-          <div className="flex items-center gap-1 rounded border border-border p-0.5">
-            <button
-              type="button"
-              className={`rounded px-2 py-0.5 text-xs ${viewMode === "table" ? "bg-muted" : ""}`}
-              onClick={() => setViewMode("table")}
-            >
-              Table
-            </button>
-            <button
-              type="button"
-              className={`rounded px-2 py-0.5 text-xs ${viewMode === "chart" ? "bg-muted" : ""}`}
-              onClick={() => setViewMode("chart")}
-            >
-              Chart
-            </button>
+      <ResizablePanelGroup direction="vertical" className="min-h-0 flex-1">
+        <ResizablePanel defaultSize={35} minSize={15}>
+          <div className="h-full overflow-hidden rounded border border-border [&_.prism-code-editor]:h-full [&_.prism-code-editor]:rounded [&_.prism-code-editor]:text-xs [&_.prism-code-editor]:[font-family:var(--font-mono)]">
+            <Editor
+              key={editorEpoch}
+              language="sql"
+              value={editorSeed}
+              onUpdate={setSql}
+              lineNumbers
+              wordWrap
+              style={{ height: "100%" }}
+              textareaProps={{ placeholder: "select * from messages limit 50", spellCheck: false }}
+            />
           </div>
-        )}
-      </div>
-      {(savedQueries.data?.length ?? 0) > 0 && (
-        <div className="flex shrink-0 flex-wrap gap-1 text-xs">
-          {savedQueries.data?.map((entry) => (
-            <button
-              key={`${entry.savedAt}-${entry.name}`}
-              type="button"
-              className="rounded border border-border/60 px-2 py-1 hover:bg-accent"
-              title={entry.sql}
-              onClick={() => loadSavedQuery(entry)}
-            >
-              {entry.name}
-            </button>
-          ))}
-        </div>
-      )}
-      {error && (
-        <div className="shrink-0 rounded border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
-          {error}
-        </div>
-      )}
-      {page && viewMode === "table" && (
-        <div className="min-h-0 flex-1 overflow-auto rounded border border-border">
-          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-2 py-1 text-xs text-muted-foreground">
-            <span>
-              {page.totalRows.toLocaleString()} row{page.totalRows === 1 ? "" : "s"} · page {pageIndex + 1} of{" "}
-              {totalPages}
-            </span>
-            <div className="flex items-center gap-2">
-              <select
-                className="rounded border border-border bg-background px-1 py-0.5"
-                value={pageSize}
-                onChange={(e) => {
-                  const size = Number(e.target.value);
-                  setPageSize(size);
-                  setPageIndex(0);
-                  if (ranSql) fetchPage(ranSql, 0, size, sortColumn, sortDesc);
-                }}
-              >
-                {[25, 50, 100, 250].map((size) => (
-                  <option key={size} value={size}>
-                    {size}/page
-                  </option>
-                ))}
-              </select>
-              <Button size="sm" variant="outline" disabled={pageIndex === 0} onClick={() => goToPage(pageIndex - 1)}>
-                Prev
+        </ResizablePanel>
+        <ResizableHandle withHandle />
+        <ResizablePanel defaultSize={65} minSize={20}>
+          <div className="flex h-full flex-col gap-2">
+            <div className="flex shrink-0 items-center gap-2">
+              <Button size="sm" onClick={run} disabled={mutation.isPending}>
+                {mutation.isPending ? "Running..." : "Run"}
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={pageIndex + 1 >= totalPages}
-                onClick={() => goToPage(pageIndex + 1)}
-              >
-                Next
+              <Button size="sm" variant="outline" onClick={openSaveDialog} disabled={!ranSql}>
+                Save
               </Button>
+              {page && (
+                <div className="ml-auto flex items-center gap-1 rounded border border-border p-0.5">
+                  <button
+                    type="button"
+                    className={`rounded px-2 py-0.5 text-xs ${viewMode === "table" ? "bg-muted" : ""}`}
+                    onClick={() => setViewMode("table")}
+                  >
+                    Raw
+                  </button>
+                  <button
+                    type="button"
+                    className={`rounded px-2 py-0.5 text-xs ${viewMode === "chart" ? "bg-muted" : ""}`}
+                    onClick={() => setViewMode("chart")}
+                  >
+                    Chart
+                  </button>
+                </div>
+              )}
             </div>
-          </div>
-          <table className="w-full text-left text-xs">
-            <thead className="sticky top-0 bg-muted">
-              <tr>
-                {page.columns.map((c) => (
-                  <th
-                    key={c.name}
-                    className="cursor-pointer select-none whitespace-nowrap px-2 py-1 font-medium hover:bg-accent"
-                    onClick={() => sortBy(c.name)}
+            {(savedQueries.data?.length ?? 0) > 0 && (
+              <div className="flex shrink-0 flex-wrap gap-1 text-xs">
+                {savedQueries.data?.map((entry) => (
+                  <button
+                    key={`${entry.savedAt}-${entry.name}`}
+                    type="button"
+                    className="rounded border border-border/60 px-2 py-1 hover:bg-accent"
+                    title={entry.sql}
+                    onClick={() => loadSavedQuery(entry)}
                   >
-                    {c.name}
-                    {sortColumn === c.name && (sortDesc ? " ▼" : " ▲")}
-                  </th>
+                    {entry.name}
+                  </button>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {page.rows.map((row, i) => (
-                <tr key={i} className="border-t border-border/60">
-                  {row.map((cell, j) => (
-                    <td key={j} className="whitespace-nowrap px-2 py-1 font-mono">
-                      {cell}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {page && viewMode === "chart" && (
-        <div className="flex min-h-0 flex-1 flex-col gap-2">
-          <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs">
-            <label className="flex items-center gap-1">
-              Chart type
-              <select
-                className="rounded border border-border bg-background px-1 py-0.5"
-                value={vizType}
-                onChange={(e) => setVizType(e.target.value as "bar" | "line")}
-              >
-                <option value="bar">Bar</option>
-                <option value="line">Line</option>
-              </select>
-            </label>
-            <label className="flex items-center gap-1">
-              X
-              <select
-                className="rounded border border-border bg-background px-1 py-0.5"
-                value={chartX ?? ""}
-                onChange={(e) => setChartX(e.target.value || null)}
-              >
-                <option value="" disabled>
-                  Choose a column
-                </option>
-                {page.columns.map((c) => (
-                  <option key={c.name} value={c.name}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-1">
-              Group by (optional)
-              <select
-                className="rounded border border-border bg-background px-1 py-0.5"
-                value={seriesBy ?? ""}
-                onChange={(e) => setSeriesBy(e.target.value || null)}
-              >
-                <option value="">None</option>
-                {page.columns.map((c) => (
-                  <option key={c.name} value={c.name}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-1">
-              <input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)} />
-              Group results
-            </label>
-            {!grouped ? (
-              <label className="flex items-center gap-1">
-                Y
-                <select
-                  className="rounded border border-border bg-background px-1 py-0.5"
-                  value={chartY ?? ""}
-                  onChange={(e) => setChartY(e.target.value || null)}
-                >
-                  <option value="" disabled>
-                    Choose a numeric column
-                  </option>
-                  {page.columns.filter((c) => c.numeric).map((c) => (
-                    <option key={c.name} value={c.name}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : (
-              <>
-                <label className="flex items-center gap-1">
-                  Aggregate
-                  <select
-                    className="rounded border border-border bg-background px-1 py-0.5"
-                    value={aggFn}
-                    onChange={(e) => setAggFn(e.target.value as typeof aggFn)}
-                  >
-                    <option value="count">Count</option>
-                    <option value="sum">Sum</option>
-                    <option value="avg">Avg</option>
-                    <option value="min">Min</option>
-                    <option value="max">Max</option>
-                  </select>
-                </label>
-                {aggFn !== "count" && (
-                  <label className="flex items-center gap-1">
-                    of
+              </div>
+            )}
+            {error && (
+              <div className="shrink-0 rounded border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
+                {error}
+              </div>
+            )}
+            {page && viewMode === "table" && (
+              <div className="min-h-0 flex-1 overflow-auto rounded border border-border">
+                <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-2 py-1 text-xs text-muted-foreground">
+                  <span>
+                    {page.totalRows.toLocaleString()} row{page.totalRows === 1 ? "" : "s"} · page {pageIndex + 1} of{" "}
+                    {totalPages}
+                  </span>
+                  <div className="flex items-center gap-2">
                     <select
                       className="rounded border border-border bg-background px-1 py-0.5"
-                      value={aggColumn ?? ""}
-                      onChange={(e) => setAggColumn(e.target.value || null)}
+                      value={pageSize}
+                      onChange={(e) => {
+                        const size = Number(e.target.value);
+                        setPageSize(size);
+                        setPageIndex(0);
+                        if (ranSql) fetchPage(ranSql, 0, size, sortColumn, sortDesc);
+                      }}
                     >
-                      <option value="" disabled>
-                        Choose a numeric column
-                      </option>
-                      {page.columns.filter((c) => c.numeric).map((c) => (
-                        <option key={c.name} value={c.name}>
-                          {c.name}
+                      {[25, 50, 100, 250].map((size) => (
+                        <option key={size} value={size}>
+                          {size}/page
                         </option>
                       ))}
                     </select>
-                  </label>
-                )}
-              </>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={pageIndex === 0}
+                      onClick={() => goToPage(pageIndex - 1)}
+                    >
+                      Prev
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={pageIndex + 1 >= totalPages}
+                      onClick={() => goToPage(pageIndex + 1)}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+                <table className="w-full text-left text-xs">
+                  <thead className="sticky top-0 bg-muted">
+                    <tr>
+                      {page.columns.map((c) => (
+                        <th
+                          key={c.name}
+                          className="cursor-pointer select-none whitespace-nowrap px-2 py-1 font-medium hover:bg-accent"
+                          onClick={() => sortBy(c.name)}
+                        >
+                          {c.name}
+                          {sortColumn === c.name && (sortDesc ? " ▼" : " ▲")}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {page.rows.map((row, i) => (
+                      <tr key={i} className="border-t border-border/60">
+                        {row.map((cell, j) => (
+                          <td key={j} className="whitespace-nowrap px-2 py-1 font-mono">
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
-            <Button
-              size="sm"
-              onClick={applyChart}
-              disabled={
-                !chartX ||
-                (!grouped && !chartY) ||
-                (grouped && aggFn !== "count" && !aggColumn) ||
-                chartMutation.isPending
-              }
-            >
-              Apply
-            </Button>
-            {chartResult?.truncated && (
-              <span className="text-muted-foreground">(showing first {chartResult.rows.length})</span>
+
+            {page && viewMode === "chart" && (
+              <ResizablePanelGroup direction="horizontal" className="min-h-0 flex-1">
+                <ResizablePanel defaultSize={25} minSize={15} maxSize={40}>
+                  <div className="flex h-full flex-col gap-4 overflow-y-auto rounded border border-border p-3 text-xs">
+                    <div className="flex flex-col gap-1">
+                      <span className="font-medium uppercase tracking-wide text-muted-foreground">Chart type</span>
+                      <div className="flex gap-1">
+                        <Button
+                          size="sm"
+                          variant={vizType === "bar" ? "default" : "outline"}
+                          className="flex-1"
+                          onClick={() => setVizType("bar")}
+                        >
+                          Bar
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={vizType === "line" ? "default" : "outline"}
+                          className="flex-1"
+                          onClick={() => setVizType("line")}
+                        >
+                          Line
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-3">
+                      <span className="font-medium uppercase tracking-wide text-muted-foreground">Mapping</span>
+                      <label className="flex flex-col gap-1">
+                        <span>X</span>
+                        <select
+                          className="rounded border border-border bg-background px-1 py-0.5"
+                          value={chartX ?? ""}
+                          onChange={(e) => setChartX(e.target.value || null)}
+                        >
+                          <option value="" disabled>
+                            Choose a column
+                          </option>
+                          {page.columns.map((c) => (
+                            <option key={c.name} value={c.name}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span>Group by (optional)</span>
+                        <select
+                          className="rounded border border-border bg-background px-1 py-0.5"
+                          value={seriesBy ?? ""}
+                          onChange={(e) => setSeriesBy(e.target.value || null)}
+                        >
+                          <option value="">None</option>
+                          {page.columns.map((c) => (
+                            <option key={c.name} value={c.name}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)} />
+                        Group results
+                      </label>
+                      {!grouped ? (
+                        <label className="flex flex-col gap-1">
+                          <span>Y</span>
+                          <select
+                            className="rounded border border-border bg-background px-1 py-0.5"
+                            value={chartY ?? ""}
+                            onChange={(e) => setChartY(e.target.value || null)}
+                          >
+                            <option value="" disabled>
+                              Choose a numeric column
+                            </option>
+                            {page.columns.filter((c) => c.numeric).map((c) => (
+                              <option key={c.name} value={c.name}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : (
+                        <>
+                          <label className="flex flex-col gap-1">
+                            <span>Aggregate</span>
+                            <select
+                              className="rounded border border-border bg-background px-1 py-0.5"
+                              value={aggFn}
+                              onChange={(e) => setAggFn(e.target.value as typeof aggFn)}
+                            >
+                              <option value="count">Count</option>
+                              <option value="sum">Sum</option>
+                              <option value="avg">Avg</option>
+                              <option value="min">Min</option>
+                              <option value="max">Max</option>
+                            </select>
+                          </label>
+                          {aggFn !== "count" && (
+                            <label className="flex flex-col gap-1">
+                              <span>of</span>
+                              <select
+                                className="rounded border border-border bg-background px-1 py-0.5"
+                                value={aggColumn ?? ""}
+                                onChange={(e) => setAggColumn(e.target.value || null)}
+                              >
+                                <option value="" disabled>
+                                  Choose a numeric column
+                                </option>
+                                {page.columns.filter((c) => c.numeric).map((c) => (
+                                  <option key={c.name} value={c.name}>
+                                    {c.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+                        </>
+                      )}
+                    </div>
+
+                    <div className="mt-auto flex flex-col gap-1">
+                      {chartResult?.truncated && (
+                        <span className="text-muted-foreground">(showing first {chartResult.rows.length})</span>
+                      )}
+                      <Button
+                        size="sm"
+                        onClick={applyChart}
+                        disabled={
+                          !chartX ||
+                          (!grouped && !chartY) ||
+                          (grouped && aggFn !== "count" && !aggColumn) ||
+                          chartMutation.isPending
+                        }
+                      >
+                        Apply
+                      </Button>
+                    </div>
+                  </div>
+                </ResizablePanel>
+                <ResizableHandle withHandle />
+                <ResizablePanel defaultSize={75} minSize={40}>
+                  <div className="h-full rounded border border-border">
+                    {chartResult && (
+                      <ExplorerChart result={chartResult} vizType={vizType} hasSeries={seriesBy !== null} />
+                    )}
+                  </div>
+                </ResizablePanel>
+              </ResizablePanelGroup>
             )}
           </div>
-          <div className="min-h-0 flex-1 rounded border border-border">
-            {chartResult && <ExplorerChart result={chartResult} vizType={vizType} hasSeries={seriesBy !== null} />}
-          </div>
-        </div>
-      )}
+        </ResizablePanel>
+      </ResizablePanelGroup>
 
       <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
         <DialogContent>
