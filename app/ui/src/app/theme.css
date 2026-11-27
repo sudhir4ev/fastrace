@@ -19,6 +19,7 @@
   --indigo-600: #3F49C7;
 
   --red-500: #E23B40;
+  --amber-500: #D97706;
 
   --bg-app: var(--slate-50);
   --bg-surface: var(--slate-0);
@@ -62,6 +63,8 @@
   --accent-bg-foreground: var(--fg-primary);
   --destructive: var(--red-500);
   --destructive-foreground: var(--fg-inverse);
+  --warning: var(--amber-500);
+  --warning-foreground: var(--fg-inverse);
   --border: var(--border-default);
   --input: var(--border-strong);
   --ring: var(--border-focus);
