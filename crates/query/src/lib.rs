@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+mod analyzer;
+pub use analyzer::*;
+
 mod config;
 pub use config::*;
 

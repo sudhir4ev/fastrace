@@ -10,7 +10,8 @@ use duckdb::Connection;
 /// every query here appends its own `SELECT ... FROM <view>` and runs the
 /// concatenation as one statement, same as crates/query's generic
 /// list_findings/list_sessions/list_segments will (Wave 3).
-const ANALYZER_SQL: &str = include_str!("../../../schema/rules/analyzers/tcp_connection_health.sql");
+const ANALYZER_SQL: &str =
+    include_str!("../../../schema/rules/analyzers/tcp_connection_health.sql");
 
 fn seeded_conn() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
@@ -26,7 +27,15 @@ fn seeded_conn() -> Connection {
 /// `from_client` picks which side is sending: true = 10.0.0.1:client_port ->
 /// 10.0.0.2:server_port, false = the reverse. Both IP and port swap together,
 /// matching how a real reply flips both.
-fn seg(conn: &Connection, msg_id: i64, ts: i64, from_client: bool, client_port: i32, server_port: i32, flags: i32) {
+fn seg(
+    conn: &Connection,
+    msg_id: i64,
+    ts: i64,
+    from_client: bool,
+    client_port: i32,
+    server_port: i32,
+    flags: i32,
+) {
     let (src_ip, src_port, dst_ip, dst_port) = if from_client {
         ("10.0.0.1", client_port, "10.0.0.2", server_port)
     } else {
@@ -111,7 +120,7 @@ fn reconnect_on_same_address_pair_gets_a_distinct_stream_index() {
     seg(&conn, 1, 1, false, 1005, 2005, 0x12); // SYN-ACK
     seg(&conn, 2, 2, true, 1005, 2005, 0x10); // ACK
     seg(&conn, 3, 3, true, 1005, 2005, 0x11); // FIN+ACK
-    // Connection 2: same two ports reconnect later.
+                                              // Connection 2: same two ports reconnect later.
     seg(&conn, 4, 1_000, true, 1005, 2005, 0x02); // SYN
     seg(&conn, 5, 1_001, false, 1005, 2005, 0x12); // SYN-ACK
     seg(&conn, 6, 1_002, true, 1005, 2005, 0x10); // ACK

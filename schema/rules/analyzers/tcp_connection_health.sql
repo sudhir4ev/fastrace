@@ -108,6 +108,6 @@ segments AS (
             CASE WHEN flags & 8 <> 0 THEN 'PSH' END,
             CASE WHEN flags & 32 <> 0 THEN 'URG' END
         ) || ']' AS info,
-        segment_len, idle_us
+        segment_len, coalesce(idle_us, 0) AS idle_us -- NULL for each stream's first segment (no prior LAG)
     FROM _stream_segments
 )
