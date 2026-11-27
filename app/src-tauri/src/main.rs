@@ -541,6 +541,11 @@ fn list_analyzers() -> Vec<String> {
     query::list_analyzers().into_iter().map(str::to_string).collect()
 }
 
+#[tauri::command]
+fn get_default_analyzer_config(analyzer_name: String) -> Result<String, String> {
+    query::get_default_analyzer_config(&analyzer_name).map(str::to_string)
+}
+
 fn resolve_scope(
     conn: &trace_store::Connection,
     respect_trim: bool,
@@ -559,6 +564,7 @@ fn resolve_scope(
 fn list_findings(
     blf_path: String,
     analyzer_name: String,
+    config_json: String,
     respect_trim: bool,
     start_us: i64,
     end_us: i64,
@@ -566,13 +572,14 @@ fn list_findings(
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
     let (scope_start, scope_end) = resolve_scope(&conn, respect_trim, start_us, end_us)?;
-    query::list_findings(&conn, &analyzer_name, scope_start, scope_end)
+    query::list_findings(&conn, &analyzer_name, &config_json, scope_start, scope_end)
 }
 
 #[tauri::command]
 fn list_sessions(
     blf_path: String,
     analyzer_name: String,
+    config_json: String,
     respect_trim: bool,
     start_us: i64,
     end_us: i64,
@@ -580,14 +587,19 @@ fn list_sessions(
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
     let (scope_start, scope_end) = resolve_scope(&conn, respect_trim, start_us, end_us)?;
-    query::list_sessions(&conn, &analyzer_name, scope_start, scope_end)
+    query::list_sessions(&conn, &analyzer_name, &config_json, scope_start, scope_end)
 }
 
 #[tauri::command]
-fn list_segments(blf_path: String, analyzer_name: String, stream_index: i64) -> Result<Vec<query::Segment>, String> {
+fn list_segments(
+    blf_path: String,
+    analyzer_name: String,
+    config_json: String,
+    stream_index: i64,
+) -> Result<Vec<query::Segment>, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::list_segments(&conn, &analyzer_name, stream_index)
+    query::list_segments(&conn, &analyzer_name, &config_json, stream_index)
 }
 
 #[derive(serde::Serialize)]
@@ -1051,6 +1063,7 @@ fn main() {
             run_explorer_chart_query,
             run_detector_query,
             list_analyzers,
+            get_default_analyzer_config,
             list_findings,
             list_sessions,
             list_segments,
