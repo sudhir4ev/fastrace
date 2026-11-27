@@ -62,7 +62,14 @@ shape.
    badge variants, severity filter, drill-down from topology. Reads the
    generic `findings` rows; the "Plugin Analyzer" chip in the mock is the
    active `analyzer_name`. Verify: visually.
-6. **Wave 6 - Timeline + evidence detail** (mock image 3). "Follow TCP
+6. **Wave 6 - Analyzer Configuration** (added 2026-11-27, after a real trace
+   surfaced a dual-channel-tap duplication bug in `tcp_connection_health` -
+   see "Config contract" below). A per-analyzer default config JSON file +
+   generic `{{key}}` substitution into the SQL text, a JSON-editor UI with
+   an Apply button, and the TCP analyzer's first config key: `channel`.
+   Verify: visually + Explorer, same `findings` count before/after picking
+   the correct channel on a trace with the duplication bug.
+7. **Wave 7 - Timeline + evidence detail** (mock image 3). "Follow TCP
    Stream" keyed by `stream_index` over `segments`; `info` flag-string comes
    from SQL (UI renders it verbatim, stays protocol-agnostic); idle-gap
    divider row driven by `segments.idle_us`; `MessageDetails`
@@ -122,7 +129,37 @@ segments(analyzer_name, stream_index, msg_id, timestamp_us,
   `protocol_tcp` by `msg_id` - that is the per-protocol detail path and is
   deliberately **outside** this generic contract.
 
-### Rust contract (`crates/query`, written once in Wave 3)
+**Implementation note (added after Wave 2/3 landed):** the SQL file is
+actually a bare `WITH` chain with no closing `SELECT`, not real `CREATE
+VIEW` statements - DuckDB blocks all DDL on the Trace Store's read-only
+connection, not just TEMP tables, so `CREATE VIEW` would fail there. Callers
+concatenate their own `SELECT ... FROM findings/sessions/segments` onto the
+file's text and run the result as one statement (see
+`schema/rules/analyzers/tcp_connection_health.sql`'s header comment). The
+three CTE names and column shapes above are unchanged; only the mechanism
+differs from how this contract was first drafted.
+
+### Config contract (added Wave 6 2026-11-27)
+
+A 4th piece per analyzer, alongside the SQL file: a default config JSON,
+`schema/rules/analyzers/<name>.config.json`. Keys are analyzer-specific
+(the Rust/Tauri layer never inspects them); values are substituted into
+the SQL text as `{{key}}` placeholders before the final `SELECT` is
+appended - a generic textual substitution, same spirit as how `start_us`/
+`end_us` already get interpolated into `list_findings`/`list_sessions`.
+
+```
+schema/rules/analyzers/tcp_connection_health.sql           # {{channel}} placeholder in _segments
+schema/rules/analyzers/tcp_connection_health.config.json   # { "channel": 1 }
+```
+
+No config value is ever protocol-aware on the Rust side - `apply_config`
+(Wave 6 Task 1) only knows "replace `{{key}}` with `value`'s literal SQL
+form," nothing about what "channel" means. This keeps "adding analyzer #2"
+at zero Rust/Tauri/UI cost even when that analyzer needs config: it ships
+its own `.config.json`, and the same generic substitution code handles it.
+
+### Rust contract (`crates/query`, written once in Wave 3, extended Wave 6)
 
 ```rust
 pub struct Finding {
@@ -147,33 +184,35 @@ pub struct Segment {
     pub info: String, pub segment_len: i64, pub idle_us: i64,
 }
 
-// Adding analyzer #2 = one more entry here + one SQL file. Nothing else.
-const ANALYZERS: &[(&str, &str)] = &[
+// Adding analyzer #2 = one more entry here + one SQL file (+ optional
+// config). Nothing else.
+const ANALYZERS: &[(&str, &str, &str)] = &[
     ("tcp_connection_health",
-     include_str!("../../../schema/rules/analyzers/tcp_connection_health.sql")),
+     include_str!("../../../schema/rules/analyzers/tcp_connection_health.sql"),
+     include_str!("../../../schema/rules/analyzers/tcp_connection_health.config.json")),
 ];
 
-// All three: create the file's views on the (read-only) conn in-session, then
-// SELECT the fixed public view, scoped by time the same way
+// All three: apply_config substitutes {{key}} -> value into the SQL text
+// (config_json empty -> use the analyzer's own default), then the caller's
+// own SELECT is appended and run as one statement - the analyzer SQL is a
+// bare WITH chain with no closing SELECT (no DDL, works on the Trace
+// Store's read-only connection). Time-scoped the same way
 // `detector_scoped_sql` already scopes `run_detector_query`.
-pub fn list_findings(conn, analyzer_name, start_us, end_us) -> Result<Vec<Finding>, String>;
-pub fn list_sessions(conn, analyzer_name, start_us, end_us) -> Result<Vec<Session>, String>;
-pub fn list_segments(conn, analyzer_name, stream_index)     -> Result<Vec<Segment>, String>;
+pub fn list_findings(conn, analyzer_name, config_json, start_us, end_us) -> Result<Vec<Finding>, String>;
+pub fn list_sessions(conn, analyzer_name, config_json, start_us, end_us) -> Result<Vec<Session>, String>;
+pub fn list_segments(conn, analyzer_name, config_json, stream_index)     -> Result<Vec<Segment>, String>;
 pub fn list_analyzers() -> Vec<&'static str>; // names from ANALYZERS, backs the UI picker
+pub fn get_default_analyzer_config(analyzer_name) -> Result<&'static str, String>; // backs the JSON editor's prefill
 ```
 
-Read-only connections can't persist views, so each call runs the analyzer SQL
-to (re)create its views in-session before the `SELECT` - the same constraint
-`run_detector_query` already lives with. Acceptable for MVP; revisit only if
-profiling shows the view-creation per call matters.
-
-### Tauri contract (`app/src-tauri`, written once in Wave 3)
+### Tauri contract (`app/src-tauri`, written once in Wave 3, extended Wave 6)
 
 ```rust
 #[tauri::command] fn list_analyzers() -> Vec<String>
-#[tauri::command] fn list_findings(blf_path, analyzer_name, respect_trim, start_us, end_us) -> Vec<Finding>
-#[tauri::command] fn list_sessions(blf_path, analyzer_name, respect_trim, start_us, end_us) -> Vec<Session>
-#[tauri::command] fn list_segments(blf_path, analyzer_name, stream_index) -> Vec<Segment>
+#[tauri::command] fn get_default_analyzer_config(analyzer_name) -> String
+#[tauri::command] fn list_findings(blf_path, analyzer_name, config_json, respect_trim, start_us, end_us) -> Vec<Finding>
+#[tauri::command] fn list_sessions(blf_path, analyzer_name, config_json, respect_trim, start_us, end_us) -> Vec<Session>
+#[tauri::command] fn list_segments(blf_path, analyzer_name, config_json, stream_index) -> Vec<Segment>
 ```
 
 Same `trace_store::open` + `respect_trim`/scope pattern as `run_detector_query`
@@ -185,8 +224,11 @@ workspace store until the next run, never written back to `.duckdb` (spec's
 
 - One file `schema/rules/analyzers/<name>.sql` exposing `findings`/`sessions`/
   `segments`.
+- One file `schema/rules/analyzers/<name>.config.json` (or `{}` if it needs
+  no config).
 - One line in `ANALYZERS`.
-- Zero Rust, zero Tauri, zero UI (it appears in the picker automatically).
+- Zero Rust, zero Tauri, zero UI (it appears in the picker automatically,
+  config editor prefills from its own default JSON automatically).
 
 ## Global Constraints
 
@@ -1883,6 +1925,500 @@ both behave as described.**
   analyzer's violations under the new one's `stream_index` numbering (two
   different analyzers can both have a `stream_index = 1`, meaning different
   things) - covered by Task 3 Step 2's `useEffect` reset.
+
+---
+
+## Wave 6: Analyzer Configuration - detailed task plan
+
+**Goal:** fix the real bug found running this analyzer against
+`MFK5_VAP_X50_drive_078.blf` - a dual-channel-tap capture logs every TCP
+packet twice (once per channel), which the SQL's SYN-counting window
+mistakes for new connections, flooding `findings` with spurious
+`HANDSHAKE_NO_SYNACK` rows (verified: 20,395 of 40,790 TCP segments in that
+trace are exact channel-1/channel-2 duplicates, zero unmatched on either
+side, max 117us apart). The fix (`_segments` filters to one `channel`) has
+to be user-configurable, since a different trace's channel numbering for
+its mirror pair won't always be 1 - and the generic mechanism for that
+config has to work for any future analyzer, not just this one.
+
+**Files:**
+- Create `schema/rules/analyzers/tcp_connection_health.config.json`.
+- Modify `schema/rules/analyzers/tcp_connection_health.sql` - `_segments`
+  gets a `WHERE m.channel = {{channel}}` filter.
+- Modify `crates/query/src/analyzer.rs` - `ANALYZERS` grows a 3rd field
+  (default config), `apply_config` substitution function,
+  `get_default_analyzer_config`, `list_findings`/`list_sessions`/
+  `list_segments` grow a `config_json: &str` parameter.
+- Modify `app/src-tauri/src/main.rs` - the 3 commands grow `config_json:
+  String`; new `get_default_analyzer_config` command.
+- Modify `app/ui/src/shared/api/trace-source.ts` - `listFindings`/
+  `listSessions`/`listSegments` grow a `configJson` parameter; new
+  `getDefaultAnalyzerConfig` method.
+- Modify `app/ui/src/shared/api/hooks.ts` - `useListFindings`/
+  `useListSessions` take `configJson`; new `useDefaultAnalyzerConfig`.
+- Modify `app/ui/src/widgets/ProtocolAnalyzerPanel.tsx` - JSON `<textarea>`
+  + Apply button.
+
+**Interfaces:**
+- Consumes: nothing new from earlier waves except the already-shipped
+  `Finding`/`Session`/`Segment` plumbing, which this wave extends in place.
+- Produces: `config_json` is now a required-but-often-empty parameter on
+  every analyzer-reading function/command/hook from this wave forward -
+  Wave 7 (Timeline) must pass it through too when it adds its own
+  `list_segments` call.
+
+### Task 1: default config file + SQL placeholder
+
+- [ ] **Step 1: Write the default config**
+
+`schema/rules/analyzers/tcp_connection_health.config.json`:
+```json
+{
+  "channel": 1
+}
+```
+
+- [ ] **Step 2: Add the placeholder to `_segments`**
+
+In `schema/rules/analyzers/tcp_connection_health.sql`, change:
+```sql
+_segments AS (
+    SELECT m.msg_id, m.timestamp_us,
+        m.src_ip || ':' || m.src_port AS src_node,
+        m.dst_ip || ':' || m.dst_port AS dst_node,
+        LEAST(m.src_ip || ':' || m.src_port, m.dst_ip || ':' || m.dst_port) AS ka,
+        GREATEST(m.src_ip || ':' || m.src_port, m.dst_ip || ':' || m.dst_port) AS kb,
+        t.flags, t.segment_len
+    FROM messages m JOIN protocol_tcp t USING (msg_id)
+),
+```
+to:
+```sql
+-- {{channel}}: a dual-tap capture logs every packet once per mirrored
+-- channel; picking one channel here is the fix, not a timestamp-proximity
+-- heuristic - see docs/superpowers/plans/2026-11-27-tcp-analyzer-wave1-ingest.md,
+-- "Wave 6: Analyzer Configuration" for the verification that this is a
+-- lossless, zero-coincidence 1:1 mirror on the trace that surfaced it.
+_segments AS (
+    SELECT m.msg_id, m.timestamp_us,
+        m.src_ip || ':' || m.src_port AS src_node,
+        m.dst_ip || ':' || m.dst_port AS dst_node,
+        LEAST(m.src_ip || ':' || m.src_port, m.dst_ip || ':' || m.dst_port) AS ka,
+        GREATEST(m.src_ip || ':' || m.src_port, m.dst_ip || ':' || m.dst_port) AS kb,
+        t.flags, t.segment_len
+    FROM messages m JOIN protocol_tcp t USING (msg_id)
+    WHERE m.channel = {{channel}}
+),
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add schema/rules/analyzers/tcp_connection_health.sql schema/rules/analyzers/tcp_connection_health.config.json
+git commit -m "feat(analyzer): add channel config to tcp_connection_health, fix dual-tap duplication"
+```
+
+### Task 2: generic config substitution in `crates/query`
+
+- [ ] **Step 1: Write the failing tests** (in
+  `crates/query/src/analyzer.rs`'s existing `#[cfg(test)] mod tests`):
+
+```rust
+#[test]
+fn apply_config_substitutes_a_number_placeholder() {
+    let out = apply_config("WHERE m.channel = {{channel}}", "", r#"{"channel": 1}"#).unwrap();
+    assert_eq!(out, "WHERE m.channel = 1");
+}
+
+#[test]
+fn apply_config_prefers_caller_config_over_default() {
+    let out = apply_config("WHERE m.channel = {{channel}}", r#"{"channel": 2}"#, r#"{"channel": 1}"#).unwrap();
+    assert_eq!(out, "WHERE m.channel = 2");
+}
+
+#[test]
+fn apply_config_errors_on_invalid_json() {
+    assert!(apply_config("{{channel}}", "not json", r#"{"channel": 1}"#).is_err());
+}
+
+#[test]
+fn apply_config_errors_when_a_placeholder_is_left_unresolved() {
+    assert!(apply_config("{{channel}} {{missing}}", "", r#"{"channel": 1}"#).is_err());
+}
+```
+
+- [ ] **Step 2: Run to confirm they fail**
+
+Run: `cargo test --manifest-path crates/Cargo.toml -p query apply_config`
+Expected: compile error (`apply_config` doesn't exist yet).
+
+- [ ] **Step 3: Implement `apply_config`**, above `analyzer_sql` in
+  `crates/query/src/analyzer.rs`:
+
+```rust
+fn apply_config(sql: &str, config_json: &str, default_config_json: &str) -> Result<String, String> {
+    let json_text = if config_json.trim().is_empty() { default_config_json } else { config_json };
+    let value: serde_json::Value =
+        serde_json::from_str(json_text).map_err(|e| format!("invalid config JSON: {e}"))?;
+    let obj = value.as_object().ok_or_else(|| "config must be a JSON object".to_string())?;
+    let mut out = sql.to_string();
+    for (key, v) in obj {
+        let literal = match v {
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+            serde_json::Value::Bool(b) => b.to_string(),
+            _ => return Err(format!("unsupported config value type for key \"{key}\"")),
+        };
+        out = out.replace(&format!("{{{{{key}}}}}"), &literal);
+    }
+    if out.contains("{{") {
+        return Err("config JSON is missing a key the analyzer SQL requires".to_string());
+    }
+    Ok(out)
+}
+```
+
+- [ ] **Step 4: Run to confirm they pass**
+
+Run: `cargo test --manifest-path crates/Cargo.toml -p query apply_config`
+Expected: 4/4 pass.
+
+- [ ] **Step 5: Wire it into the registry and the 4 public functions**
+
+`ANALYZERS` grows a 3rd field; `analyzer_sql` returns both strings; each
+`list_*` function calls `apply_config` before concatenating its `SELECT`:
+
+```rust
+const ANALYZERS: &[(&str, &str, &str)] = &[(
+    "tcp_connection_health",
+    include_str!("../../../schema/rules/analyzers/tcp_connection_health.sql"),
+    include_str!("../../../schema/rules/analyzers/tcp_connection_health.config.json"),
+)];
+
+fn analyzer_sql(analyzer_name: &str) -> Result<(&'static str, &'static str), String> {
+    ANALYZERS
+        .iter()
+        .find(|(name, _, _)| *name == analyzer_name)
+        .map(|(_, sql, default_config)| (*sql, *default_config))
+        .ok_or_else(|| format!("unknown analyzer: {analyzer_name}"))
+}
+
+pub fn get_default_analyzer_config(analyzer_name: &str) -> Result<&'static str, String> {
+    analyzer_sql(analyzer_name).map(|(_, default_config)| default_config)
+}
+```
+
+Each of `list_findings`/`list_sessions`/`list_segments` gains a
+`config_json: &str` parameter right after `analyzer_name`, and their first
+two lines become:
+
+```rust
+let (sql, default_config) = analyzer_sql(analyzer_name)?;
+let sql = apply_config(sql, config_json, default_config)?;
+```
+
+(the rest of each function is unchanged - `sql` was already a local
+binding they build the final query string from).
+
+- [ ] **Step 6: Update the 3 existing seeded tests that call these
+  functions** (`list_findings_rejects_unknown_analyzer`,
+  `list_findings_scopes_by_start_us`, `list_sessions_returns_one_row_per_connection`,
+  `list_segments_is_scoped_by_stream_index_not_time`) - each call site adds
+  `""` as the new `config_json` argument (empty string = use the
+  analyzer's default, which for `tcp_connection_health.config.json` is
+  `channel: 1`; the existing seeded test fixtures in this file don't set a
+  `channel` column at all, so they also need one added to their `INSERT
+  INTO messages` statements - add `, channel INTEGER` to the `CREATE TABLE
+  messages` in `seeded_conn()` and `, 1` to every `INSERT INTO messages`
+  values list, matching the default).
+
+- [ ] **Step 7: Update `crates/query/tests/tcp_connection_health_test.rs`**
+  the same way - its `seeded_conn()`'s `CREATE TABLE messages` needs a
+  `channel INTEGER` column, every `seg()` call's `INSERT INTO messages`
+  needs a `, 1` for it, and every `format!("{ANALYZER_SQL} SELECT ...")`
+  concatenation needs to go through `apply_config` first (or, simpler
+  since this test file calls the raw SQL text directly rather than
+  `crates/query`'s functions: just string-replace `{{channel}}` with `1`
+  before concatenating, e.g. `ANALYZER_SQL.replace("{{channel}}", "1")`
+  in place of the bare `ANALYZER_SQL` constant everywhere it's used).
+
+- [ ] **Step 8: Run everything**
+
+Run: `cargo test --manifest-path crates/Cargo.toml -p query`
+Expected: all green (the 4 new `apply_config` tests + every updated
+existing test).
+
+- [ ] **Step 9: Format + commit**
+
+```bash
+cargo fmt --manifest-path crates/Cargo.toml -p query
+git add crates/query/src/analyzer.rs crates/query/tests/tcp_connection_health_test.rs
+git commit -m "feat(query): generic per-analyzer config substitution (Wave 6)"
+```
+
+### Task 3: Tauri commands
+
+- [ ] **Step 1: Add `get_default_analyzer_config`** in
+  `app/src-tauri/src/main.rs`, right after `list_analyzers`:
+
+```rust
+#[tauri::command]
+fn get_default_analyzer_config(analyzer_name: String) -> Result<String, String> {
+    query::get_default_analyzer_config(&analyzer_name).map(str::to_string)
+}
+```
+
+- [ ] **Step 2: Thread `config_json` through the other 3 commands**
+
+Each of `list_findings`/`list_sessions`/`list_segments` gains a
+`config_json: String` parameter (right after `analyzer_name`) and passes
+it through to the matching `query::list_*` call, e.g.:
+
+```rust
+#[tauri::command]
+fn list_findings(
+    blf_path: String,
+    analyzer_name: String,
+    config_json: String,
+    respect_trim: bool,
+    start_us: i64,
+    end_us: i64,
+) -> Result<Vec<query::Finding>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    let (scope_start, scope_end) = resolve_scope(&conn, respect_trim, start_us, end_us)?;
+    query::list_findings(&conn, &analyzer_name, &config_json, scope_start, scope_end)
+}
+```
+
+(same shape for `list_sessions`; `list_segments` drops `respect_trim`/
+`start_us`/`end_us` as before, keeping just `config_json` added.)
+
+- [ ] **Step 3: Register the new command**
+
+In the `generate_handler!` list, add `get_default_analyzer_config,` right
+after `list_analyzers,`.
+
+- [ ] **Step 4: Build**
+
+Run: `cargo build --manifest-path app/src-tauri/Cargo.toml`
+Expected: clean (Task 2 already lands `query`'s side of this signature
+change first).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/src-tauri/src/main.rs
+git commit -m "feat(tauri): wire analyzer config through list_findings/sessions/segments"
+```
+
+### Task 4: `trace-source.ts` + `hooks.ts`
+
+- [ ] **Step 1: Add `configJson` to the 3 existing methods + a new
+  `getDefaultAnalyzerConfig`**, in the `TraceDataSource` interface:
+
+```typescript
+getDefaultAnalyzerConfig(analyzerName: string): Promise<string>;
+listFindings(
+  blfPath: string,
+  analyzerName: string,
+  configJson: string,
+  respectTrim: boolean,
+  startUs: number,
+  endUs: number
+): Promise<Finding[]>;
+listSessions(
+  blfPath: string,
+  analyzerName: string,
+  configJson: string,
+  respectTrim: boolean,
+  startUs: number,
+  endUs: number
+): Promise<Session[]>;
+```
+
+(`listSegments` isn't called from the UI until Wave 7, but add its
+`configJson` parameter now too, so Wave 7 doesn't have to touch this
+signature again.)
+
+- [ ] **Step 2: Implement on `TauriTraceDataSource`**:
+
+```typescript
+getDefaultAnalyzerConfig(analyzerName: string): Promise<string> {
+  return invoke<string>("get_default_analyzer_config", { analyzerName });
+}
+
+listFindings(
+  blfPath: string,
+  analyzerName: string,
+  configJson: string,
+  respectTrim: boolean,
+  startUs: number,
+  endUs: number
+): Promise<Finding[]> {
+  return invoke<Finding[]>("list_findings", { blfPath, analyzerName, configJson, respectTrim, startUs, endUs });
+}
+```
+
+(same shape for `listSessions`.)
+
+- [ ] **Step 3: Add the hook + update the existing two**, in
+  `app/ui/src/shared/api/hooks.ts`:
+
+```typescript
+export function useDefaultAnalyzerConfig(analyzerName: string | null) {
+  return useQuery({
+    queryKey: ["default-analyzer-config", analyzerName],
+    queryFn: () => getTraceDataSource().getDefaultAnalyzerConfig(analyzerName!),
+    enabled: analyzerName !== null,
+  });
+}
+
+export function useListSessions(blfPath: string, analyzerName: string | null, configJson: string) {
+  return useQuery({
+    queryKey: ["list-sessions", blfPath, analyzerName, configJson],
+    queryFn: () => getTraceDataSource().listSessions(blfPath, analyzerName!, configJson, false, 0, 0),
+    enabled: analyzerName !== null,
+  });
+}
+
+export function useListFindings(blfPath: string, analyzerName: string | null, configJson: string) {
+  return useQuery({
+    queryKey: ["list-findings", blfPath, analyzerName, configJson],
+    queryFn: () => getTraceDataSource().listFindings(blfPath, analyzerName!, configJson, false, 0, 0),
+    enabled: analyzerName !== null,
+  });
+}
+```
+
+(`configJson` joins the query key - editing the draft text doesn't refetch,
+only clicking Apply, which is what changes the `appliedConfig` state the
+panel passes in here, does.)
+
+- [ ] **Step 4: Typecheck**
+
+Run: `cd app/ui && npx tsc --noEmit`
+Expected: errors at `ProtocolAnalyzerPanel.tsx`'s existing call sites
+(Task 5 fixes them) - confirms the signature change is actually being
+enforced, not silently ignored.
+
+- [ ] **Step 5: Commit** (together with Task 5, since the typecheck won't
+  pass standalone - see Task 5's commit step).
+
+### Task 5: JSON editor in `ProtocolAnalyzerPanel.tsx`
+
+- [ ] **Step 1: Add state**, after the existing
+  `severityFilter`/`setSeverityFilter` line:
+
+```typescript
+const defaultConfig = useDefaultAnalyzerConfig(activeAnalyzer);
+const [configDraft, setConfigDraft] = useState("");
+const [appliedConfig, setAppliedConfig] = useState("");
+
+useEffect(() => {
+  if (defaultConfig.data !== undefined) {
+    setConfigDraft(defaultConfig.data);
+    setAppliedConfig(defaultConfig.data);
+  }
+}, [defaultConfig.data, activeAnalyzer]);
+
+let configDraftError: string | null = null;
+try {
+  if (configDraft.trim().length > 0) JSON.parse(configDraft);
+} catch (e) {
+  configDraftError = e instanceof Error ? e.message : "invalid JSON";
+}
+```
+
+(Import `useDefaultAnalyzerConfig` from `"@/shared/api/hooks"` alongside
+the existing imports.)
+
+- [ ] **Step 2: Pass `appliedConfig` into the two existing hook calls**
+
+```typescript
+const sessions = useListSessions(blfPath, activeAnalyzer, appliedConfig);
+const findings = useListFindings(blfPath, activeAnalyzer, appliedConfig);
+```
+
+- [ ] **Step 3: Add the editor UI**, right after the picker/chip row (the
+  `<div className="flex items-center gap-2">...</div>` containing the
+  `<select>` and `<Badge>`):
+
+```tsx
+<div className="flex items-center gap-2">
+  <textarea
+    className="h-16 flex-1 rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
+    value={configDraft}
+    onChange={(e) => setConfigDraft(e.target.value)}
+  />
+  <Button size="sm" disabled={configDraftError !== null} onClick={() => setAppliedConfig(configDraft)}>
+    Apply
+  </Button>
+</div>
+{configDraftError !== null && <div className="text-xs text-destructive">{configDraftError}</div>}
+```
+
+- [ ] **Step 4: Typecheck + build**
+
+Run: `cd app/ui && npx tsc --noEmit && npm run build`
+Expected: both clean.
+
+- [ ] **Step 5: Commit** (Task 4 + Task 5 together, since
+  `ProtocolAnalyzerPanel.tsx` is what actually uses the new hook
+  signatures):
+
+```bash
+git add app/ui/src/shared/api/trace-source.ts app/ui/src/shared/api/hooks.ts app/ui/src/widgets/ProtocolAnalyzerPanel.tsx
+git commit -m "feat(ui): per-analyzer JSON config editor with Apply (Wave 6)"
+```
+
+### Task 6: Manual verification (the wave gate)
+
+- [ ] **Step 1:** `cargo tauri dev --manifest-path app/src-tauri/Cargo.toml`,
+  open `MFK5_VAP_X50_drive_078.blf` (or any trace with the dual-tap
+  duplication symptom).
+- [ ] **Step 2:** Protocol Analyzer tab - confirm the config editor is
+  prefilled with `{ "channel": 1 }` and the sessions table looks sane
+  (no more 1-packet sessions flooding with `HANDSHAKE_NO_SYNACK`).
+- [ ] **Step 3:** Edit the JSON to `{ "channel": 2 }`, click Apply -
+  confirm the table re-renders with the *other* channel's view of the
+  same traffic (should look equivalent, since both channels are a full
+  mirror on this trace - same session count, same finding count).
+- [ ] **Step 4:** Edit the JSON to something invalid (e.g. delete a
+  closing brace) - confirm Apply disables and the inline error shows,
+  without the table changing or an unhandled exception.
+- [ ] **Step 5:** In Explorer, run `select count(*) from findings where
+  rule = 'HANDSHAKE_NO_SYNACK'` (after `.read`-ing the analyzer file with
+  `{{channel}}` manually substituted to `1`) and confirm the count is
+  dramatically lower than before this wave - it should now only include
+  genuine failed handshakes, not channel-duplication artifacts.
+
+**Do not start Wave 7 until you've done this and the error count on a real
+dual-tap trace looks sane.**
+
+### Review Focus (Wave 6)
+
+- **A config value of the wrong JSON type for its placeholder** (e.g.
+  `{"channel": "1"}` as a string instead of a number) must not silently
+  produce broken SQL - `apply_config` quotes strings as SQL string
+  literals, so `WHERE m.channel = '1'` would still run (DuckDB coerces),
+  but a future analyzer expecting a bare identifier substitution, not a
+  value, would break. Not fully solved here - flagged as a limitation of
+  "every value becomes a SQL literal," not a design that supports
+  substituting raw SQL fragments (deliberately - allowing that would reopen
+  SQL injection from user-edited config text).
+- **An empty-but-present config key the SQL doesn't reference** (e.g. user
+  adds `{"channel": 1, "extra": 2}`) must not error - `apply_config` only
+  errors on *unresolved placeholders*, never on *unused config keys*,
+  covered by construction (the loop just doesn't find `{{extra}}` to
+  replace, and the final "any `{{` left?" check only looks at the SQL
+  text, not the config object).
+- **Switching analyzers while the editor has unapplied edits in the
+  textarea** must not silently apply the stale draft to the new analyzer -
+  Task 5 Step 1's `useEffect` resets `configDraft`/`appliedConfig` to the
+  new analyzer's own default whenever `activeAnalyzer` changes, discarding
+  any unapplied edit for the old one. Acceptable for MVP; not a documented
+  "are you sure" prompt.
 
 ---
 
