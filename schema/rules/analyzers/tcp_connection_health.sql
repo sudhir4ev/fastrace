@@ -18,6 +18,15 @@ WITH
 -- One row per TCP segment: join identity/time to flags, normalize the
 -- address pair so both directions of one connection share a key regardless
 -- of who sent which packet (LEAST/GREATEST).
+--
+-- {{channel}}/{{includeAllChannels}}: a dual-tap capture logs every packet
+-- once per mirrored channel; picking one channel here is the fix, not a
+-- timestamp-proximity heuristic - see
+-- docs/superpowers/plans/2026-11-27-tcp-analyzer-wave1-ingest.md, "Wave 6:
+-- Analyzer Configuration" for the verification that this is a lossless,
+-- zero-coincidence 1:1 mirror on the trace that surfaced it.
+-- includeAllChannels=true short-circuits the filter to always-true, for a
+-- trace where the channels are genuinely different buses, not a duplicate.
 _segments AS (
     SELECT m.msg_id, m.timestamp_us,
         m.src_ip || ':' || m.src_port AS src_node,
@@ -26,6 +35,7 @@ _segments AS (
         GREATEST(m.src_ip || ':' || m.src_port, m.dst_ip || ':' || m.dst_port) AS kb,
         t.flags, t.segment_len
     FROM messages m JOIN protocol_tcp t USING (msg_id)
+    WHERE {{includeAllChannels}} OR m.channel = {{channel}}
 ),
 -- Splits each address pair's segments into distinct connections and
 -- measures idle gaps. stream_index = running count of pure-SYN segments
