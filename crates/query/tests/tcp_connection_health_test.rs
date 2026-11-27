@@ -4,8 +4,13 @@ use duckdb::Connection;
 /// (schema/rules/analyzers/tcp_connection_health.sql), per ADR 0007: a
 /// minimal messages/protocol_tcp schema built with INSERT statements, not
 /// the C++ fixture. Flags: FIN=1 SYN=2 RST=4 PSH=8 ACK=16.
-const ANALYZER_SQL: &str =
-    include_str!("../../../schema/rules/analyzers/tcp_connection_health.sql");
+///
+/// The analyzer file is a bare `WITH` chain (no closing `SELECT`, no `CREATE
+/// VIEW` - it must also run on the Trace Store's read-only connection), so
+/// every query here appends its own `SELECT ... FROM <view>` and runs the
+/// concatenation as one statement, same as crates/query's generic
+/// list_findings/list_sessions/list_segments will (Wave 3).
+const ANALYZER_SQL: &str = include_str!("../../../schema/rules/analyzers/tcp_connection_health.sql");
 
 fn seeded_conn() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
@@ -15,22 +20,13 @@ fn seeded_conn() -> Connection {
          CREATE TABLE protocol_tcp (msg_id BIGINT, flags INTEGER, segment_len INTEGER);",
     )
     .unwrap();
-    conn.execute_batch(ANALYZER_SQL).unwrap();
     conn
 }
 
 /// `from_client` picks which side is sending: true = 10.0.0.1:client_port ->
 /// 10.0.0.2:server_port, false = the reverse. Both IP and port swap together,
 /// matching how a real reply flips both.
-fn seg(
-    conn: &Connection,
-    msg_id: i64,
-    ts: i64,
-    from_client: bool,
-    client_port: i32,
-    server_port: i32,
-    flags: i32,
-) {
+fn seg(conn: &Connection, msg_id: i64, ts: i64, from_client: bool, client_port: i32, server_port: i32, flags: i32) {
     let (src_ip, src_port, dst_ip, dst_port) = if from_client {
         ("10.0.0.1", client_port, "10.0.0.2", server_port)
     } else {
@@ -50,7 +46,7 @@ fn seg(
 
 fn findings_rules(conn: &Connection, port: i32) -> Vec<String> {
     let sql = format!(
-        "SELECT rule FROM findings WHERE src_node LIKE '%:{port}' OR dst_node LIKE '%:{port}' ORDER BY rule"
+        "{ANALYZER_SQL} SELECT rule FROM findings WHERE src_node LIKE '%:{port}' OR dst_node LIKE '%:{port}' ORDER BY rule"
     );
     let mut stmt = conn.prepare(&sql).unwrap();
     stmt.query_map([], |row| row.get::<_, String>(0))
@@ -115,17 +111,16 @@ fn reconnect_on_same_address_pair_gets_a_distinct_stream_index() {
     seg(&conn, 1, 1, false, 1005, 2005, 0x12); // SYN-ACK
     seg(&conn, 2, 2, true, 1005, 2005, 0x10); // ACK
     seg(&conn, 3, 3, true, 1005, 2005, 0x11); // FIN+ACK
-                                              // Connection 2: same two ports reconnect later.
+    // Connection 2: same two ports reconnect later.
     seg(&conn, 4, 1_000, true, 1005, 2005, 0x02); // SYN
     seg(&conn, 5, 1_001, false, 1005, 2005, 0x12); // SYN-ACK
     seg(&conn, 6, 1_002, true, 1005, 2005, 0x10); // ACK
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT DISTINCT stream_index FROM sessions
-             WHERE src_node LIKE '%:1005' OR dst_node LIKE '%:1005' ORDER BY stream_index",
-        )
-        .unwrap();
+    let sql = format!(
+        "{ANALYZER_SQL} SELECT DISTINCT stream_index FROM sessions
+         WHERE src_node LIKE '%:1005' OR dst_node LIKE '%:1005' ORDER BY stream_index"
+    );
+    let mut stmt = conn.prepare(&sql).unwrap();
     let indices: Vec<i64> = stmt
         .query_map([], |row| row.get(0))
         .unwrap()
@@ -143,9 +138,8 @@ fn segments_view_renders_wireshark_style_flag_strings() {
     let conn = seeded_conn();
     seg(&conn, 0, 0, true, 1006, 2006, 0x02); // SYN
     seg(&conn, 1, 1, false, 1006, 2006, 0x12); // SYN-ACK
-    let mut stmt = conn
-        .prepare("SELECT info FROM segments WHERE msg_id = 1")
-        .unwrap();
+    let sql = format!("{ANALYZER_SQL} SELECT info FROM segments WHERE msg_id = 1");
+    let mut stmt = conn.prepare(&sql).unwrap();
     let info: String = stmt.query_row([], |row| row.get(0)).unwrap();
     assert_eq!(info, "[SYN, ACK]");
 }
