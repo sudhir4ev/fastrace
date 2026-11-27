@@ -148,6 +148,17 @@ exposed past this file.
 
 ## Execution model (plugin contract)
 
+> **Superseded 2026-11-27 by the generic Analyzer Framework Contract in
+> `docs/superpowers/plans/2026-11-27-tcp-analyzer-wave1-ingest.md`.** That plan
+> replaces the per-analyzer Rust functions and the IP-hardcoded `Finding`
+> below with: three fixed-name SQL views per analyzer (`findings`/`sessions`/
+> `segments`), opaque `src_node`/`dst_node` VARCHAR identity instead of
+> `src_ip/src_port/dst_ip/dst_port`, and one generic registry + command set
+> parameterized by `analyzer_name` (one SQL file + one registry line per new
+> protocol). The SQL session-reconstruction logic below is unchanged in
+> substance - only the view names and the emitted finding columns change. The
+> text below is kept for historical context.
+
 `crates/query` gets one new function:
 
 ```rust
