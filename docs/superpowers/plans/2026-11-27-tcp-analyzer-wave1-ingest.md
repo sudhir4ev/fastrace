@@ -1107,40 +1107,48 @@ _sessions AS (
     max(idle_us) max_idle_us
   FROM _stream_segments GROUP BY stream_index
 )
-SELECT 'tcp_connection_health' AS analyzer_name, src_node, dst_node, stream_index,
-  start_us, end_us, first_msg_id, last_msg_id,
-  CASE
-    WHEN saw_syn AND NOT saw_syn_ack AND NOT saw_rst THEN 'Error'
-    WHEN max_idle_us > 15000000 THEN 'Error'
-    ELSE 'Warning'
-  END AS severity,
-  CASE
-    WHEN saw_syn AND NOT saw_syn_ack AND NOT saw_rst THEN 'HANDSHAKE_NO_SYNACK'
-    WHEN saw_syn AND NOT saw_syn_ack AND saw_rst THEN 'CONNECTION_REFUSED'
-    WHEN saw_syn_ack AND saw_rst THEN 'CONNECTION_RESET'
-    WHEN saw_syn_ack AND NOT saw_fin AND NOT saw_rst THEN 'NEVER_CLOSED'
-    WHEN max_idle_us > 15000000 THEN 'SILENCE_TIMEOUT'
-  END AS rule,
-  CASE
-    WHEN saw_syn AND NOT saw_syn_ack AND NOT saw_rst THEN 'Connection attempt failed (no SYN-ACK)'
-    WHEN saw_syn AND NOT saw_syn_ack AND saw_rst THEN 'Connection refused (RST)'
-    WHEN saw_syn_ack AND saw_rst THEN 'Connection reset (RST)'
-    WHEN saw_syn_ack AND NOT saw_fin AND NOT saw_rst THEN 'Connection not closed (no FIN/RST)'
-    WHEN max_idle_us > 15000000 THEN 'Connection idle for '||(max_idle_us/1e6)||'s'
-  END AS summary
-FROM _sessions
-QUALIFY rule IS NOT NULL
+SELECT src_node, dst_node, stream_index, severity, rule, summary,
+       start_us, end_us, first_msg_id, last_msg_id
+FROM (
+  SELECT 'tcp_connection_health' AS analyzer_name, src_node, dst_node, stream_index,
+    start_us, end_us, first_msg_id, last_msg_id,
+    CASE
+      WHEN saw_syn AND NOT saw_syn_ack AND NOT saw_rst THEN 'Error'
+      WHEN max_idle_us > 15000000 THEN 'Error'
+      ELSE 'Warning'
+    END AS severity,
+    CASE
+      WHEN saw_syn AND NOT saw_syn_ack AND NOT saw_rst THEN 'HANDSHAKE_NO_SYNACK'
+      WHEN saw_syn AND NOT saw_syn_ack AND saw_rst THEN 'CONNECTION_REFUSED'
+      WHEN saw_syn_ack AND saw_rst THEN 'CONNECTION_RESET'
+      WHEN saw_syn_ack AND NOT saw_fin AND NOT saw_rst THEN 'NEVER_CLOSED'
+      WHEN max_idle_us > 15000000 THEN 'SILENCE_TIMEOUT'
+    END AS rule,
+    CASE
+      WHEN saw_syn AND NOT saw_syn_ack AND NOT saw_rst THEN 'Connection attempt failed (no SYN-ACK)'
+      WHEN saw_syn AND NOT saw_syn_ack AND saw_rst THEN 'Connection refused (RST)'
+      WHEN saw_syn_ack AND saw_rst THEN 'Connection reset (RST)'
+      WHEN saw_syn_ack AND NOT saw_fin AND NOT saw_rst THEN 'Connection not closed (no FIN/RST)'
+      WHEN max_idle_us > 15000000 THEN 'Connection idle for '||(max_idle_us/1e6)||'s'
+    END AS summary
+  FROM _sessions
+) WHERE rule IS NOT NULL
 ```
 
 (`15000000` is the spec's `<threshold_us>` config value inlined as a literal
-for ad-hoc Explorer use; the real Wave 2 `.sql` file reads it from config.
-`QUALIFY rule IS NOT NULL` drops clean sessions - a healthy connection
-produces no finding. Note: one session can trip multiple rules; the `CASE`
-here shows only the highest-priority one, which is fine for an eyeball check -
-Wave 2's real `findings` view will `UNION ALL` per rule so a session can
-yield several findings.) This is informal - a way to sanity-check the
+for ad-hoc Explorer use; the real Wave 2 `.sql` file reads it from config. The
+`WHERE rule IS NOT NULL` subquery drops clean sessions - a healthy connection
+produces no finding. It is a subquery + `WHERE`, **not** `QUALIFY`, because
+DuckDB rejects `QUALIFY` on a non-windowed/grouped query ("at least one window
+function must appear..."). Note: one session can trip multiple rules; the
+`CASE` here shows only the highest-priority one, which is fine for an eyeball
+check - Wave 2's real `findings` view will `UNION ALL` per rule so a session
+can yield several findings.) This is informal - a way to sanity-check the
 session/violation logic and the opaque `src_node`/`dst_node` identity against
-real traffic before Wave 2 commits the file. Not a required gate for Wave 1;
+real traffic before Wave 2 commits the file. Verified 2026-11-27 against the
+prepared Wave 1 fixture: the fixture's SYN -> PSH+ACK stream (no SYN-ACK)
+returns one `HANDSHAKE_NO_SYNACK` finding keyed
+`192.168.1.20:51000 -> 192.168.1.10:30490`. Not a required gate for Wave 1;
 Wave 1's actual pass/fail is Steps 1-4 above.
 
 ---
