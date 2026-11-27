@@ -185,10 +185,17 @@ pub fn list_sessions(
 
 /// Not time-scoped - a stream_index is a complete connection's worth of
 /// segments, fetched in full for the "Follow Stream" drill-down.
+///
+/// stream_index alone is NOT a unique session key - it's only unique within
+/// one (src_node, dst_node) pair (see tcp_connection_health.sql's _sessions
+/// comment), so this must also filter on the pair or it returns segments
+/// merged in from a different pair's same-numbered connection.
 pub fn list_segments(
     conn: &trace_store::Connection,
     analyzer_name: &str,
     config_json: &str,
+    src_node: &str,
+    dst_node: &str,
     stream_index: i64,
 ) -> Result<Vec<Segment>, String> {
     let (sql, default_config) = analyzer_sql(analyzer_name)?;
@@ -196,11 +203,12 @@ pub fn list_segments(
     let query = format!(
         "{sql} select analyzer_name, stream_index, msg_id, timestamp_us, src_node, dst_node,
                   info, segment_len, idle_us
-         from segments where stream_index = {stream_index} order by timestamp_us"
+         from segments where stream_index = {stream_index} and src_node = ? and dst_node = ?
+         order by timestamp_us"
     );
     let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(duckdb::params![src_node, dst_node], |row| {
             Ok(Segment {
                 analyzer_name: row.get(0)?,
                 stream_index: row.get(1)?,
@@ -331,7 +339,15 @@ mod tests {
     #[test]
     fn list_segments_is_scoped_by_stream_index_not_time() {
         let conn = seeded_conn();
-        let segments = list_segments(&conn, "tcp_connection_health", "", 1).unwrap();
+        let segments = list_segments(
+            &conn,
+            "tcp_connection_health",
+            "",
+            "10.0.0.1:1000",
+            "10.0.0.2:2000",
+            1,
+        )
+        .unwrap();
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].info, "[SYN]");
         assert_eq!(segments[1].info, "[PSH]");

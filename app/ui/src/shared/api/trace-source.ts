@@ -299,7 +299,14 @@ export interface TraceDataSource {
     startUs: number,
     endUs: number
   ): Promise<Session[]>;
-  listSegments(blfPath: string, analyzerName: string, configJson: string, streamIndex: number): Promise<Segment[]>;
+  listSegments(
+    blfPath: string,
+    analyzerName: string,
+    configJson: string,
+    srcNode: string,
+    dstNode: string,
+    streamIndex: number
+  ): Promise<Segment[]>;
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange>;
   applyTrim(blfPath: string, startUs: number, endUs: number, activeSignalIds: number[]): Promise<DecodeResult>;
   recordActivity(blfPath: string, kind: string, elapsedMs: number, detail: string): Promise<void>;
@@ -490,8 +497,15 @@ export class TauriTraceDataSource implements TraceDataSource {
     return invoke<Session[]>("list_sessions", { blfPath, analyzerName, configJson, respectTrim, startUs, endUs });
   }
 
-  listSegments(blfPath: string, analyzerName: string, configJson: string, streamIndex: number): Promise<Segment[]> {
-    return invoke<Segment[]>("list_segments", { blfPath, analyzerName, configJson, streamIndex });
+  listSegments(
+    blfPath: string,
+    analyzerName: string,
+    configJson: string,
+    srcNode: string,
+    dstNode: string,
+    streamIndex: number
+  ): Promise<Segment[]> {
+    return invoke<Segment[]>("list_segments", { blfPath, analyzerName, configJson, srcNode, dstNode, streamIndex });
   }
 
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange> {

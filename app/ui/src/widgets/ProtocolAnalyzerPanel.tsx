@@ -16,8 +16,21 @@ function formatUs(us: number): string {
   return `${(us / 1_000_000).toFixed(3)}s`;
 }
 
-function countBySeverity(findings: Finding[], streamIndex: number, severity: string): number {
-  return findings.filter((f) => f.streamIndex === streamIndex && f.severity === severity).length;
+// stream_index alone is NOT a unique session key - it's only unique within
+// one (src_node, dst_node) pair, so every lookup/comparison here keys on the
+// full triple.
+interface SessionKey {
+  srcNode: string;
+  dstNode: string;
+  streamIndex: number;
+}
+
+function sameSession(a: SessionKey, b: { srcNode: string; dstNode: string; streamIndex: number }): boolean {
+  return a.srcNode === b.srcNode && a.dstNode === b.dstNode && a.streamIndex === b.streamIndex;
+}
+
+function countBySeverity(findings: Finding[], session: SessionKey, severity: string): number {
+  return findings.filter((f) => sameSession(session, f) && f.severity === severity).length;
 }
 
 function severityVariant(severity: string): "destructive" | "warning" | "secondary" {
@@ -35,19 +48,19 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
   const [analyzerName, setAnalyzerName] = useState<string | null>(null);
   const activeAnalyzer = analyzerName ?? analyzers.data?.[0] ?? null;
 
-  const [selectedStreamIndex, setSelectedStreamIndex] = useState<number | null>(null);
+  const [selectedSession, setSelectedSession] = useState<SessionKey | null>(null);
   const [severityFilter, setSeverityFilter] = useState<"all" | "Error" | "Warning">("all");
   const [evidenceTab, setEvidenceTab] = useState<"violations" | "packets">("violations");
   const [highlightedMsgIds, setHighlightedMsgIds] = useState<[number, number] | null>(null);
 
   useEffect(() => {
-    setSelectedStreamIndex(null);
+    setSelectedSession(null);
     setHighlightedMsgIds(null);
   }, [activeAnalyzer]);
 
   useEffect(() => {
     setHighlightedMsgIds(null);
-  }, [selectedStreamIndex]);
+  }, [selectedSession]);
 
   // Rules with no actual closing packet (RST/FIN) to point to - the
   // violation IS the absence of one, so the UI must say that instead of
@@ -74,7 +87,14 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
 
   const sessions = useListSessions(blfPath, activeAnalyzer, appliedConfig);
   const findings = useListFindings(blfPath, activeAnalyzer, appliedConfig);
-  const segments = useListSegments(blfPath, activeAnalyzer, appliedConfig, selectedStreamIndex);
+  const segments = useListSegments(
+    blfPath,
+    activeAnalyzer,
+    appliedConfig,
+    selectedSession?.srcNode ?? null,
+    selectedSession?.dstNode ?? null,
+    selectedSession?.streamIndex ?? null
+  );
 
   useEffect(() => {
     if (highlightedMsgIds === null || evidenceTab !== "packets") return;
@@ -146,11 +166,11 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
                   <tbody>
                     {sessionRows.map((s) => (
                       <tr
-                        key={s.streamIndex}
-                        onClick={() => setSelectedStreamIndex(s.streamIndex)}
+                        key={`${s.srcNode}|${s.dstNode}|${s.streamIndex}`}
+                        onClick={() => setSelectedSession(s)}
                         className={cn(
                           "cursor-pointer border-t border-border/60 hover:bg-accent",
-                          selectedStreamIndex === s.streamIndex && "bg-accent"
+                          selectedSession !== null && sameSession(selectedSession, s) && "bg-accent"
                         )}
                       >
                         <td className="whitespace-nowrap px-2 py-1 font-mono">{s.srcNode}</td>
@@ -158,10 +178,10 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
                         <td className="whitespace-nowrap px-2 py-1 font-mono">{s.packetCount}</td>
                         <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.endUs - s.startUs)}</td>
                         <td className="whitespace-nowrap px-2 py-1 font-mono">
-                          {countBySeverity(findingRows, s.streamIndex, "Error")}
+                          {countBySeverity(findingRows, s, "Error")}
                         </td>
                         <td className="whitespace-nowrap px-2 py-1 font-mono">
-                          {countBySeverity(findingRows, s.streamIndex, "Warning")}
+                          {countBySeverity(findingRows, s, "Warning")}
                         </td>
                       </tr>
                     ))}
@@ -172,7 +192,7 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
           </ResizablePanel>
           <ResizableHandle withHandle />
           <ResizablePanel defaultSize={40} minSize={15}>
-            {selectedStreamIndex === null ? (
+            {selectedSession === null ? (
               <div className="p-3 text-sm text-muted-foreground">Select a session to see its violations.</div>
             ) : (
               <div className="flex h-full min-h-0 flex-col gap-2 p-2">
@@ -218,7 +238,7 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
                       </thead>
                       <tbody>
                         {findingRows
-                          .filter((f) => f.streamIndex === selectedStreamIndex)
+                          .filter((f) => sameSession(selectedSession, f))
                           .filter((f) => severityFilter === "all" || f.severity === severityFilter)
                           .map((f, i) => (
                             <tr
@@ -251,9 +271,8 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
                     {highlightedMsgIds !== null && (
                       <div className="text-xs text-muted-foreground">
                         {NO_CLOSING_PACKET_RULES.has(
-                          findingRows.find(
-                            (f) => f.streamIndex === selectedStreamIndex && f.lastMsgId === highlightedMsgIds[1]
-                          )?.rule ?? ""
+                          findingRows.find((f) => sameSession(selectedSession, f) && f.lastMsgId === highlightedMsgIds[1])
+                            ?.rule ?? ""
                         )
                           ? "No single packet caused this - highlighted is the last packet seen on this stream; no RST/FIN ever followed it."
                           : "Highlighted: the packets bounding this violation (last one is typically the RST)."}

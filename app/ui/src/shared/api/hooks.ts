@@ -263,12 +263,22 @@ export function useListSegments(
   blfPath: string,
   analyzerName: string | null,
   configJson: string,
+  srcNode: string | null,
+  dstNode: string | null,
   streamIndex: number | null
 ) {
   return useQuery({
-    queryKey: ["list-segments", blfPath, analyzerName, configJson, streamIndex],
-    queryFn: () => getTraceDataSource().listSegments(blfPath, analyzerName!, configJson, streamIndex as number),
-    enabled: analyzerName !== null && streamIndex !== null,
+    queryKey: ["list-segments", blfPath, analyzerName, configJson, srcNode, dstNode, streamIndex],
+    queryFn: () =>
+      getTraceDataSource().listSegments(
+        blfPath,
+        analyzerName!,
+        configJson,
+        srcNode as string,
+        dstNode as string,
+        streamIndex as number
+      ),
+    enabled: analyzerName !== null && srcNode !== null && dstNode !== null && streamIndex !== null,
   });
 }
 

@@ -595,11 +595,13 @@ fn list_segments(
     blf_path: String,
     analyzer_name: String,
     config_json: String,
+    src_node: String,
+    dst_node: String,
     stream_index: i64,
 ) -> Result<Vec<query::Segment>, String> {
     let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
     let conn = trace_store::open(&duckdb_path)?;
-    query::list_segments(&conn, &analyzer_name, &config_json, stream_index)
+    query::list_segments(&conn, &analyzer_name, &config_json, &src_node, &dst_node, stream_index)
 }
 
 #[derive(serde::Serialize)]
