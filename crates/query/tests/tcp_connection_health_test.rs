@@ -13,11 +13,20 @@ use duckdb::Connection;
 const ANALYZER_SQL: &str =
     include_str!("../../../schema/rules/analyzers/tcp_connection_health.sql");
 
+/// `{{channel}}`/`{{includeAllChannels}}` resolved to the same values as
+/// the file's own default config (channel 1, not all channels) - every
+/// `seg()` row below is seeded on channel 1, matching this.
+fn resolved_sql() -> String {
+    ANALYZER_SQL
+        .replace("{{channel}}", "1")
+        .replace("{{includeAllChannels}}", "false")
+}
+
 fn seeded_conn() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(
         "CREATE TABLE messages (msg_id BIGINT, timestamp_us BIGINT, src_ip VARCHAR, src_port INTEGER,
-                                 dst_ip VARCHAR, dst_port INTEGER);
+                                 dst_ip VARCHAR, dst_port INTEGER, channel INTEGER);
          CREATE TABLE protocol_tcp (msg_id BIGINT, flags INTEGER, segment_len INTEGER);",
     )
     .unwrap();
@@ -42,7 +51,7 @@ fn seg(
         ("10.0.0.2", server_port, "10.0.0.1", client_port)
     };
     conn.execute(
-        "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, 1)",
         duckdb::params![msg_id, ts, src_ip, src_port, dst_ip, dst_port],
     )
     .unwrap();
@@ -54,8 +63,9 @@ fn seg(
 }
 
 fn findings_rules(conn: &Connection, port: i32) -> Vec<String> {
+    let analyzer_sql = resolved_sql();
     let sql = format!(
-        "{ANALYZER_SQL} SELECT rule FROM findings WHERE src_node LIKE '%:{port}' OR dst_node LIKE '%:{port}' ORDER BY rule"
+        "{analyzer_sql} SELECT rule FROM findings WHERE src_node LIKE '%:{port}' OR dst_node LIKE '%:{port}' ORDER BY rule"
     );
     let mut stmt = conn.prepare(&sql).unwrap();
     stmt.query_map([], |row| row.get::<_, String>(0))
@@ -125,8 +135,9 @@ fn reconnect_on_same_address_pair_gets_a_distinct_stream_index() {
     seg(&conn, 5, 1_001, false, 1005, 2005, 0x12); // SYN-ACK
     seg(&conn, 6, 1_002, true, 1005, 2005, 0x10); // ACK
 
+    let analyzer_sql = resolved_sql();
     let sql = format!(
-        "{ANALYZER_SQL} SELECT DISTINCT stream_index FROM sessions
+        "{analyzer_sql} SELECT DISTINCT stream_index FROM sessions
          WHERE src_node LIKE '%:1005' OR dst_node LIKE '%:1005' ORDER BY stream_index"
     );
     let mut stmt = conn.prepare(&sql).unwrap();
@@ -147,7 +158,8 @@ fn segments_view_renders_wireshark_style_flag_strings() {
     let conn = seeded_conn();
     seg(&conn, 0, 0, true, 1006, 2006, 0x02); // SYN
     seg(&conn, 1, 1, false, 1006, 2006, 0x12); // SYN-ACK
-    let sql = format!("{ANALYZER_SQL} SELECT info FROM segments WHERE msg_id = 1");
+    let analyzer_sql = resolved_sql();
+    let sql = format!("{analyzer_sql} SELECT info FROM segments WHERE msg_id = 1");
     let mut stmt = conn.prepare(&sql).unwrap();
     let info: String = stmt.query_row([], |row| row.get(0)).unwrap();
     assert_eq!(info, "[SYN, ACK]");
