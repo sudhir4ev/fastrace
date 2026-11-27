@@ -1,6 +1,6 @@
 -- Trace Store DDL for fastrace_ingest (external duckdb CLI).
 -- Payloads stay in the BLF (source of truth). Signals/detections are on-demand.
--- schema_version: 5
+-- schema_version: 6
 
 CREATE TABLE messages (
   msg_id       BIGINT PRIMARY KEY,
@@ -10,6 +10,8 @@ CREATE TABLE messages (
   arb_id       INTEGER,
   extended_id  BOOLEAN,
   dlc          INTEGER,
+  src_ip       VARCHAR,
+  src_port     INTEGER,
   dst_ip       VARCHAR,
   dst_port     INTEGER,
   payload_len  INTEGER
@@ -52,6 +54,12 @@ CREATE TABLE protocol_doip (
   payload_length BIGINT,
   source_address BIGINT,
   target_address BIGINT
+);
+
+CREATE TABLE protocol_tcp (
+  msg_id      BIGINT,   -- join key to messages
+  flags       INTEGER,  -- raw TCP flags byte: FIN=0x01 SYN=0x02 RST=0x04 PSH=0x08 ACK=0x10 URG=0x20
+  segment_len INTEGER   -- TCP payload length; 0 for pure control segments
 );
 
 CREATE TABLE arxml_pdu (
