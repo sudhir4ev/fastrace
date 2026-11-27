@@ -1593,6 +1593,297 @@ matches what Explorer shows for the same trace.**
   `countBySeverity` returns `0` from `.filter().length` on an empty match,
   covered by construction, not by a dedicated test.
 
+## Wave 5: Violation Explorer UI - detailed task plan
+
+**Goal:** drill down from a Wave 4 session row into that session's
+`findings` (mock image 2 - "TCP Violation Explorer"): severity-colored
+badges, an All/Error/Warning filter, the active analyzer shown as a chip.
+Stays inside the same "Protocol Analyzer" tab - no new route, no new
+workspace tab.
+
+**Files:**
+- Modify `app/ui/src/app/theme.css` - add a `--warning`/`--warning-foreground`
+  token pair (amber), next to the existing `--destructive` pair.
+- Modify `app/ui/tailwind.config.ts` - register `warning` as a color, next
+  to `destructive`.
+- Modify `app/ui/src/shared/ui/badge.tsx` - add `destructive`/`warning`
+  variants to `badgeVariants`.
+- Modify `app/ui/src/widgets/ProtocolAnalyzerPanel.tsx` - add
+  `selectedStreamIndex`/`severityFilter` state, a resizable split (sessions
+  table on top, violations list below), severity Badges, and the analyzer
+  chip.
+
+**Interfaces:**
+- Consumes: `Finding`/`Session` (already shipped, Wave 3/4) - no backend or
+  Rust changes this wave.
+
+### Task 1: `warning` color token
+
+- [ ] **Step 1:** `app/ui/src/app/theme.css`, add right after `--red-500:
+  #E23B40;`:
+
+```css
+--amber-500: #D97706;
+```
+
+And right after `--destructive-foreground: var(--fg-inverse);`:
+
+```css
+--warning: var(--amber-500);
+--warning-foreground: var(--fg-inverse);
+```
+
+- [ ] **Step 2:** `app/ui/tailwind.config.ts`, right after the
+  `destructive` line:
+
+```typescript
+warning: { DEFAULT: "var(--warning)", foreground: "var(--warning-foreground)" },
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add app/ui/src/app/theme.css app/ui/tailwind.config.ts
+git commit -m "feat(ui): add warning color token"
+```
+
+### Task 2: Badge variants
+
+- [ ] **Step 1:** `app/ui/src/shared/ui/badge.tsx`, add two entries to
+  `badgeVariants`' `variant` map, after `outline`:
+
+```typescript
+destructive: "border-transparent bg-destructive text-destructive-foreground",
+warning: "border-transparent bg-warning text-warning-foreground",
+```
+
+- [ ] **Step 2: Typecheck**
+
+Run: `cd app/ui && npx tsc --noEmit`
+Expected: no errors (nothing consumes the new variants until Task 3).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add app/ui/src/shared/ui/badge.tsx
+git commit -m "feat(ui): add destructive/warning Badge variants"
+```
+
+### Task 3: drill-down in `ProtocolAnalyzerPanel.tsx`
+
+- [ ] **Step 1: Add state and a severity-to-badge-variant helper**, right
+  after the existing `countBySeverity` helper:
+
+```typescript
+function severityVariant(severity: string): "destructive" | "warning" | "secondary" {
+  if (severity === "Error") return "destructive";
+  if (severity === "Warning") return "warning";
+  return "secondary";
+}
+```
+
+Inside the component, after the existing `const [analyzerName, ...]` line:
+
+```typescript
+const [selectedStreamIndex, setSelectedStreamIndex] = useState<number | null>(null);
+const [severityFilter, setSeverityFilter] = useState<"all" | "Error" | "Warning">("all");
+```
+
+- [ ] **Step 2: Reset the selection when the analyzer changes**
+
+Right after the `activeAnalyzer` line, add:
+
+```typescript
+useEffect(() => {
+  setSelectedStreamIndex(null);
+}, [activeAnalyzer]);
+```
+
+(Import `useEffect` from `"react"` alongside the existing `useState`
+import.) Without this, switching analyzers could leave
+`selectedStreamIndex` pointing at a `stream_index` that doesn't exist (or
+means something different) under the new analyzer.
+
+- [ ] **Step 3: Add the analyzer chip next to the picker**
+
+Right after the `<select id="analyzer-picker" ...>` closing tag, still
+inside the same `flex items-center gap-2` row:
+
+```tsx
+<Badge variant="secondary">{activeAnalyzer}</Badge>
+```
+
+(Import `Badge` from `"@/shared/ui/badge"`.)
+
+- [ ] **Step 4: Wrap the sessions table + make rows selectable**
+
+Replace the sessions `<table>`'s wrapping `<div className="min-h-0 flex-1
+overflow-auto">` and the component's outer return with a vertical
+`ResizablePanelGroup` (same import already used by `WorkspaceLayout.tsx`
+and `SignalsTab`: `ResizableHandle, ResizablePanel, ResizablePanelGroup`
+from `"@/shared/ui/resizable"`):
+
+```tsx
+return (
+  <div className="flex h-full min-h-0 flex-col gap-2 p-3">
+    <div className="flex items-center gap-2">
+      {/* ...picker + chip, unchanged from Step 3... */}
+    </div>
+    <div className="min-h-0 flex-1">
+      <ResizablePanelGroup direction="vertical">
+        <ResizablePanel defaultSize={60} minSize={25}>
+          {sessions.isLoading ? (
+            <div className="p-3 text-sm text-muted-foreground">Loading sessions...</div>
+          ) : sessionRows.length === 0 ? (
+            <div className="p-3 text-sm text-muted-foreground">No sessions found.</div>
+          ) : (
+            <div className="h-full overflow-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="sticky top-0 bg-muted">
+                  <tr>
+                    <th className="whitespace-nowrap px-2 py-1 font-medium">Source</th>
+                    <th className="whitespace-nowrap px-2 py-1 font-medium">Destination</th>
+                    <th className="whitespace-nowrap px-2 py-1 font-medium">Packets</th>
+                    <th className="whitespace-nowrap px-2 py-1 font-medium">Duration</th>
+                    <th className="whitespace-nowrap px-2 py-1 font-medium">Errors</th>
+                    <th className="whitespace-nowrap px-2 py-1 font-medium">Warnings</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sessionRows.map((s) => (
+                    <tr
+                      key={s.streamIndex}
+                      onClick={() => setSelectedStreamIndex(s.streamIndex)}
+                      className={cn(
+                        "cursor-pointer border-t border-border/60 hover:bg-accent",
+                        selectedStreamIndex === s.streamIndex && "bg-accent"
+                      )}
+                    >
+                      <td className="whitespace-nowrap px-2 py-1 font-mono">{s.srcNode}</td>
+                      <td className="whitespace-nowrap px-2 py-1 font-mono">{s.dstNode}</td>
+                      <td className="whitespace-nowrap px-2 py-1 font-mono">{s.packetCount}</td>
+                      <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.endUs - s.startUs)}</td>
+                      <td className="whitespace-nowrap px-2 py-1 font-mono">
+                        {countBySeverity(findingRows, s.streamIndex, "Error")}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-1 font-mono">
+                        {countBySeverity(findingRows, s.streamIndex, "Warning")}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </ResizablePanel>
+        <ResizableHandle withHandle />
+        <ResizablePanel defaultSize={40} minSize={15}>
+          {/* ...violations list, Step 5... */}
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    </div>
+  </div>
+);
+```
+
+(Import `cn` from `"@/shared/ui/lib/utils"` - already the pattern
+`WorkspaceLayout.tsx` uses for the same conditional-class job.)
+
+- [ ] **Step 5: The violations panel**
+
+Fills the second `ResizablePanel` from Step 4:
+
+```tsx
+{selectedStreamIndex === null ? (
+  <div className="p-3 text-sm text-muted-foreground">Select a session to see its violations.</div>
+) : (
+  <div className="flex h-full min-h-0 flex-col gap-2 p-2">
+    <div className="flex items-center gap-1">
+      {(["all", "Error", "Warning"] as const).map((sev) => (
+        <Button
+          key={sev}
+          size="sm"
+          variant={severityFilter === sev ? "secondary" : "outline"}
+          onClick={() => setSeverityFilter(sev)}
+        >
+          {sev === "all" ? "All" : sev}
+        </Button>
+      ))}
+    </div>
+    <div className="min-h-0 flex-1 overflow-auto">
+      <table className="w-full text-left text-xs">
+        <thead className="sticky top-0 bg-muted">
+          <tr>
+            <th className="whitespace-nowrap px-2 py-1 font-medium">Severity</th>
+            <th className="whitespace-nowrap px-2 py-1 font-medium">Rule</th>
+            <th className="whitespace-nowrap px-2 py-1 font-medium">Summary</th>
+          </tr>
+        </thead>
+        <tbody>
+          {findingRows
+            .filter((f) => f.streamIndex === selectedStreamIndex)
+            .filter((f) => severityFilter === "all" || f.severity === severityFilter)
+            .map((f, i) => (
+              <tr key={i} className="border-t border-border/60">
+                <td className="whitespace-nowrap px-2 py-1">
+                  <Badge variant={severityVariant(f.severity)}>{f.severity}</Badge>
+                </td>
+                <td className="whitespace-nowrap px-2 py-1 font-mono">{f.rule}</td>
+                <td className="px-2 py-1">{f.summary}</td>
+              </tr>
+            ))}
+        </tbody>
+      </table>
+    </div>
+  </div>
+)}
+```
+
+(Import `Button` from `"@/shared/ui/button"`. A session's `findings` rows
+are a handful at most - 5 rules max per session per the SQL - so no
+pagination/virtualization needed.)
+
+- [ ] **Step 6: Typecheck + build**
+
+Run: `cd app/ui && npx tsc --noEmit && npm run build`
+Expected: both clean.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add app/ui/src/widgets/ProtocolAnalyzerPanel.tsx
+git commit -m "feat(ui): drill down from a session into its violations (Wave 5)"
+```
+
+### Task 4: Manual verification (the wave gate)
+
+- [ ] **Step 1:** `cargo tauri dev --manifest-path app/src-tauri/Cargo.toml`,
+  open a trace with a known handshake failure (or the fixture).
+- [ ] **Step 2:** Protocol Analyzer tab -> click the session row with a
+  non-zero Errors count.
+- [ ] **Step 3:** Confirm: the violations panel below shows that session's
+  findings with a red "Error" badge on `HANDSHAKE_NO_SYNACK` (or whichever
+  rule fired); clicking "Error"/"Warning"/"All" filters the list correctly;
+  clicking a different session row swaps the violations list to match.
+
+**Do not start Wave 6 until you've done this and the filter + drill-down
+both behave as described.**
+
+### Review Focus (Wave 5)
+
+- **A session with zero findings, after being selected,** must show an
+  empty violations table (header row only), not an error - the `.filter()`
+  chain degrades to an empty array by construction; no dedicated test.
+- **Switching the severity filter while a session with findings of only
+  one severity is selected** (e.g. filter set to "Warning" on a session
+  with only an Error finding) must show an empty table, not stale rows from
+  before the filter changed - covered by construction (`.filter()` re-runs
+  on every render, no stale cached list).
+- **Selecting a session, then switching analyzers** must not show the old
+  analyzer's violations under the new one's `stream_index` numbering (two
+  different analyzers can both have a `stream_index = 1`, meaning different
+  things) - covered by Task 3 Step 2's `useEffect` reset.
+
 ---
 
 ## Self-Review
