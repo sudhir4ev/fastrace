@@ -1074,82 +1074,144 @@ trace with TCP traffic.**
 Wave 1's columns are all Wave 2's internal `_segments`/`_stream_segments`/
 `_sessions` views need - Explorer already runs arbitrary `SELECT` SQL, so the
 whole chain can be pasted in as one `WITH ... SELECT` right now, emitting the
-locked **`findings` contract columns** (`src_node`/`dst_node`/`stream_index`/
-`severity`/`rule`/`summary`), before the `.sql` file or any Rust wrapper
-exists. This is a faithful dry-run of what Wave 2's `findings` view returns:
+locked **`findings` contract columns**, before the `.sql` file or any Rust
+wrapper exists. This is a faithful dry-run of what Wave 2's `findings` view
+returns. See "Sample SQL: detecting TCP violations" below for the query
+itself, a stage-by-stage explanation, and known limitations - discussed and
+corrected 2026-11-27 before being folded in here.
+
+Not a required gate for Wave 1; Wave 1's actual pass/fail is Steps 1-4 above.
+
+## Sample SQL: detecting TCP violations
+
+Runs entirely on Wave 1's columns (`messages.src_ip/src_port/dst_ip/dst_port`
++ `protocol_tcp.flags`) - paste straight into Explorer. This is what Wave 2's
+`findings` view will implement; nothing here depends on Wave 2 existing.
+Verified 2026-11-27 against the prepared Wave 1 fixture: the fixture's
+SYN -> PSH+ACK stream (no SYN-ACK) returns one `HANDSHAKE_NO_SYNACK` finding
+keyed `192.168.1.20:51000 -> 192.168.1.10:30490`.
 
 ```sql
-WITH _segments AS (
+WITH seg AS (
   SELECT m.msg_id, m.timestamp_us,
     m.src_ip||':'||m.src_port AS src_node,
     m.dst_ip||':'||m.dst_port AS dst_node,
     LEAST(m.src_ip||':'||m.src_port, m.dst_ip||':'||m.dst_port) AS ka,
     GREATEST(m.src_ip||':'||m.src_port, m.dst_ip||':'||m.dst_port) AS kb,
-    t.flags, t.segment_len
+    t.flags
   FROM messages m JOIN protocol_tcp t USING (msg_id)
 ),
-_stream_segments AS (
+streamed AS (
   SELECT *,
     SUM(CASE WHEN flags&2<>0 AND flags&16=0 THEN 1 ELSE 0 END)
       OVER (PARTITION BY ka, kb ORDER BY timestamp_us) AS stream_index,
-    timestamp_us - LAG(timestamp_us) OVER (PARTITION BY ka, kb ORDER BY timestamp_us) AS idle_us
-  FROM _segments
+    timestamp_us - LAG(timestamp_us)
+      OVER (PARTITION BY ka, kb ORDER BY timestamp_us) AS idle_us
+  FROM seg
 ),
-_sessions AS (
-  SELECT stream_index,
-    arg_min(src_node,timestamp_us) src_node, arg_min(dst_node,timestamp_us) dst_node,
-    min(timestamp_us) start_us, max(timestamp_us) end_us,
-    min(msg_id) first_msg_id, max(msg_id) last_msg_id,
-    bool_or(flags&2<>0 AND flags&16=0) saw_syn,
-    bool_or(flags&2<>0 AND flags&16<>0) saw_syn_ack,
-    bool_or(flags&1<>0) saw_fin,
-    bool_or(flags&4<>0) saw_rst,
-    max(idle_us) max_idle_us
-  FROM _stream_segments GROUP BY stream_index
+sess AS (
+  SELECT ka, kb, stream_index,
+    arg_min(src_node, timestamp_us) AS src_node,
+    arg_min(dst_node, timestamp_us) AS dst_node,
+    min(timestamp_us) AS start_us, max(timestamp_us) AS end_us,
+    min(msg_id) AS first_msg_id, max(msg_id) AS last_msg_id,
+    bool_or(flags&2<>0 AND flags&16=0)  AS saw_syn,
+    bool_or(flags&2<>0 AND flags&16<>0) AS saw_syn_ack,
+    bool_or(flags&1<>0)                 AS saw_fin,
+    bool_or(flags&4<>0)                 AS saw_rst,
+    max(idle_us)                        AS max_idle_us
+  FROM streamed GROUP BY ka, kb, stream_index
 )
-SELECT src_node, dst_node, stream_index, severity, rule, summary,
-       start_us, end_us, first_msg_id, last_msg_id
-FROM (
-  SELECT 'tcp_connection_health' AS analyzer_name, src_node, dst_node, stream_index,
-    start_us, end_us, first_msg_id, last_msg_id,
-    CASE
-      WHEN saw_syn AND NOT saw_syn_ack AND NOT saw_rst THEN 'Error'
-      WHEN max_idle_us > 15000000 THEN 'Error'
-      ELSE 'Warning'
-    END AS severity,
-    CASE
-      WHEN saw_syn AND NOT saw_syn_ack AND NOT saw_rst THEN 'HANDSHAKE_NO_SYNACK'
-      WHEN saw_syn AND NOT saw_syn_ack AND saw_rst THEN 'CONNECTION_REFUSED'
-      WHEN saw_syn_ack AND saw_rst THEN 'CONNECTION_RESET'
-      WHEN saw_syn_ack AND NOT saw_fin AND NOT saw_rst THEN 'NEVER_CLOSED'
-      WHEN max_idle_us > 15000000 THEN 'SILENCE_TIMEOUT'
-    END AS rule,
-    CASE
-      WHEN saw_syn AND NOT saw_syn_ack AND NOT saw_rst THEN 'Connection attempt failed (no SYN-ACK)'
-      WHEN saw_syn AND NOT saw_syn_ack AND saw_rst THEN 'Connection refused (RST)'
-      WHEN saw_syn_ack AND saw_rst THEN 'Connection reset (RST)'
-      WHEN saw_syn_ack AND NOT saw_fin AND NOT saw_rst THEN 'Connection not closed (no FIN/RST)'
-      WHEN max_idle_us > 15000000 THEN 'Connection idle for '||(max_idle_us/1e6)||'s'
-    END AS summary
-  FROM _sessions
-) WHERE rule IS NOT NULL
+SELECT src_node, dst_node, stream_index, first_msg_id, last_msg_id, 'Error' AS severity,
+       'HANDSHAKE_NO_SYNACK' AS rule, 'Connection attempt failed (no SYN-ACK)' AS summary, start_us
+FROM sess WHERE saw_syn AND NOT saw_syn_ack AND NOT saw_rst
+UNION ALL
+SELECT src_node, dst_node, stream_index, first_msg_id, last_msg_id, 'Warning', 'CONNECTION_REFUSED',
+       'Connection refused (RST)', start_us
+FROM sess WHERE saw_syn AND NOT saw_syn_ack AND saw_rst
+UNION ALL
+SELECT src_node, dst_node, stream_index, first_msg_id, last_msg_id, 'Warning', 'CONNECTION_RESET',
+       'Connection reset (RST)', start_us
+FROM sess WHERE saw_syn_ack AND saw_rst
+UNION ALL
+SELECT src_node, dst_node, stream_index, first_msg_id, last_msg_id, 'Warning', 'NEVER_CLOSED',
+       'Connection not closed (no FIN/RST)', start_us
+FROM sess WHERE saw_syn_ack AND NOT saw_fin AND NOT saw_rst
+UNION ALL
+SELECT src_node, dst_node, stream_index, first_msg_id, last_msg_id, 'Error', 'SILENCE_TIMEOUT',
+       'Idle '||round(max_idle_us/1e6,1)||'s', start_us
+FROM sess WHERE max_idle_us > 15000000
+ORDER BY start_us
 ```
 
-(`15000000` is the spec's `<threshold_us>` config value inlined as a literal
-for ad-hoc Explorer use; the real Wave 2 `.sql` file reads it from config. The
-`WHERE rule IS NOT NULL` subquery drops clean sessions - a healthy connection
-produces no finding. It is a subquery + `WHERE`, **not** `QUALIFY`, because
-DuckDB rejects `QUALIFY` on a non-windowed/grouped query ("at least one window
-function must appear..."). Note: one session can trip multiple rules; the
-`CASE` here shows only the highest-priority one, which is fine for an eyeball
-check - Wave 2's real `findings` view will `UNION ALL` per rule so a session
-can yield several findings.) This is informal - a way to sanity-check the
-session/violation logic and the opaque `src_node`/`dst_node` identity against
-real traffic before Wave 2 commits the file. Verified 2026-11-27 against the
-prepared Wave 1 fixture: the fixture's SYN -> PSH+ACK stream (no SYN-ACK)
-returns one `HANDSHAKE_NO_SYNACK` finding keyed
-`192.168.1.20:51000 -> 192.168.1.10:30490`. Not a required gate for Wave 1;
-Wave 1's actual pass/fail is Steps 1-4 above.
+(`15000000` = the spec's `<threshold_us>` config value, 15s in microseconds,
+inlined as a literal for ad-hoc Explorer use; the real Wave 2 `.sql` file
+reads it from config. One session can trip multiple rules - each `UNION ALL`
+block is independent, so a session appears once per rule it matches, not
+squashed into a single row.)
+
+### Stage by stage
+
+**`seg` - join + normalize identity.** One row per TCP segment: joins
+`messages` (identity, time) to `protocol_tcp` (flags) on `msg_id`.
+`src_node`/`dst_node` are `ip:port` strings. `ka`/`kb` sort the two endpoints
+(`LEAST`/`GREATEST`) so both directions of one connection - A->B and B->A -
+share the same grouping key regardless of who sent which packet. Internal
+plumbing only, never shown to the user.
+
+**`streamed` - split into connections, measure idle gaps.** Two window
+functions, both `PARTITION BY ka, kb ORDER BY timestamp_us` (walk each address
+pair's segments in time order):
+- `stream_index` = running count of pure-SYN segments (`flags&2` set,
+  `flags&16` clear - SYN without ACK, i.e. a fresh open, not a SYN-ACK reply)
+  seen so far on this address pair. Same two ports talk, stop, reconnect
+  later -> second SYN bumps the count -> second conversation gets its own
+  `stream_index`, never merged with the first.
+- `idle_us` = gap since the previous segment on this address pair
+  (`LAG(timestamp_us)`), feeds the silence-timeout rule.
+
+**`sess` - one row per actual connection.** `GROUP BY ka, kb, stream_index` -
+**all three columns**, not `stream_index` alone (an earlier draft of this
+query grouped by `stream_index` only, which would silently merge "the 1st
+connection on pair A" with "the 1st connection on pair B" anywhere two
+different address pairs existed in the same trace - caught and fixed before
+this landed here). For each connection: `arg_min(..., timestamp_us)` picks
+the earliest segment's direction as `src_node` (whoever sent first opened
+it); `bool_or` answers "did any segment in this connection have this flag" -
+`saw_syn`/`saw_syn_ack`/`saw_fin`/`saw_rst`; `max(idle_us)` is the worst gap
+anywhere in the connection.
+
+**The `UNION ALL` blocks - name the flag combinations.** Each is a `WHERE`
+over `sess`:
+
+| rule | condition | plain words |
+|------|-----------|-------------|
+| `HANDSHAKE_NO_SYNACK` | SYN, no SYN-ACK, no RST | sent SYN, peer never answered - dropped/unreachable |
+| `CONNECTION_REFUSED` | SYN, no SYN-ACK, but RST | peer actively said no (port closed) |
+| `CONNECTION_RESET` | SYN-ACK seen, then RST | established, then killed hard |
+| `NEVER_CLOSED` | SYN-ACK, no FIN, no RST | opened fine, no clean close seen in the capture |
+| `SILENCE_TIMEOUT` | worst gap > 15s | established stream went quiet |
+
+Flag bits in `protocol_tcp.flags`: `FIN=1 SYN=2 RST=4 PSH=8 ACK=16`. Pure SYN
+= `flags&2 && !(flags&16)`; SYN-ACK = `flags&2 && flags&16`.
+
+### Known limitations (not fixed, flagged)
+
+- **SYN retransmission inflates `stream_index`.** A lost-and-resent SYN for
+  the *same* connection also matches "pure SYN" in `streamed`, incrementing
+  the counter and wrongly splitting one real connection into two fake
+  sessions. No dedupe/debounce window applied. Likely low-impact on local
+  automotive Ethernet captures (little packet loss), but present and
+  untested. Fix direction: only count a SYN if the previous segment in its
+  partition wasn't also a SYN within some small time window.
+- **`NEVER_CLOSED` is noisy on a live/still-open trace** - any connection
+  still open when the capture ends matches it, which is normal, not a defect.
+  Expect many hits on a live trace; consider requiring the connection to also
+  be idle before flagging, if this proves too chatty in practice.
+- **`first_msg_id`/`last_msg_id` bound the whole session**, not the specific
+  segment that tripped the rule (e.g. not the RST's own `msg_id`). Good
+  enough for "jump to this session in Timeline," not for "show me the exact
+  packet that caused this."
 
 ---
 
