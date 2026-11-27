@@ -149,8 +149,8 @@ appended - a generic textual substitution, same spirit as how `start_us`/
 `end_us` already get interpolated into `list_findings`/`list_sessions`.
 
 ```
-schema/rules/analyzers/tcp_connection_health.sql           # {{channel}} placeholder in _segments
-schema/rules/analyzers/tcp_connection_health.config.json   # { "channel": 1 }
+schema/rules/analyzers/tcp_connection_health.sql           # {{channel}}/{{includeAllChannels}} placeholders in _segments
+schema/rules/analyzers/tcp_connection_health.config.json   # { "channel": 1, "includeAllChannels": false }
 ```
 
 No config value is ever protocol-aware on the Rust side - `apply_config`
@@ -1944,7 +1944,7 @@ config has to work for any future analyzer, not just this one.
 **Files:**
 - Create `schema/rules/analyzers/tcp_connection_health.config.json`.
 - Modify `schema/rules/analyzers/tcp_connection_health.sql` - `_segments`
-  gets a `WHERE m.channel = {{channel}}` filter.
+  gets a `WHERE {{includeAllChannels}} OR m.channel = {{channel}}` filter.
 - Modify `crates/query/src/analyzer.rs` - `ANALYZERS` grows a 3rd field
   (default config), `apply_config` substitution function,
   `get_default_analyzer_config`, `list_findings`/`list_sessions`/
@@ -1974,9 +1974,16 @@ config has to work for any future analyzer, not just this one.
 `schema/rules/analyzers/tcp_connection_health.config.json`:
 ```json
 {
-  "channel": 1
+  "channel": 1,
+  "includeAllChannels": false
 }
 ```
+
+(`includeAllChannels` is how a user includes both/all channels - e.g. a
+trace where the "two channels" are genuinely different buses, not a tap
+duplicate, where filtering to one channel would wrongly drop real traffic.
+Decided over a `"channels": [1]` list shape: one scalar toggle plus one
+scalar channel number, no array substitution needed in `apply_config`.)
 
 - [ ] **Step 2: Add the placeholder to `_segments`**
 
@@ -1994,11 +2001,14 @@ _segments AS (
 ```
 to:
 ```sql
--- {{channel}}: a dual-tap capture logs every packet once per mirrored
--- channel; picking one channel here is the fix, not a timestamp-proximity
--- heuristic - see docs/superpowers/plans/2026-11-27-tcp-analyzer-wave1-ingest.md,
--- "Wave 6: Analyzer Configuration" for the verification that this is a
--- lossless, zero-coincidence 1:1 mirror on the trace that surfaced it.
+-- {{channel}}/{{includeAllChannels}}: a dual-tap capture logs every packet
+-- once per mirrored channel; picking one channel here is the fix, not a
+-- timestamp-proximity heuristic - see
+-- docs/superpowers/plans/2026-11-27-tcp-analyzer-wave1-ingest.md, "Wave 6:
+-- Analyzer Configuration" for the verification that this is a lossless,
+-- zero-coincidence 1:1 mirror on the trace that surfaced it.
+-- includeAllChannels=true short-circuits the filter to always-true, for a
+-- trace where the channels are genuinely different buses, not a duplicate.
 _segments AS (
     SELECT m.msg_id, m.timestamp_us,
         m.src_ip || ':' || m.src_port AS src_node,
@@ -2007,7 +2017,7 @@ _segments AS (
         GREATEST(m.src_ip || ':' || m.src_port, m.dst_ip || ':' || m.dst_port) AS kb,
         t.flags, t.segment_len
     FROM messages m JOIN protocol_tcp t USING (msg_id)
-    WHERE m.channel = {{channel}}
+    WHERE {{includeAllChannels}} OR m.channel = {{channel}}
 ),
 ```
 
@@ -2378,20 +2388,27 @@ git commit -m "feat(ui): per-analyzer JSON config editor with Apply (Wave 6)"
   open `MFK5_VAP_X50_drive_078.blf` (or any trace with the dual-tap
   duplication symptom).
 - [ ] **Step 2:** Protocol Analyzer tab - confirm the config editor is
-  prefilled with `{ "channel": 1 }` and the sessions table looks sane
-  (no more 1-packet sessions flooding with `HANDSHAKE_NO_SYNACK`).
-- [ ] **Step 3:** Edit the JSON to `{ "channel": 2 }`, click Apply -
-  confirm the table re-renders with the *other* channel's view of the
-  same traffic (should look equivalent, since both channels are a full
-  mirror on this trace - same session count, same finding count).
-- [ ] **Step 4:** Edit the JSON to something invalid (e.g. delete a
+  prefilled with `{ "channel": 1, "includeAllChannels": false }` and the
+  sessions table looks sane (no more 1-packet sessions flooding with
+  `HANDSHAKE_NO_SYNACK`).
+- [ ] **Step 3:** Edit `channel` to `2`, click Apply - confirm the table
+  re-renders with the *other* channel's view of the same traffic (should
+  look equivalent, since both channels are a full mirror on this trace -
+  same session count, same finding count).
+- [ ] **Step 4:** Set `includeAllChannels` to `true`, click Apply -
+  confirm the duplication symptom comes back (packet counts roughly
+  double, spurious `HANDSHAKE_NO_SYNACK` findings reappear) - this proves
+  the toggle actually reaches the SQL, not just that one channel value
+  happens to look right.
+- [ ] **Step 5:** Edit the JSON to something invalid (e.g. delete a
   closing brace) - confirm Apply disables and the inline error shows,
   without the table changing or an unhandled exception.
-- [ ] **Step 5:** In Explorer, run `select count(*) from findings where
+- [ ] **Step 6:** In Explorer, run `select count(*) from findings where
   rule = 'HANDSHAKE_NO_SYNACK'` (after `.read`-ing the analyzer file with
-  `{{channel}}` manually substituted to `1`) and confirm the count is
-  dramatically lower than before this wave - it should now only include
-  genuine failed handshakes, not channel-duplication artifacts.
+  `{{channel}}` substituted to `1` and `{{includeAllChannels}}` to
+  `false`) and confirm the count is dramatically lower than before this
+  wave - it should now only include genuine failed handshakes, not
+  channel-duplication artifacts.
 
 **Do not start Wave 7 until you've done this and the error count on a real
 dual-tap trace looks sane.**
