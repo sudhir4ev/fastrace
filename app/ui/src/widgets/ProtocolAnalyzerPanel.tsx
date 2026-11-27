@@ -38,10 +38,21 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
   const [selectedStreamIndex, setSelectedStreamIndex] = useState<number | null>(null);
   const [severityFilter, setSeverityFilter] = useState<"all" | "Error" | "Warning">("all");
   const [evidenceTab, setEvidenceTab] = useState<"violations" | "packets">("violations");
+  const [highlightedMsgIds, setHighlightedMsgIds] = useState<[number, number] | null>(null);
 
   useEffect(() => {
     setSelectedStreamIndex(null);
+    setHighlightedMsgIds(null);
   }, [activeAnalyzer]);
+
+  useEffect(() => {
+    setHighlightedMsgIds(null);
+  }, [selectedStreamIndex]);
+
+  // Rules with no actual closing packet (RST/FIN) to point to - the
+  // violation IS the absence of one, so the UI must say that instead of
+  // pretending `lastMsgId` is the offending packet.
+  const NO_CLOSING_PACKET_RULES = new Set(["NEVER_CLOSED", "HANDSHAKE_NO_SYNACK", "SILENCE_TIMEOUT"]);
 
   const defaultConfig = useDefaultAnalyzerConfig(activeAnalyzer);
   const [configDraft, setConfigDraft] = useState("");
@@ -64,6 +75,11 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
   const sessions = useListSessions(blfPath, activeAnalyzer, appliedConfig);
   const findings = useListFindings(blfPath, activeAnalyzer, appliedConfig);
   const segments = useListSegments(blfPath, activeAnalyzer, appliedConfig, selectedStreamIndex);
+
+  useEffect(() => {
+    if (highlightedMsgIds === null || evidenceTab !== "packets") return;
+    document.getElementById(`segment-${highlightedMsgIds[1]}`)?.scrollIntoView({ block: "center" });
+  }, [highlightedMsgIds, evidenceTab, segments.data]);
 
   if (analyzers.isLoading) {
     return <div className="p-3 text-sm text-muted-foreground">Loading analyzers...</div>;
@@ -205,7 +221,19 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
                           .filter((f) => f.streamIndex === selectedStreamIndex)
                           .filter((f) => severityFilter === "all" || f.severity === severityFilter)
                           .map((f, i) => (
-                            <tr key={i} className="border-t border-border/60">
+                            <tr
+                              key={i}
+                              className="cursor-pointer border-t border-border/60 hover:bg-accent"
+                              title={
+                                NO_CLOSING_PACKET_RULES.has(f.rule)
+                                  ? "No RST/FIN packet caused this - the violation is that one never arrived."
+                                  : "Jump to the packet that caused this."
+                              }
+                              onClick={() => {
+                                setEvidenceTab("packets");
+                                setHighlightedMsgIds([f.firstMsgId, f.lastMsgId]);
+                              }}
+                            >
                               <td className="whitespace-nowrap px-2 py-1">
                                 <Badge variant={severityVariant(f.severity)}>{f.severity}</Badge>
                               </td>
@@ -219,31 +247,53 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
                 ) : segments.isLoading ? (
                   <div className="p-3 text-sm text-muted-foreground">Loading packets...</div>
                 ) : (
-                  <div className="min-h-0 flex-1 overflow-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead className="sticky top-0 bg-muted">
-                        <tr>
-                          <th className="whitespace-nowrap px-2 py-1 font-medium">Time</th>
-                          <th className="whitespace-nowrap px-2 py-1 font-medium">Source</th>
-                          <th className="whitespace-nowrap px-2 py-1 font-medium">Destination</th>
-                          <th className="whitespace-nowrap px-2 py-1 font-medium">Info</th>
-                          <th className="whitespace-nowrap px-2 py-1 font-medium">Len</th>
-                          <th className="whitespace-nowrap px-2 py-1 font-medium">Idle</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {segmentRows.map((s) => (
-                          <tr key={s.msgId} className="border-t border-border/60">
-                            <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.timestampUs)}</td>
-                            <td className="whitespace-nowrap px-2 py-1 font-mono">{s.srcNode}</td>
-                            <td className="whitespace-nowrap px-2 py-1 font-mono">{s.dstNode}</td>
-                            <td className="whitespace-nowrap px-2 py-1 font-mono">{s.info}</td>
-                            <td className="whitespace-nowrap px-2 py-1 font-mono">{s.segmentLen}</td>
-                            <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.idleUs)}</td>
+                  <div className="flex min-h-0 flex-1 flex-col gap-1">
+                    {highlightedMsgIds !== null && (
+                      <div className="text-xs text-muted-foreground">
+                        {NO_CLOSING_PACKET_RULES.has(
+                          findingRows.find(
+                            (f) => f.streamIndex === selectedStreamIndex && f.lastMsgId === highlightedMsgIds[1]
+                          )?.rule ?? ""
+                        )
+                          ? "No single packet caused this - highlighted is the last packet seen on this stream; no RST/FIN ever followed it."
+                          : "Highlighted: the packets bounding this violation (last one is typically the RST)."}
+                      </div>
+                    )}
+                    <div className="min-h-0 flex-1 overflow-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="sticky top-0 bg-muted">
+                          <tr>
+                            <th className="whitespace-nowrap px-2 py-1 font-medium">Time</th>
+                            <th className="whitespace-nowrap px-2 py-1 font-medium">Source</th>
+                            <th className="whitespace-nowrap px-2 py-1 font-medium">Destination</th>
+                            <th className="whitespace-nowrap px-2 py-1 font-medium">Info</th>
+                            <th className="whitespace-nowrap px-2 py-1 font-medium">Len</th>
+                            <th className="whitespace-nowrap px-2 py-1 font-medium">Idle</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {segmentRows.map((s) => (
+                            <tr
+                              key={s.msgId}
+                              id={`segment-${s.msgId}`}
+                              className={cn(
+                                "border-t border-border/60",
+                                highlightedMsgIds !== null &&
+                                  (s.msgId === highlightedMsgIds[0] || s.msgId === highlightedMsgIds[1]) &&
+                                  "bg-accent"
+                              )}
+                            >
+                              <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.timestampUs)}</td>
+                              <td className="whitespace-nowrap px-2 py-1 font-mono">{s.srcNode}</td>
+                              <td className="whitespace-nowrap px-2 py-1 font-mono">{s.dstNode}</td>
+                              <td className="whitespace-nowrap px-2 py-1 font-mono">{s.info}</td>
+                              <td className="whitespace-nowrap px-2 py-1 font-mono">{s.segmentLen}</td>
+                              <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.idleUs)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </div>
