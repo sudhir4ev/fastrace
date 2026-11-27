@@ -33,11 +33,14 @@ Tauri app:
 
 ## What the fixture exercises
 
-Two CAN frames and four Ethernet frames, chosen so each peeled protocol type gets
-exactly one row: one packed-PDU-only frame, one SOME/IP message, one SOME/IP-SD
-message, one DoIP message. See the comments in
-`test/fixtures/generate_fixture.cpp` for the exact byte layout and in
-`test/fixture_prepare_check.cpp` for the expected counts.
+Two CAN frames and six Ethernet frames, chosen so each peeled protocol type gets
+at least one row: one packed-PDU-only frame (E1), one SOME/IP message (E2), one
+SOME/IP-SD message (E3), one DoIP message (E4), and two segments of one TCP
+stream - a pure-SYN control segment (E5, zero payload) and a PSH+ACK data
+segment (E6) - so `protocol_tcp` gets both a zero-length control row and a
+real-payload row. See the comments in `test/fixtures/generate_fixture.cpp` for
+the exact byte layout and in `test/fixture_prepare_check.cpp` for the expected
+counts.
 
 ## Known gaps
 

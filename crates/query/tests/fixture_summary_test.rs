@@ -40,7 +40,7 @@ fn summary_counts_match_fixture() {
         "fastrace_parse prepare exited with {status}"
     );
 
-    let result = (|| -> Result<(i64, i64, i64, i64, i64, i64), String> {
+    let result = (|| -> Result<(i64, i64, i64, i64, i64, i64, i64), String> {
         let conn = trace_store::open(&fixture_duckdb)?;
         Ok((
             query::count(
@@ -55,14 +55,18 @@ fn summary_counts_match_fixture() {
             query::count(&conn, "select count(*) from protocol_someip")?,
             query::count(&conn, "select count(*) from protocol_someip_sd")?,
             query::count(&conn, "select count(*) from protocol_doip")?,
+            query::count(&conn, "select count(*) from protocol_tcp")?,
         ))
     })();
 
     let _ = std::fs::remove_file(&fixture_duckdb);
     let _ = std::fs::remove_file(format!("{}.wal", fixture_duckdb.display()));
 
-    let (can, eth, pdu, someip, sd, doip) = result.expect("summary queries should succeed");
-    assert_eq!((can, eth, pdu, someip, sd, doip), (2, 4, 2, 1, 1, 1));
+    let (can, eth, pdu, someip, sd, doip, tcp) = result.expect("summary queries should succeed");
+    assert_eq!(
+        (can, eth, pdu, someip, sd, doip, tcp),
+        (2, 6, 2, 1, 1, 1, 2)
+    );
 }
 
 fn locate_fastrace_parse() -> Option<PathBuf> {
