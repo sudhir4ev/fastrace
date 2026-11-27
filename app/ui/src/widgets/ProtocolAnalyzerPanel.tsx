@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
-import { useDefaultAnalyzerConfig, useListAnalyzers, useListFindings, useListSessions } from "@/shared/api/hooks";
-import type { Finding, Session } from "@/shared/api/trace-source";
+import {
+  useDefaultAnalyzerConfig,
+  useListAnalyzers,
+  useListFindings,
+  useListSegments,
+  useListSessions,
+} from "@/shared/api/hooks";
+import type { Finding, Segment, Session } from "@/shared/api/trace-source";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { cn } from "@/shared/ui/lib/utils";
@@ -31,6 +37,7 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
 
   const [selectedStreamIndex, setSelectedStreamIndex] = useState<number | null>(null);
   const [severityFilter, setSeverityFilter] = useState<"all" | "Error" | "Warning">("all");
+  const [evidenceTab, setEvidenceTab] = useState<"violations" | "packets">("violations");
 
   useEffect(() => {
     setSelectedStreamIndex(null);
@@ -56,6 +63,7 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
 
   const sessions = useListSessions(blfPath, activeAnalyzer, appliedConfig);
   const findings = useListFindings(blfPath, activeAnalyzer, appliedConfig);
+  const segments = useListSegments(blfPath, activeAnalyzer, appliedConfig, selectedStreamIndex);
 
   if (analyzers.isLoading) {
     return <div className="p-3 text-sm text-muted-foreground">Loading analyzers...</div>;
@@ -66,6 +74,7 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
 
   const sessionRows: Session[] = sessions.data ?? [];
   const findingRows: Finding[] = findings.data ?? [];
+  const segmentRows: Segment[] = segments.data ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 p-3">
@@ -152,42 +161,91 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
             ) : (
               <div className="flex h-full min-h-0 flex-col gap-2 p-2">
                 <div className="flex items-center gap-1">
-                  {(["all", "Error", "Warning"] as const).map((sev) => (
-                    <Button
-                      key={sev}
-                      size="sm"
-                      variant={severityFilter === sev ? "secondary" : "outline"}
-                      onClick={() => setSeverityFilter(sev)}
-                    >
-                      {sev === "all" ? "All" : sev}
-                    </Button>
-                  ))}
+                  <Button
+                    size="sm"
+                    variant={evidenceTab === "violations" ? "secondary" : "outline"}
+                    onClick={() => setEvidenceTab("violations")}
+                  >
+                    Violations
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={evidenceTab === "packets" ? "secondary" : "outline"}
+                    onClick={() => setEvidenceTab("packets")}
+                  >
+                    Packets
+                  </Button>
+                  {evidenceTab === "violations" && (
+                    <div className="ml-2 flex items-center gap-1">
+                      {(["all", "Error", "Warning"] as const).map((sev) => (
+                        <Button
+                          key={sev}
+                          size="sm"
+                          variant={severityFilter === sev ? "secondary" : "outline"}
+                          onClick={() => setSeverityFilter(sev)}
+                        >
+                          {sev === "all" ? "All" : sev}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div className="min-h-0 flex-1 overflow-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="sticky top-0 bg-muted">
-                      <tr>
-                        <th className="whitespace-nowrap px-2 py-1 font-medium">Severity</th>
-                        <th className="whitespace-nowrap px-2 py-1 font-medium">Rule</th>
-                        <th className="whitespace-nowrap px-2 py-1 font-medium">Summary</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {findingRows
-                        .filter((f) => f.streamIndex === selectedStreamIndex)
-                        .filter((f) => severityFilter === "all" || f.severity === severityFilter)
-                        .map((f, i) => (
-                          <tr key={i} className="border-t border-border/60">
-                            <td className="whitespace-nowrap px-2 py-1">
-                              <Badge variant={severityVariant(f.severity)}>{f.severity}</Badge>
-                            </td>
-                            <td className="whitespace-nowrap px-2 py-1 font-mono">{f.rule}</td>
-                            <td className="px-2 py-1">{f.summary}</td>
+                {evidenceTab === "violations" ? (
+                  <div className="min-h-0 flex-1 overflow-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="sticky top-0 bg-muted">
+                        <tr>
+                          <th className="whitespace-nowrap px-2 py-1 font-medium">Severity</th>
+                          <th className="whitespace-nowrap px-2 py-1 font-medium">Rule</th>
+                          <th className="whitespace-nowrap px-2 py-1 font-medium">Summary</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {findingRows
+                          .filter((f) => f.streamIndex === selectedStreamIndex)
+                          .filter((f) => severityFilter === "all" || f.severity === severityFilter)
+                          .map((f, i) => (
+                            <tr key={i} className="border-t border-border/60">
+                              <td className="whitespace-nowrap px-2 py-1">
+                                <Badge variant={severityVariant(f.severity)}>{f.severity}</Badge>
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-1 font-mono">{f.rule}</td>
+                              <td className="px-2 py-1">{f.summary}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : segments.isLoading ? (
+                  <div className="p-3 text-sm text-muted-foreground">Loading packets...</div>
+                ) : (
+                  <div className="min-h-0 flex-1 overflow-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="sticky top-0 bg-muted">
+                        <tr>
+                          <th className="whitespace-nowrap px-2 py-1 font-medium">Time</th>
+                          <th className="whitespace-nowrap px-2 py-1 font-medium">Source</th>
+                          <th className="whitespace-nowrap px-2 py-1 font-medium">Destination</th>
+                          <th className="whitespace-nowrap px-2 py-1 font-medium">Info</th>
+                          <th className="whitespace-nowrap px-2 py-1 font-medium">Len</th>
+                          <th className="whitespace-nowrap px-2 py-1 font-medium">Idle</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {segmentRows.map((s) => (
+                          <tr key={s.msgId} className="border-t border-border/60">
+                            <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.timestampUs)}</td>
+                            <td className="whitespace-nowrap px-2 py-1 font-mono">{s.srcNode}</td>
+                            <td className="whitespace-nowrap px-2 py-1 font-mono">{s.dstNode}</td>
+                            <td className="whitespace-nowrap px-2 py-1 font-mono">{s.info}</td>
+                            <td className="whitespace-nowrap px-2 py-1 font-mono">{s.segmentLen}</td>
+                            <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.idleUs)}</td>
                           </tr>
                         ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </ResizablePanel>

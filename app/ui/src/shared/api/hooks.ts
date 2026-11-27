@@ -259,6 +259,19 @@ export function useListFindings(blfPath: string, analyzerName: string | null, co
   });
 }
 
+export function useListSegments(
+  blfPath: string,
+  analyzerName: string | null,
+  configJson: string,
+  streamIndex: number | null
+) {
+  return useQuery({
+    queryKey: ["list-segments", blfPath, analyzerName, configJson, streamIndex],
+    queryFn: () => getTraceDataSource().listSegments(blfPath, analyzerName!, configJson, streamIndex as number),
+    enabled: analyzerName !== null && streamIndex !== null,
+  });
+}
+
 // Shared x-axis domain for every Timeline chart (SignalChart, MatchLane) -
 // without this, each chart auto-scales to its own series' extent, and
 // CHART_GROUP's percentage-based zoom sync maps the same percentage to
