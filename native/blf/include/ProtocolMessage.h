@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <vector>
 
-enum class ProtocolType { SomeIp, SomeIpSd, DoIp, Pdu };
+enum class ProtocolType { SomeIp, SomeIpSd, DoIp, Pdu, Tcp };
 
 struct SomeIpHeader {
     uint16_t serviceId;
@@ -34,6 +34,11 @@ struct PduInfo {
     size_t length;
 };
 
+struct TcpSegmentInfo {
+    uint32_t flags;
+    uint32_t length;
+};
+
 struct ProtocolMessage {
     uint64_t timestampUs;
     std::vector<size_t> sourceIndices;
@@ -44,5 +49,6 @@ struct ProtocolMessage {
         SomeIpSdMessage someIpSd;
         DoipHeader doip;
         PduInfo pdu;
+        TcpSegmentInfo tcp;
     } data;
 };

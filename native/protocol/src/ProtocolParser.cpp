@@ -23,6 +23,19 @@ static inline uint32_t readBe32(const uint8_t* p)
 std::vector<ProtocolMessage> ProtocolParser::parse(const fastrace::TraceMessage& tm, size_t globalMsgIndex)
 {
     std::vector<ProtocolMessage> results;
+
+    // TCP segments peel on flags alone - a pure control segment (SYN/FIN/RST)
+    // carries zero payload, so this must run before the empty-payload guard.
+    if (tm.isTcp) {
+        ProtocolMessage msg;
+        msg.timestampUs = tm.timestampUs;
+        msg.sourceIndices.push_back(globalMsgIndex);
+        msg.type = ProtocolType::Tcp;
+        msg.data.tcp.flags = tm.tcpFlags;
+        msg.data.tcp.length = static_cast<uint32_t>(tm.data.size());
+        results.push_back(msg);
+    }
+
     if (tm.data.empty()) {
         return results;
     }
