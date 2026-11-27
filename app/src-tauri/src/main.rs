@@ -439,6 +439,43 @@ struct DetectorQueryResponse {
 }
 
 #[tauri::command]
+fn run_explorer_table_page(
+    blf_path: String,
+    sql: String,
+    page_size: i64,
+    offset: i64,
+    order_by_column: Option<String>,
+    order_by_desc: bool,
+) -> Result<query::ExplorerTablePage, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::run_explorer_table_page(
+        &conn,
+        &sql,
+        page_size,
+        offset,
+        order_by_column.as_deref(),
+        order_by_desc,
+    )
+}
+
+#[tauri::command]
+fn run_explorer_chart_query(
+    blf_path: String,
+    base_sql: String,
+    config: query::ExplorerChartConfig,
+    metric: Option<query::ExplorerChartMetric>,
+    row_limit: i64,
+) -> Result<query::ExplorerChartResult, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    match metric {
+        Some(m) => query::run_explorer_chart_query_grouped(&conn, &base_sql, &config, &m, row_limit),
+        None => query::run_explorer_chart_query_ungrouped(&conn, &base_sql, &config, row_limit),
+    }
+}
+
+#[tauri::command]
 fn run_detector_query(
     blf_path: String,
     sql: String,
@@ -837,6 +874,48 @@ fn clear_query_history(blf_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn list_explorer_query_history(blf_path: String) -> Result<Vec<project_store::ExplorerQueryEntry>, String> {
+    let path = project_path_for(&blf_path);
+    Ok(project_store::read_project(&path, &blf_path)?.explorer_query_history)
+}
+
+#[tauri::command]
+fn record_explorer_query(blf_path: String, sql: String, row_count: i64) -> Result<(), String> {
+    let path = project_path_for(&blf_path);
+    let project = project_store::read_project(&path, &blf_path)?;
+    let entry = project_store::ExplorerQueryEntry { sql, ran_at: now_ms(), row_count };
+    project_store::write_project(&path, &project_store::push_explorer_query(project, entry))
+}
+
+#[tauri::command]
+fn remove_explorer_query(blf_path: String, sql: String) -> Result<(), String> {
+    let path = project_path_for(&blf_path);
+    let project = project_store::read_project(&path, &blf_path)?;
+    project_store::write_project(&path, &project_store::remove_explorer_query(project, &sql))
+}
+
+#[tauri::command]
+fn clear_explorer_query_history(blf_path: String) -> Result<(), String> {
+    let path = project_path_for(&blf_path);
+    let project = project_store::read_project(&path, &blf_path)?;
+    project_store::write_project(&path, &project_store::clear_explorer_query_history(project))
+}
+
+#[tauri::command]
+fn list_explorer_saved_queries(blf_path: String) -> Result<Vec<project_store::SavedExplorerQuery>, String> {
+    let path = project_path_for(&blf_path);
+    Ok(project_store::read_project(&path, &blf_path)?.explorer_saved_queries)
+}
+
+#[tauri::command]
+fn save_explorer_query(blf_path: String, name: String, sql: String) -> Result<(), String> {
+    let path = project_path_for(&blf_path);
+    let project = project_store::read_project(&path, &blf_path)?;
+    let entry = project_store::SavedExplorerQuery { name, sql, saved_at: now_ms() };
+    project_store::write_project(&path, &project_store::save_explorer_query(project, entry))
+}
+
+#[tauri::command]
 fn list_recent_traces(app: tauri::AppHandle) -> Result<Vec<RecentTraceInfo>, String> {
     let path = recent_traces_path(&app)?;
     let list = read_recent_traces(&path)?;
@@ -910,6 +989,8 @@ fn main() {
             list_signal_coverage,
             resolve_message_position,
             resolve_message_range,
+            run_explorer_table_page,
+            run_explorer_chart_query,
             run_detector_query,
             get_file_sizes,
             get_path_size,
@@ -924,6 +1005,12 @@ fn main() {
             record_query,
             remove_query,
             clear_query_history,
+            list_explorer_query_history,
+            record_explorer_query,
+            remove_explorer_query,
+            clear_explorer_query_history,
+            list_explorer_saved_queries,
+            save_explorer_query,
             get_project,
             save_project
         ])
@@ -1488,5 +1575,107 @@ mod tests {
         let project = get_project(blf_path_str).unwrap();
         assert_eq!(project.traces[0].arxml_path, Some("/t.arxml".to_string()));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Builds a minimal real `.duckdb` Trace Store (right schema_version, a
+    /// `messages` table) at a unique temp path, for commands that actually
+    /// call `trace_store::open` and run SQL against it. `name` must be
+    /// unique per test (same convention as the other fixture paths in this
+    /// module, e.g. `project_test_queries_*`) so concurrently-run tests
+    /// never collide on the same file. Returns the `.blf` path; the caller
+    /// is responsible for removing the `.duckdb` file afterward, same as
+    /// every other fixture-cleanup test in this module.
+    fn fixture_trace_store(name: &str) -> String {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!("explorer_fixture_{name}_{}.blf", std::process::id()));
+        let duckdb_path = blf_path.with_extension("duckdb");
+        let conn = trace_store::Connection::open(&duckdb_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key VARCHAR, value VARCHAR);
+             INSERT INTO meta VALUES ('schema_version', '5');
+             CREATE TABLE messages (msg_id BIGINT, timestamp_us BIGINT);
+             INSERT INTO messages VALUES (0, 1000), (1, 2000), (2, 3000);",
+        )
+        .unwrap();
+        drop(conn);
+        blf_path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn explorer_query_history_commands_persist_independently_of_analyzer_history() {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!("project_test_explorer_queries_{}.blf", std::process::id()));
+        let blf_path = blf_path.to_string_lossy().to_string();
+
+        record_query(blf_path.clone(), "select 1".to_string(), vec![], true, 3).unwrap();
+        record_explorer_query(blf_path.clone(), "select 2".to_string(), 7).unwrap();
+
+        let analyzer_history = list_query_history(blf_path.clone()).unwrap();
+        let explorer_history = list_explorer_query_history(blf_path.clone()).unwrap();
+        assert_eq!(analyzer_history.len(), 1);
+        assert_eq!(explorer_history.len(), 1);
+        assert_eq!(explorer_history[0].sql, "select 2");
+        assert_eq!(explorer_history[0].row_count, 7);
+
+        remove_explorer_query(blf_path.clone(), "select 2".to_string()).unwrap();
+        assert!(list_explorer_query_history(blf_path.clone()).unwrap().is_empty());
+        assert_eq!(list_query_history(blf_path.clone()).unwrap().len(), 1, "Analyzer history untouched");
+
+        record_explorer_query(blf_path.clone(), "select 3".to_string(), 1).unwrap();
+        clear_explorer_query_history(blf_path.clone()).unwrap();
+        assert!(list_explorer_query_history(blf_path.clone()).unwrap().is_empty());
+
+        let _ = std::fs::remove_file(project_store::project_file_path(std::path::Path::new(&blf_path)));
+    }
+
+    #[test]
+    fn explorer_saved_query_commands_persist_a_named_query() {
+        let dir = std::env::temp_dir();
+        let blf_path = dir.join(format!("project_test_explorer_saved_{}.blf", std::process::id()));
+        let blf_path = blf_path.to_string_lossy().to_string();
+
+        save_explorer_query(blf_path.clone(), "Idle gaps".to_string(), "select 1".to_string()).unwrap();
+        let saved = list_explorer_saved_queries(blf_path.clone()).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].name, "Idle gaps");
+        assert_eq!(saved[0].sql, "select 1");
+
+        let _ = std::fs::remove_file(project_store::project_file_path(std::path::Path::new(&blf_path)));
+    }
+
+    #[test]
+    fn run_explorer_chart_query_reads_from_the_open_store() {
+        let blf_path = fixture_trace_store("chart_query");
+        let config = query::ExplorerChartConfig {
+            x: "timestamp_us".to_string(),
+            series_by: None,
+            y: "timestamp_us".to_string(),
+        };
+        let result = run_explorer_chart_query(
+            blf_path.clone(),
+            "select * from messages".to_string(),
+            config,
+            None,
+            1000,
+        )
+        .unwrap();
+        assert!(!result.rows.is_empty());
+        let _ = std::fs::remove_file(std::path::Path::new(&blf_path).with_extension("duckdb"));
+    }
+
+    #[test]
+    fn run_explorer_table_page_reads_from_the_open_store() {
+        let blf_path = fixture_trace_store("table_page");
+        let page = run_explorer_table_page(
+            blf_path.clone(),
+            "select msg_id, timestamp_us from messages".to_string(),
+            10,
+            0,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(!page.columns.is_empty());
+        let _ = std::fs::remove_file(std::path::Path::new(&blf_path).with_extension("duckdb"));
     }
 }

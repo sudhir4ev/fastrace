@@ -16,6 +16,22 @@ pub struct QueryHistoryEntry {
     pub match_count: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerQueryEntry {
+    pub sql: String,
+    pub ran_at: i64,
+    pub row_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedExplorerQuery {
+    pub name: String,
+    pub sql: String,
+    pub saved_at: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrimWindow {
@@ -44,6 +60,10 @@ pub struct ProjectFile {
     pub trim_window: Option<TrimWindow>,
     #[serde(default)]
     pub query_history: Vec<QueryHistoryEntry>,
+    #[serde(default)]
+    pub explorer_query_history: Vec<ExplorerQueryEntry>,
+    #[serde(default)]
+    pub explorer_saved_queries: Vec<SavedExplorerQuery>,
 }
 
 impl ProjectFile {
@@ -58,6 +78,8 @@ impl ProjectFile {
             displayed_signal_ids: Vec::new(),
             trim_window: None,
             query_history: Vec::new(),
+            explorer_query_history: Vec::new(),
+            explorer_saved_queries: Vec::new(),
         }
     }
 }
@@ -110,6 +132,39 @@ pub fn remove_query(mut project: ProjectFile, sql: &str) -> ProjectFile {
 
 pub fn clear_query_history(mut project: ProjectFile) -> ProjectFile {
     project.query_history.clear();
+    project
+}
+
+/// Same normalize-and-dedupe/cap behavior as `push_query`, applied to the
+/// Explorer's own, separate history list.
+pub fn push_explorer_query(mut project: ProjectFile, entry: ExplorerQueryEntry) -> ProjectFile {
+    let norm = normalize_query_sql(&entry.sql);
+    project
+        .explorer_query_history
+        .retain(|q| normalize_query_sql(&q.sql) != norm);
+    project.explorer_query_history.insert(0, entry);
+    project.explorer_query_history.truncate(MAX_QUERY_HISTORY);
+    project
+}
+
+pub fn remove_explorer_query(mut project: ProjectFile, sql: &str) -> ProjectFile {
+    let norm = normalize_query_sql(sql);
+    project
+        .explorer_query_history
+        .retain(|q| normalize_query_sql(&q.sql) != norm);
+    project
+}
+
+pub fn clear_explorer_query_history(mut project: ProjectFile) -> ProjectFile {
+    project.explorer_query_history.clear();
+    project
+}
+
+/// Appends a user-named, intentionally pinned query - never capped or
+/// deduped, unlike the rolling `explorer_query_history` (an explicit Save
+/// is a different act than an automatic recent-run record).
+pub fn save_explorer_query(mut project: ProjectFile, entry: SavedExplorerQuery) -> ProjectFile {
+    project.explorer_saved_queries.push(entry);
     project
 }
 
@@ -335,5 +390,124 @@ mod tests {
             project.traces[0].downsampling_algorithms.get(&42),
             Some(&"min_max".to_string())
         );
+    }
+
+    #[test]
+    fn push_explorer_query_dedupes_by_normalized_sql_and_moves_to_front() {
+        let project = ProjectFile::new_for_trace("/t.blf");
+        let project = push_explorer_query(
+            project,
+            ExplorerQueryEntry { sql: "select 1".to_string(), ran_at: 1, row_count: 0 },
+        );
+        let project = push_explorer_query(
+            project,
+            ExplorerQueryEntry { sql: "select   1".to_string(), ran_at: 2, row_count: 5 },
+        );
+        assert_eq!(project.explorer_query_history.len(), 1);
+        assert_eq!(project.explorer_query_history[0].ran_at, 2);
+    }
+
+    #[test]
+    fn push_explorer_query_caps_at_max_query_history() {
+        let mut project = ProjectFile::new_for_trace("/t.blf");
+        for i in 0..(MAX_QUERY_HISTORY + 5) {
+            project = push_explorer_query(
+                project,
+                ExplorerQueryEntry { sql: format!("select {i}"), ran_at: i as i64, row_count: 0 },
+            );
+        }
+        assert_eq!(project.explorer_query_history.len(), MAX_QUERY_HISTORY);
+    }
+
+    #[test]
+    fn remove_explorer_query_removes_by_normalized_sql() {
+        let project = ProjectFile::new_for_trace("/t.blf");
+        let project = push_explorer_query(
+            project,
+            ExplorerQueryEntry { sql: "select 1".to_string(), ran_at: 1, row_count: 0 },
+        );
+        let project = remove_explorer_query(project, "select   1");
+        assert!(project.explorer_query_history.is_empty());
+    }
+
+    #[test]
+    fn clear_explorer_query_history_empties_the_list() {
+        let project = ProjectFile::new_for_trace("/t.blf");
+        let project = push_explorer_query(
+            project,
+            ExplorerQueryEntry { sql: "select 1".to_string(), ran_at: 1, row_count: 0 },
+        );
+        assert!(clear_explorer_query_history(project).explorer_query_history.is_empty());
+    }
+
+    #[test]
+    fn explorer_query_history_round_trips_through_json() {
+        let path = temp_path("explorer_roundtrip");
+        let mut project = ProjectFile::new_for_trace("/traces/run1.blf");
+        project = push_explorer_query(
+            project,
+            ExplorerQueryEntry { sql: "select 1".to_string(), ran_at: 1, row_count: 3 },
+        );
+        write_project(&path, &project).unwrap();
+        let loaded = read_project(&path, "/traces/run1.blf").unwrap();
+        assert_eq!(loaded, project);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn explorer_query_history_defaults_to_empty_for_old_project_files_without_the_field() {
+        let path = temp_path("explorer_old_format");
+        // A project file written before explorerQueryHistory existed.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"traces":[{"path":"/t.blf","arxmlPath":null,"downsamplingAlgorithms":{}}],
+               "displayedSignalIds":[],"trimWindow":null,"queryHistory":[]}"#,
+        )
+        .unwrap();
+        let loaded = read_project(&path, "/t.blf").unwrap();
+        assert!(loaded.explorer_query_history.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_explorer_query_appends_without_capping_or_deduping() {
+        let mut project = ProjectFile::new_for_trace("/t.blf");
+        project = save_explorer_query(
+            project,
+            SavedExplorerQuery { name: "A".to_string(), sql: "select 1".to_string(), saved_at: 1 },
+        );
+        project = save_explorer_query(
+            project,
+            SavedExplorerQuery { name: "A".to_string(), sql: "select 1".to_string(), saved_at: 2 },
+        );
+        assert_eq!(project.explorer_saved_queries.len(), 2, "saved queries are never deduped/evicted");
+    }
+
+    #[test]
+    fn explorer_saved_queries_round_trip_through_json() {
+        let path = temp_path("explorer_saved_roundtrip");
+        let mut project = ProjectFile::new_for_trace("/traces/run1.blf");
+        project = save_explorer_query(
+            project,
+            SavedExplorerQuery { name: "Idle gaps".to_string(), sql: "select 1".to_string(), saved_at: 42 },
+        );
+        write_project(&path, &project).unwrap();
+        let loaded = read_project(&path, "/traces/run1.blf").unwrap();
+        assert_eq!(loaded, project);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn explorer_saved_queries_defaults_to_empty_for_old_project_files() {
+        let path = temp_path("explorer_saved_old_format");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"traces":[{"path":"/t.blf","arxmlPath":null,"downsamplingAlgorithms":{}}],
+               "displayedSignalIds":[],"trimWindow":null,"queryHistory":[]}"#,
+        )
+        .unwrap();
+        let loaded = read_project(&path, "/t.blf").unwrap();
+        assert!(loaded.explorer_saved_queries.is_empty());
+        let _ = std::fs::remove_file(&path);
     }
 }

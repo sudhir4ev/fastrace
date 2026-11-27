@@ -932,6 +932,300 @@ pub fn run_detector_query(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerColumn {
+    pub name: String,
+    pub numeric: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerTablePage {
+    pub columns: Vec<ExplorerColumn>,
+    pub rows: Vec<Vec<String>>,
+    pub total_rows: i64,
+}
+
+fn normalize_explorer_sql(sql: &str) -> Result<String, String> {
+    let trimmed = sql.trim();
+    let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed).trim();
+    if trimmed.is_empty() {
+        return Err("query is empty".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Quotes a DuckDB identifier so it can never be read as anything but a
+/// column reference - doubling an embedded `"` is DuckDB/SQL's own escape
+/// for a literal quote inside a quoted identifier.
+fn quote_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn is_numeric_type(ty: &duckdb::types::Type) -> bool {
+    use duckdb::types::Type;
+    matches!(
+        ty,
+        Type::TinyInt
+            | Type::SmallInt
+            | Type::Int
+            | Type::BigInt
+            | Type::HugeInt
+            | Type::UTinyInt
+            | Type::USmallInt
+            | Type::UInt
+            | Type::UBigInt
+            | Type::Float
+            | Type::Double
+            | Type::Decimal
+    )
+}
+
+/// Renders any DuckDB cell to a display string - the result schema is
+/// different per Explorer query, so there's no fixed type to deserialize
+/// each column into.
+/// shortcut: Timestamp/Date32/Time64/nested types fall back to Rust's Debug
+/// format (not calendar-formatted); upgrade if Explorer is used heavily
+/// against timestamp/date columns and the raw form proves confusing.
+fn value_ref_to_display_string(v: duckdb::types::ValueRef) -> String {
+    use duckdb::types::ValueRef;
+    match v {
+        ValueRef::Null => String::new(),
+        ValueRef::Boolean(b) => b.to_string(),
+        ValueRef::TinyInt(i) => i.to_string(),
+        ValueRef::SmallInt(i) => i.to_string(),
+        ValueRef::Int(i) => i.to_string(),
+        ValueRef::BigInt(i) => i.to_string(),
+        ValueRef::HugeInt(i) => i.to_string(),
+        ValueRef::UTinyInt(i) => i.to_string(),
+        ValueRef::USmallInt(i) => i.to_string(),
+        ValueRef::UInt(i) => i.to_string(),
+        ValueRef::UBigInt(i) => i.to_string(),
+        ValueRef::Float(f) => f.to_string(),
+        ValueRef::Double(f) => f.to_string(),
+        ValueRef::Decimal(d) => d.to_string(),
+        ValueRef::Text(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        ValueRef::Blob(bytes) => format!("<blob {} bytes>", bytes.len()),
+        other => format!("{other:?}"),
+    }
+}
+
+/// One page of arbitrary user SQL, re-executed against DuckDB per page -
+/// the base SQL could return millions of rows, so results are never
+/// materialized fully into the frontend (`2026-11-26-trace-explorer-design.md`).
+/// `order_by_column`, when present, must name an actual output column of
+/// `sql`; it is quoted as an identifier, never concatenated as raw SQL, so a
+/// malformed or hostile value fails as a DuckDB binder error instead of
+/// executing.
+pub fn run_explorer_table_page(
+    conn: &trace_store::Connection,
+    sql: &str,
+    page_size: i64,
+    offset: i64,
+    order_by_column: Option<&str>,
+    order_by_desc: bool,
+) -> Result<ExplorerTablePage, String> {
+    let trimmed = normalize_explorer_sql(sql)?;
+    if page_size < 1 {
+        return Err("page_size must be >= 1".to_string());
+    }
+    if offset < 0 {
+        return Err("offset must be >= 0".to_string());
+    }
+
+    let total_rows: i64 = conn
+        .query_row(
+            &format!("select count(*) from ({trimmed}\n) as explorer_base"),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let order_clause = match order_by_column {
+        Some(col) => {
+            let dir = if order_by_desc { "desc" } else { "asc" };
+            format!("order by {} {dir}\n", quote_identifier(col))
+        }
+        None => String::new(),
+    };
+    let page_sql = format!(
+        "select * from ({trimmed}\n) as explorer_base\n{order_clause}limit {page_size} offset {offset}"
+    );
+
+    let mut stmt = conn.prepare(&page_sql).map_err(|e| e.to_string())?;
+    let mut result_rows = stmt.query([]).map_err(|e| e.to_string())?;
+    // Grabbed before the row loop below, while `result_rows` is only
+    // shared-borrowed (no `Row` held yet) - `Statement::column_count`/
+    // `column_name`/`column_type` panic if the query has never been
+    // executed, which `stmt.query([])` above already satisfied.
+    let stmt_ref = result_rows.as_ref().expect("statement executed above");
+    let col_count = stmt_ref.column_count();
+    let columns: Vec<ExplorerColumn> = (0..col_count)
+        .map(|i| {
+            let data_type = stmt_ref.column_type(i);
+            ExplorerColumn {
+                name: stmt_ref.column_name(i).cloned().unwrap_or_default(),
+                numeric: is_numeric_type(&duckdb::types::Type::from(&data_type)),
+            }
+        })
+        .collect();
+
+    let mut rows = Vec::new();
+    while let Some(row) = result_rows.next().map_err(|e| e.to_string())? {
+        let mut cells = Vec::with_capacity(col_count);
+        for i in 0..col_count {
+            let value = row.get_ref(i).map_err(|e| e.to_string())?;
+            cells.push(value_ref_to_display_string(value));
+        }
+        rows.push(cells);
+    }
+
+    Ok(ExplorerTablePage { columns, rows, total_rows })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerChartConfig {
+    pub x: String,
+    pub series_by: Option<String>,
+    pub y: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerChartResult {
+    pub rows: Vec<(String, Option<String>, f64)>,
+    pub truncated: bool,
+}
+
+/// Reshape/order/cap only - no `GROUP BY`. The wrapper always aliases its
+/// output as `x`/`g`/`y` regardless of the user's column names, so callers
+/// never have to infer which returned column is which
+/// (`2026-11-26-trace-explorer-design.md`, Phase 2).
+pub fn run_explorer_chart_query_ungrouped(
+    conn: &trace_store::Connection,
+    base_sql: &str,
+    config: &ExplorerChartConfig,
+    row_limit: i64,
+) -> Result<ExplorerChartResult, String> {
+    let trimmed = normalize_explorer_sql(base_sql)?;
+    let series_select = match &config.series_by {
+        Some(col) => format!("{} as g, ", quote_identifier(col)),
+        None => String::new(),
+    };
+    let sql = format!(
+        "select {} as x, {series_select}{} as y
+         from ({trimmed}\n) as explorer_base
+         order by x
+         limit {}",
+        quote_identifier(&config.x),
+        quote_identifier(&config.y),
+        row_limit + 1,
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let has_series = config.series_by.is_some();
+    let rows = stmt
+        .query_map([], |row| {
+            let x: String = row.get::<_, duckdb::types::Value>(0).map(value_to_display_string)?;
+            let g: Option<String> = if has_series {
+                Some(row.get::<_, duckdb::types::Value>(1).map(value_to_display_string)?)
+            } else {
+                None
+            };
+            let y: f64 = row.get(if has_series { 2 } else { 1 })?;
+            Ok((x, g, y))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let truncated = rows.len() as i64 > row_limit;
+    if truncated {
+        rows.truncate(row_limit as usize);
+    }
+    Ok(ExplorerChartResult { rows, truncated })
+}
+
+// shortcut: duckdb's `From<&Value> for ValueRef` panics on List/Struct/Map/
+// Array/Union/Enum values. Chart X/Group-by columns are expected to be
+// simple scalars (the picker is just "any column" from the result set);
+// upgrade to a non-panicking match here if Explorer charts are ever used
+// against a nested-type column and this proves to be a real problem.
+fn value_to_display_string(v: duckdb::types::Value) -> String {
+    value_ref_to_display_string((&v).into())
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerChartMetric {
+    pub agg: String,
+    pub column: Option<String>,
+}
+
+/// `agg` is matched against a fixed allow-list, never interpolated as
+/// arbitrary SQL - an unrecognized aggregate is a clean error, not a chance
+/// to inject a function call.
+fn aggregate_sql(metric: &ExplorerChartMetric) -> Result<String, String> {
+    let column_expr = match &metric.column {
+        Some(col) => quote_identifier(col),
+        None => "*".to_string(),
+    };
+    match metric.agg.as_str() {
+        "count" => Ok("count(*)".to_string()),
+        "sum" => Ok(format!("sum({column_expr})")),
+        "avg" => Ok(format!("avg({column_expr})")),
+        "min" => Ok(format!("min({column_expr})")),
+        "max" => Ok(format!("max({column_expr})")),
+        other => Err(format!("unknown aggregate: {other}")),
+    }
+}
+
+/// Only reached when the Explorer's "Group results" toggle is on - a plain
+/// line/bar plot of two existing columns never takes this path
+/// (`2026-11-26-trace-explorer-design.md`, Phase 2).
+pub fn run_explorer_chart_query_grouped(
+    conn: &trace_store::Connection,
+    base_sql: &str,
+    config: &ExplorerChartConfig,
+    metric: &ExplorerChartMetric,
+    row_limit: i64,
+) -> Result<ExplorerChartResult, String> {
+    let trimmed = normalize_explorer_sql(base_sql)?;
+    let agg_sql = aggregate_sql(metric)?;
+    let group_cols = quote_identifier(&config.x);
+    let (series_select, group_by) = match &config.series_by {
+        Some(col) => (format!("{} as g, ", quote_identifier(col)), format!("{group_cols}, {}", quote_identifier(col))),
+        None => (String::new(), group_cols.clone()),
+    };
+    let sql = format!(
+        "select {group_cols} as x, {series_select}{agg_sql} as y
+         from ({trimmed}\n) as explorer_base
+         group by {group_by}
+         order by x
+         limit {}",
+        row_limit + 1,
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let has_series = config.series_by.is_some();
+    let rows = stmt
+        .query_map([], |row| {
+            let x: String = row.get::<_, duckdb::types::Value>(0).map(value_to_display_string)?;
+            let g: Option<String> = if has_series {
+                Some(row.get::<_, duckdb::types::Value>(1).map(value_to_display_string)?)
+            } else {
+                None
+            };
+            let y: f64 = row.get(if has_series { 2 } else { 1 })?;
+            Ok((x, g, y))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let truncated = rows.len() as i64 > row_limit;
+    if truncated {
+        rows.truncate(row_limit as usize);
+    }
+    Ok(ExplorerChartResult { rows, truncated })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1793,5 +2087,220 @@ mod tests {
             result.bins.iter().map(|b| b.count).sum::<i64>(),
             result.matches.len() as i64
         );
+    }
+
+    fn explorer_fixture() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE widgets (id INTEGER, label VARCHAR, price DOUBLE);
+             INSERT INTO widgets VALUES
+                (1, 'a', 1.5), (2, 'b', 2.5), (3, 'c', 3.5), (4, 'd', 4.5), (5, 'e', 5.5);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn run_explorer_table_page_returns_requested_page_and_total() {
+        let conn = explorer_fixture();
+        let page = run_explorer_table_page(
+            &conn,
+            "select * from widgets",
+            2,
+            0,
+            Some("id"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(page.total_rows, 5);
+        assert_eq!(
+            page.columns,
+            vec![
+                ExplorerColumn { name: "id".to_string(), numeric: true },
+                ExplorerColumn { name: "label".to_string(), numeric: false },
+                ExplorerColumn { name: "price".to_string(), numeric: true },
+            ]
+        );
+        assert_eq!(
+            page.rows,
+            vec![
+                vec!["1".to_string(), "a".to_string(), "1.5".to_string()],
+                vec!["2".to_string(), "b".to_string(), "2.5".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn run_explorer_table_page_returns_the_second_page() {
+        let conn = explorer_fixture();
+        let page =
+            run_explorer_table_page(&conn, "select * from widgets", 2, 2, Some("id"), false).unwrap();
+        assert_eq!(page.rows[0][0], "3");
+        assert_eq!(page.rows[1][0], "4");
+    }
+
+    #[test]
+    fn run_explorer_table_page_sorts_descending() {
+        let conn = explorer_fixture();
+        let page =
+            run_explorer_table_page(&conn, "select * from widgets", 1, 0, Some("id"), true).unwrap();
+        assert_eq!(page.rows[0][0], "5");
+    }
+
+    #[test]
+    fn run_explorer_table_page_quotes_the_order_by_identifier() {
+        let conn = Connection::open_in_memory().unwrap();
+        // "order" is a reserved word - only safe as a quoted identifier.
+        conn.execute_batch(r#"CREATE TABLE t ("order" INTEGER); INSERT INTO t VALUES (2), (1);"#)
+            .unwrap();
+        let page = run_explorer_table_page(&conn, "select * from t", 10, 0, Some("order"), false).unwrap();
+        assert_eq!(page.rows, vec![vec!["1".to_string()], vec!["2".to_string()]]);
+    }
+
+    #[test]
+    fn run_explorer_table_page_rejects_an_order_by_column_that_would_inject_sql() {
+        let conn = explorer_fixture();
+        let result = run_explorer_table_page(
+            &conn,
+            "select * from widgets",
+            10,
+            0,
+            Some(r#"id"; drop table widgets; --"#),
+            false,
+        );
+        assert!(result.is_err(), "malformed identifier must be a binder error, not executed SQL");
+        // The quoting must have prevented the DROP TABLE from ever running.
+        assert_eq!(count_messages_placeholder(&conn), 5);
+    }
+
+    fn count_messages_placeholder(conn: &Connection) -> i64 {
+        conn.query_row("select count(*) from widgets", [], |row| row.get(0)).unwrap()
+    }
+
+    #[test]
+    fn run_explorer_table_page_handles_zero_matching_rows() {
+        let conn = explorer_fixture();
+        let page =
+            run_explorer_table_page(&conn, "select * from widgets where id > 100", 10, 0, None, false)
+                .unwrap();
+        assert_eq!(page.total_rows, 0);
+        assert!(page.rows.is_empty());
+        assert_eq!(page.columns.len(), 3, "columns are still reported for an empty result");
+    }
+
+    #[test]
+    fn run_explorer_table_page_renders_null_as_empty_string() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (label VARCHAR); INSERT INTO t VALUES (NULL);")
+            .unwrap();
+        let page = run_explorer_table_page(&conn, "select * from t", 10, 0, None, false).unwrap();
+        assert_eq!(page.rows, vec![vec!["".to_string()]]);
+    }
+
+    #[test]
+    fn run_explorer_table_page_rejects_empty_sql() {
+        let conn = explorer_fixture();
+        assert!(run_explorer_table_page(&conn, "   ", 10, 0, None, false).is_err());
+    }
+
+    #[test]
+    fn run_explorer_table_page_rejects_nonpositive_page_size() {
+        let conn = explorer_fixture();
+        assert!(run_explorer_table_page(&conn, "select * from widgets", 0, 0, None, false).is_err());
+    }
+
+    #[test]
+    fn run_explorer_table_page_rejects_negative_offset() {
+        let conn = explorer_fixture();
+        assert!(run_explorer_table_page(&conn, "select * from widgets", 10, -1, None, false).is_err());
+    }
+
+    #[test]
+    fn run_explorer_table_page_surfaces_duckdb_errors_for_bad_sql() {
+        let conn = explorer_fixture();
+        assert!(run_explorer_table_page(&conn, "select * from no_such_table", 10, 0, None, false).is_err());
+    }
+
+    #[test]
+    fn run_explorer_chart_query_ungrouped_returns_x_and_y_ordered_by_x() {
+        let conn = explorer_fixture();
+        let config = ExplorerChartConfig { x: "id".to_string(), series_by: None, y: "price".to_string() };
+        let result =
+            run_explorer_chart_query_ungrouped(&conn, "select * from widgets", &config, 100).unwrap();
+        assert!(!result.truncated);
+        assert_eq!(result.rows.len(), 5);
+        assert_eq!(result.rows[0], ("1".to_string(), None, 1.5));
+        assert_eq!(result.rows[4], ("5".to_string(), None, 5.5));
+    }
+
+    #[test]
+    fn run_explorer_chart_query_ungrouped_includes_series_by_when_set() {
+        let conn = explorer_fixture();
+        let config =
+            ExplorerChartConfig { x: "id".to_string(), series_by: Some("label".to_string()), y: "price".to_string() };
+        let result =
+            run_explorer_chart_query_ungrouped(&conn, "select * from widgets", &config, 100).unwrap();
+        assert_eq!(result.rows[0].1, Some("a".to_string()));
+    }
+
+    #[test]
+    fn run_explorer_chart_query_ungrouped_truncates_at_row_limit() {
+        let conn = explorer_fixture();
+        let config = ExplorerChartConfig { x: "id".to_string(), series_by: None, y: "price".to_string() };
+        let result =
+            run_explorer_chart_query_ungrouped(&conn, "select * from widgets", &config, 3).unwrap();
+        assert!(result.truncated);
+        assert_eq!(result.rows.len(), 3);
+    }
+
+    #[test]
+    fn run_explorer_chart_query_ungrouped_rejects_a_y_column_that_does_not_exist() {
+        let conn = explorer_fixture();
+        let config = ExplorerChartConfig { x: "id".to_string(), series_by: None, y: "no_such_col".to_string() };
+        assert!(run_explorer_chart_query_ungrouped(&conn, "select * from widgets", &config, 100).is_err());
+    }
+
+    #[test]
+    fn run_explorer_chart_query_grouped_counts_rows_per_x() {
+        let conn = explorer_fixture();
+        conn.execute("INSERT INTO widgets VALUES (6, 'a', 6.5)", []).unwrap();
+        let config = ExplorerChartConfig { x: "label".to_string(), series_by: None, y: String::new() };
+        let metric = ExplorerChartMetric { agg: "count".to_string(), column: None };
+        let result =
+            run_explorer_chart_query_grouped(&conn, "select * from widgets", &config, &metric, 100).unwrap();
+        let a = result.rows.iter().find(|r| r.0 == "a").unwrap();
+        assert_eq!(a.2, 2.0, "two widgets labeled 'a'");
+    }
+
+    #[test]
+    fn run_explorer_chart_query_grouped_sums_a_metric_column() {
+        let conn = explorer_fixture();
+        let config = ExplorerChartConfig { x: "label".to_string(), series_by: None, y: String::new() };
+        let metric = ExplorerChartMetric { agg: "sum".to_string(), column: Some("price".to_string()) };
+        let result =
+            run_explorer_chart_query_grouped(&conn, "select * from widgets", &config, &metric, 100).unwrap();
+        let a = result.rows.iter().find(|r| r.0 == "a").unwrap();
+        assert_eq!(a.2, 1.5);
+    }
+
+    #[test]
+    fn run_explorer_chart_query_grouped_rejects_an_unknown_aggregate() {
+        let conn = explorer_fixture();
+        let config = ExplorerChartConfig { x: "label".to_string(), series_by: None, y: String::new() };
+        let metric = ExplorerChartMetric { agg: "median".to_string(), column: Some("price".to_string()) };
+        assert!(
+            run_explorer_chart_query_grouped(&conn, "select * from widgets", &config, &metric, 100).is_err()
+        );
+    }
+
+    #[test]
+    fn run_explorer_chart_query_grouped_groups_by_series_too_when_set() {
+        let conn = explorer_fixture();
+        let config =
+            ExplorerChartConfig { x: "id".to_string(), series_by: Some("label".to_string()), y: String::new() };
+        let metric = ExplorerChartMetric { agg: "count".to_string(), column: None };
+        let result =
+            run_explorer_chart_query_grouped(&conn, "select * from widgets", &config, &metric, 100).unwrap();
+        assert_eq!(result.rows.len(), 5, "one group per distinct (id, label) pair");
     }
 }

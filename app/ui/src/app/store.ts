@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { AnomalyBin, DetectorMatch, DetectorQueryRan, DownsamplingAlgorithm } from "@/shared/api/trace-source";
 import type { TimelineDiagnostics } from "@/widgets/diagnostics";
 
-export type WorkspaceTab = "signals" | "messages";
+export type WorkspaceTab = "signals" | "messages" | "explorer";
 
 export interface TrimRange {
   start: number;

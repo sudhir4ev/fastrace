@@ -9,7 +9,7 @@ import {
 } from "@tanstack/react-query";
 import { useToastStore } from "@/app/toast-store";
 import { LOD_CONFIG } from "@/app/config";
-import type { DownsamplingAlgorithm, ProjectFile } from "./trace-source";
+import type { DownsamplingAlgorithm, ExplorerChartConfig, ExplorerChartMetric, ProjectFile } from "./trace-source";
 import { getTraceDataSource } from "./trace-source";
 
 /** Query roots that read local JSON / filesystem, not the Trace Store. */
@@ -232,6 +232,26 @@ export function useRunDetectorQuery(blfPath: string) {
 // without this, each chart auto-scales to its own series' extent, and
 // CHART_GROUP's percentage-based zoom sync maps the same percentage to
 // different absolute time windows per chart (the misalignment this fixes).
+export function useRunExplorerTablePage(blfPath: string) {
+  return useMutation({
+    mutationKey: ["run-explorer-table-page", blfPath],
+    mutationFn: ({
+      sql,
+      pageSize,
+      offset,
+      orderByColumn,
+      orderByDesc,
+    }: {
+      sql: string;
+      pageSize: number;
+      offset: number;
+      orderByColumn: string | null;
+      orderByDesc: boolean;
+    }) =>
+      getTraceDataSource().runExplorerTablePage(blfPath, sql, pageSize, offset, orderByColumn, orderByDesc),
+  });
+}
+
 export function useTraceTimeRange(blfPath: string, enabled = true) {
   return useQuery({
     queryKey: TRACE_TIME_RANGE_KEY(blfPath),
@@ -351,6 +371,75 @@ export function useQueryHistory(blfPath: string) {
   return useQuery({
     queryKey: QUERY_HISTORY_KEY(blfPath),
     queryFn: () => getTraceDataSource().listQueryHistory(blfPath),
+  });
+}
+
+const EXPLORER_QUERY_HISTORY_KEY = (blfPath: string) => ["explorer-query-history", blfPath];
+
+export function useExplorerQueryHistory(blfPath: string) {
+  return useQuery({
+    queryKey: EXPLORER_QUERY_HISTORY_KEY(blfPath),
+    queryFn: () => getTraceDataSource().listExplorerQueryHistory(blfPath),
+  });
+}
+
+export function useRecordExplorerQuery(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sql, rowCount }: { sql: string; rowCount: number }) =>
+      getTraceDataSource().recordExplorerQuery(blfPath, sql, rowCount),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: EXPLORER_QUERY_HISTORY_KEY(blfPath) }),
+  });
+}
+
+export function useRemoveExplorerQuery(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sql: string) => getTraceDataSource().removeExplorerQuery(blfPath, sql),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: EXPLORER_QUERY_HISTORY_KEY(blfPath) }),
+  });
+}
+
+export function useClearExplorerQueryHistory(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => getTraceDataSource().clearExplorerQueryHistory(blfPath),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: EXPLORER_QUERY_HISTORY_KEY(blfPath) }),
+  });
+}
+
+const EXPLORER_SAVED_QUERIES_KEY = (blfPath: string) => ["explorer-saved-queries", blfPath];
+
+export function useExplorerSavedQueries(blfPath: string) {
+  return useQuery({
+    queryKey: EXPLORER_SAVED_QUERIES_KEY(blfPath),
+    queryFn: () => getTraceDataSource().listExplorerSavedQueries(blfPath),
+  });
+}
+
+export function useSaveExplorerQuery(blfPath: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, sql }: { name: string; sql: string }) =>
+      getTraceDataSource().saveExplorerQuery(blfPath, name, sql),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: EXPLORER_SAVED_QUERIES_KEY(blfPath) }),
+  });
+}
+
+export function useRunExplorerChartQuery(blfPath: string) {
+  return useMutation({
+    mutationKey: ["run-explorer-chart-query", blfPath],
+    mutationFn: ({
+      baseSql,
+      config,
+      metric,
+      rowLimit,
+    }: {
+      baseSql: string;
+      config: ExplorerChartConfig;
+      metric: ExplorerChartMetric | null;
+      rowLimit: number;
+    }) => getTraceDataSource().runExplorerChartQuery(blfPath, baseSql, config, metric, rowLimit),
   });
 }
 

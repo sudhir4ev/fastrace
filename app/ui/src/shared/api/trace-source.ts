@@ -132,6 +132,45 @@ export interface QueryHistoryEntry {
   matchCount: number;
 }
 
+export interface ExplorerColumn {
+  name: string;
+  numeric: boolean;
+}
+
+export interface ExplorerTablePage {
+  columns: ExplorerColumn[];
+  rows: string[][];
+  totalRows: number;
+}
+
+export interface ExplorerQueryEntry {
+  sql: string;
+  ranAt: number;
+  rowCount: number;
+}
+
+export interface SavedExplorerQuery {
+  name: string;
+  sql: string;
+  savedAt: number;
+}
+
+export interface ExplorerChartConfig {
+  x: string;
+  seriesBy: string | null;
+  y: string;
+}
+
+export interface ExplorerChartResult {
+  rows: [string, string | null, number][];
+  truncated: boolean;
+}
+
+export interface ExplorerChartMetric {
+  agg: "count" | "sum" | "avg" | "min" | "max";
+  column: string | null;
+}
+
 export interface ProjectFile {
   version: number;
   traces: { path: string; arxmlPath: string | null; downsamplingAlgorithms: Record<number, string> }[];
@@ -216,6 +255,27 @@ export interface TraceDataSource {
   recordRecentTrace(blfPath: string, meta?: PrepareMeta): Promise<void>;
   removeRecentTrace(blfPath: string): Promise<void>;
   listQueryHistory(blfPath: string): Promise<QueryHistoryEntry[]>;
+  runExplorerTablePage(
+    blfPath: string,
+    sql: string,
+    pageSize: number,
+    offset: number,
+    orderByColumn: string | null,
+    orderByDesc: boolean
+  ): Promise<ExplorerTablePage>;
+  listExplorerQueryHistory(blfPath: string): Promise<ExplorerQueryEntry[]>;
+  recordExplorerQuery(blfPath: string, sql: string, rowCount: number): Promise<void>;
+  removeExplorerQuery(blfPath: string, sql: string): Promise<void>;
+  clearExplorerQueryHistory(blfPath: string): Promise<void>;
+  listExplorerSavedQueries(blfPath: string): Promise<SavedExplorerQuery[]>;
+  saveExplorerQuery(blfPath: string, name: string, sql: string): Promise<void>;
+  runExplorerChartQuery(
+    blfPath: string,
+    baseSql: string,
+    config: ExplorerChartConfig,
+    metric: ExplorerChartMetric | null,
+    rowLimit: number
+  ): Promise<ExplorerChartResult>;
   recordQuery(
     blfPath: string,
     sql: string,
@@ -407,6 +467,64 @@ export class TauriTraceDataSource implements TraceDataSource {
 
   listQueryHistory(blfPath: string): Promise<QueryHistoryEntry[]> {
     return invoke<QueryHistoryEntry[]>("list_query_history", { blfPath });
+  }
+
+  runExplorerTablePage(
+    blfPath: string,
+    sql: string,
+    pageSize: number,
+    offset: number,
+    orderByColumn: string | null,
+    orderByDesc: boolean
+  ): Promise<ExplorerTablePage> {
+    return invoke<ExplorerTablePage>("run_explorer_table_page", {
+      blfPath,
+      sql,
+      pageSize,
+      offset,
+      orderByColumn,
+      orderByDesc,
+    });
+  }
+
+  listExplorerQueryHistory(blfPath: string): Promise<ExplorerQueryEntry[]> {
+    return invoke<ExplorerQueryEntry[]>("list_explorer_query_history", { blfPath });
+  }
+
+  recordExplorerQuery(blfPath: string, sql: string, rowCount: number): Promise<void> {
+    return invoke<void>("record_explorer_query", { blfPath, sql, rowCount });
+  }
+
+  removeExplorerQuery(blfPath: string, sql: string): Promise<void> {
+    return invoke<void>("remove_explorer_query", { blfPath, sql });
+  }
+
+  clearExplorerQueryHistory(blfPath: string): Promise<void> {
+    return invoke<void>("clear_explorer_query_history", { blfPath });
+  }
+
+  listExplorerSavedQueries(blfPath: string): Promise<SavedExplorerQuery[]> {
+    return invoke<SavedExplorerQuery[]>("list_explorer_saved_queries", { blfPath });
+  }
+
+  saveExplorerQuery(blfPath: string, name: string, sql: string): Promise<void> {
+    return invoke<void>("save_explorer_query", { blfPath, name, sql });
+  }
+
+  runExplorerChartQuery(
+    blfPath: string,
+    baseSql: string,
+    config: ExplorerChartConfig,
+    metric: ExplorerChartMetric | null,
+    rowLimit: number
+  ): Promise<ExplorerChartResult> {
+    return invoke<ExplorerChartResult>("run_explorer_chart_query", {
+      blfPath,
+      baseSql,
+      config: { x: config.x, seriesBy: config.seriesBy, y: config.y },
+      metric,
+      rowLimit,
+    });
   }
 
   recordQuery(
