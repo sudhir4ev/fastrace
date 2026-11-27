@@ -199,6 +199,32 @@ export interface SignalCoverageEntry {
   endUs: number;
 }
 
+export interface Finding {
+  analyzerName: string;
+  srcNode: string;
+  dstNode: string;
+  streamIndex: number;
+  severity: string;
+  rule: string;
+  summary: string;
+  startUs: number;
+  endUs: number;
+  firstMsgId: number;
+  lastMsgId: number;
+}
+
+export interface Session {
+  analyzerName: string;
+  srcNode: string;
+  dstNode: string;
+  streamIndex: number;
+  packetCount: number;
+  startUs: number;
+  endUs: number;
+  firstMsgId: number;
+  lastMsgId: number;
+}
+
 export interface TraceDataSource {
   getTraceSummary(blfPath: string, startUs: number, endUs: number): Promise<TraceSummary>;
   listMessageGroups(blfPath: string, startUs: number, endUs: number): Promise<MessageGroup[]>;
@@ -243,6 +269,21 @@ export interface TraceDataSource {
     endUs: number,
     targetSignalIds: number[]
   ): Promise<DetectorQueryResponse>;
+  listAnalyzers(): Promise<string[]>;
+  listFindings(
+    blfPath: string,
+    analyzerName: string,
+    respectTrim: boolean,
+    startUs: number,
+    endUs: number
+  ): Promise<Finding[]>;
+  listSessions(
+    blfPath: string,
+    analyzerName: string,
+    respectTrim: boolean,
+    startUs: number,
+    endUs: number
+  ): Promise<Session[]>;
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange>;
   applyTrim(blfPath: string, startUs: number, endUs: number, activeSignalIds: number[]): Promise<DecodeResult>;
   recordActivity(blfPath: string, kind: string, elapsedMs: number, detail: string): Promise<void>;
@@ -401,6 +442,30 @@ export class TauriTraceDataSource implements TraceDataSource {
       endUs,
       targetSignalIds,
     });
+  }
+
+  listAnalyzers(): Promise<string[]> {
+    return invoke<string[]>("list_analyzers");
+  }
+
+  listFindings(
+    blfPath: string,
+    analyzerName: string,
+    respectTrim: boolean,
+    startUs: number,
+    endUs: number
+  ): Promise<Finding[]> {
+    return invoke<Finding[]>("list_findings", { blfPath, analyzerName, respectTrim, startUs, endUs });
+  }
+
+  listSessions(
+    blfPath: string,
+    analyzerName: string,
+    respectTrim: boolean,
+    startUs: number,
+    endUs: number
+  ): Promise<Session[]> {
+    return invoke<Session[]>("list_sessions", { blfPath, analyzerName, respectTrim, startUs, endUs });
   }
 
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange> {
