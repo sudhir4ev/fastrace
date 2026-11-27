@@ -23,6 +23,10 @@ struct TraceMessage {
     std::unordered_map<uint32_t, PduIndex> pdus; // Ethernet PDU indices
     std::string dstIp; // destination IP address string
     uint16_t dstPort = 0; // destination port
+    std::string srcIp; // source IP address string
+    uint16_t srcPort = 0; // source port
+    bool isTcp = false; // true when this Ethernet frame carried a TCP segment
+    uint8_t tcpFlags = 0; // raw TCP flags byte (FIN|SYN|RST|PSH|ACK|URG), valid iff isTcp
 };
 
 } // namespace fastrace
