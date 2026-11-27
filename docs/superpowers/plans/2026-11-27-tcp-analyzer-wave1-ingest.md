@@ -1215,6 +1215,386 @@ Flag bits in `protocol_tcp.flags`: `FIN=1 SYN=2 RST=4 PSH=8 ACK=16`. Pure SYN
 
 ---
 
+## Wave 2 + 3 status (implemented, out of band of this doc's original task list)
+
+Both landed directly rather than through a written task-by-task plan (the
+roadmap only required one per wave once green-lit; these were small enough
+to implement straight from the "Analyzer Framework Contract" above):
+
+- `schema/rules/analyzers/tcp_connection_health.sql` - a bare `WITH` chain
+  (no `CREATE VIEW`: DuckDB blocks all DDL on the Trace Store's read-only
+  connection, not just TEMP tables) defining `_segments` -> `_stream_segments`
+  -> `_sessions` internally, then the three fixed public CTEs `findings`/
+  `sessions`/`segments`. Callers concatenate their own `SELECT ... FROM
+  <view>` onto the file's text and run the result as one statement - the
+  same "wrap arbitrary SQL as a subquery" pattern `run_detector_query`
+  already uses. `crates/query/tests/tcp_connection_health_test.rs` seeds a
+  minimal store and asserts all 5 rules, the stream-reuse case, and the
+  `segments.info` flag-string format (7 tests).
+- `crates/query/src/analyzer.rs` - `Finding`/`Session`/`Segment` structs,
+  the `ANALYZERS: &[(&str, &str)]` registry, and
+  `list_findings`/`list_sessions`/`list_segments`/`list_analyzers`, written
+  once with zero TCP knowledge (5 unit tests, seeded in-memory store).
+- `app/src-tauri/src/main.rs` - `list_analyzers`/`list_findings`/
+  `list_sessions`/`list_segments` Tauri commands, same `respect_trim`/scope
+  pattern as `run_detector_query`.
+
+**Verify yourself before Wave 4** (if not already done): `cargo tauri dev`,
+then from the dev console, `invoke('list_analyzers')` should return
+`["tcp_connection_health"]`, and `invoke('list_findings', { blfPath, analyzerName: "tcp_connection_health", respectTrim: false, startUs: 0, endUs: 0 })`
+should return one `HANDSHAKE_NO_SYNACK` row against the fixture.
+
+## Wave 4: Topology UI - detailed task plan
+
+**Goal:** a new "Protocol Analyzer" workspace tab showing one row per TCP
+session (mock image 1 - "TCP streams UI"), with per-session error/warning
+counts joined client-side from `findings`. No drill-down, no severity
+filter, no "Follow Stream" yet - those are Wave 5/6. No trim-range toggle:
+MVP always queries the whole trace (`respectTrim: false`), matching "keep
+the UI simple" from the original ask.
+
+**Files:**
+- Modify `app/ui/src/shared/api/trace-source.ts` - add `Finding`/`Session`
+  types, 3 new `TraceDataSource` methods + their `TauriTraceDataSource`
+  implementations.
+- Modify `app/ui/src/shared/api/hooks.ts` - add `useListAnalyzers`,
+  `useListFindings`, `useListSessions`.
+- Modify `app/ui/src/app/store.ts` - add `"protocol"` to `WorkspaceTab`.
+- Modify `app/ui/src/widgets/WorkspaceLayout.tsx` - add the nav item and the
+  always-mounted tab pane (same "mount all, hide with CSS" pattern the
+  other three tabs use, so the analyzer picker survives tab switches for
+  free - no new global state needed for it).
+- Create `app/ui/src/widgets/ProtocolAnalyzerPanel.tsx` - the tab's content:
+  a plain `<select>` analyzer picker (matches `ExplorerPanel`'s page-size
+  `<select>` - a `Combobox` is overkill for one analyzer today) + a plain
+  `<table>` (matches `ExplorerPanel`'s table styling exactly) of sessions
+  with Errors/Warnings columns.
+
+**Interfaces:**
+- Consumes: `query::Finding`/`Session` shapes (Wave 3, already shipped) via
+  the new Tauri commands.
+- Produces: nothing downstream yet - Wave 5 reads `findings` again for the
+  Violation Explorer drill-down, independently.
+
+### Task 1: `trace-source.ts` types + data-source methods
+
+- [ ] **Step 1: Add the types** (camelCase, matching `query::Finding`/
+  `Session`'s `#[serde(rename_all = "camelCase")]`), right after
+  `SignalCoverageEntry`:
+
+```typescript
+export interface Finding {
+  analyzerName: string;
+  srcNode: string;
+  dstNode: string;
+  streamIndex: number;
+  severity: string;
+  rule: string;
+  summary: string;
+  startUs: number;
+  endUs: number;
+  firstMsgId: number;
+  lastMsgId: number;
+}
+
+export interface Session {
+  analyzerName: string;
+  srcNode: string;
+  dstNode: string;
+  streamIndex: number;
+  packetCount: number;
+  startUs: number;
+  endUs: number;
+  firstMsgId: number;
+  lastMsgId: number;
+}
+```
+
+- [ ] **Step 2: Add 3 methods to the `TraceDataSource` interface**, after
+  `runDetectorQuery`:
+
+```typescript
+listAnalyzers(): Promise<string[]>;
+listFindings(
+  blfPath: string,
+  analyzerName: string,
+  respectTrim: boolean,
+  startUs: number,
+  endUs: number
+): Promise<Finding[]>;
+listSessions(
+  blfPath: string,
+  analyzerName: string,
+  respectTrim: boolean,
+  startUs: number,
+  endUs: number
+): Promise<Session[]>;
+```
+
+- [ ] **Step 3: Implement them on `TauriTraceDataSource`**, after
+  `runDetectorQuery`'s implementation:
+
+```typescript
+listAnalyzers(): Promise<string[]> {
+  return invoke<string[]>("list_analyzers");
+}
+
+listFindings(
+  blfPath: string,
+  analyzerName: string,
+  respectTrim: boolean,
+  startUs: number,
+  endUs: number
+): Promise<Finding[]> {
+  return invoke<Finding[]>("list_findings", { blfPath, analyzerName, respectTrim, startUs, endUs });
+}
+
+listSessions(
+  blfPath: string,
+  analyzerName: string,
+  respectTrim: boolean,
+  startUs: number,
+  endUs: number
+): Promise<Session[]> {
+  return invoke<Session[]>("list_sessions", { blfPath, analyzerName, respectTrim, startUs, endUs });
+}
+```
+
+- [ ] **Step 4: Typecheck**
+
+Run: `npm run build --prefix app/ui` (or the project's `tsc --noEmit` script
+if one exists - check `app/ui/package.json`).
+Expected: no new type errors (Tasks 2-4 still need to exist for anything to
+call these, so this step just confirms the interface/impl pair is self
+-consistent).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/ui/src/shared/api/trace-source.ts
+git commit -m "feat(ui): add Finding/Session types and analyzer data-source methods"
+```
+
+### Task 2: `hooks.ts`
+
+- [ ] **Step 1: Add the three hooks**, after `useRunDetectorQuery`:
+
+```typescript
+export function useListAnalyzers() {
+  return useQuery({
+    queryKey: ["list-analyzers"],
+    queryFn: () => getTraceDataSource().listAnalyzers(),
+  });
+}
+
+export function useListSessions(blfPath: string, analyzerName: string | null) {
+  return useQuery({
+    queryKey: ["list-sessions", blfPath, analyzerName],
+    queryFn: () => getTraceDataSource().listSessions(blfPath, analyzerName!, false, 0, 0),
+    enabled: analyzerName !== null,
+  });
+}
+
+export function useListFindings(blfPath: string, analyzerName: string | null) {
+  return useQuery({
+    queryKey: ["list-findings", blfPath, analyzerName],
+    queryFn: () => getTraceDataSource().listFindings(blfPath, analyzerName!, false, 0, 0),
+    enabled: analyzerName !== null,
+  });
+}
+```
+
+(`respectTrim: false` + `startUs`/`endUs: 0` - the backend's `resolve_scope`
+ignores both when `respectTrim` is false and substitutes the trace's real
+time range; see `app/src-tauri/src/main.rs:resolve_scope`.)
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add app/ui/src/shared/api/hooks.ts
+git commit -m "feat(ui): add useListAnalyzers/useListSessions/useListFindings hooks"
+```
+
+### Task 3: wire the new workspace tab
+
+- [ ] **Step 1: Add `"protocol"` to `WorkspaceTab`**
+
+`app/ui/src/app/store.ts`:
+```typescript
+export type WorkspaceTab = "signals" | "messages" | "explorer" | "protocol";
+```
+
+- [ ] **Step 2: Add the nav item**
+
+`app/ui/src/widgets/WorkspaceLayout.tsx`, import a `Network` icon from
+`lucide-react` alongside the existing `Activity, List, Terminal` import,
+then:
+```typescript
+const NAV_ITEMS: { id: WorkspaceTab; label: string; icon: typeof Activity }[] = [
+  { id: "signals", label: "Signals", icon: Activity },
+  { id: "messages", label: "Messages", icon: List },
+  { id: "explorer", label: "Explorer", icon: Terminal },
+  { id: "protocol", label: "Protocol Analyzer", icon: Network },
+];
+```
+
+- [ ] **Step 3: Add the always-mounted pane**
+
+Import `ProtocolAnalyzerPanel` (created in Task 4) and add, right after the
+`explorer` pane's closing `</div>`:
+```tsx
+<div className={cn("absolute inset-0", workspaceTab !== "protocol" && "hidden")} aria-hidden={workspaceTab !== "protocol"}>
+  <ProtocolAnalyzerPanel blfPath={blfPath} />
+</div>
+```
+
+- [ ] **Step 4: Commit** (after Task 4 exists - this step and Task 4 land
+  together since `WorkspaceLayout.tsx` won't compile without the new
+  component. Do Task 4 first, then commit both.)
+
+### Task 4: `ProtocolAnalyzerPanel.tsx`
+
+- [ ] **Step 1: Write the component**
+
+```tsx
+import { useState } from "react";
+import { useListAnalyzers, useListFindings, useListSessions } from "@/shared/api/hooks";
+import type { Finding, Session } from "@/shared/api/trace-source";
+
+function formatUs(us: number): string {
+  return `${(us / 1_000_000).toFixed(3)}s`;
+}
+
+function countBySeverity(findings: Finding[], streamIndex: number, severity: string): number {
+  return findings.filter((f) => f.streamIndex === streamIndex && f.severity === severity).length;
+}
+
+interface ProtocolAnalyzerPanelProps {
+  blfPath: string;
+}
+
+export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanelProps) {
+  const analyzers = useListAnalyzers();
+  const [analyzerName, setAnalyzerName] = useState<string | null>(null);
+  const activeAnalyzer = analyzerName ?? analyzers.data?.[0] ?? null;
+
+  const sessions = useListSessions(blfPath, activeAnalyzer);
+  const findings = useListFindings(blfPath, activeAnalyzer);
+
+  if (analyzers.isLoading) {
+    return <div className="p-3 text-sm text-muted-foreground">Loading analyzers...</div>;
+  }
+  if (!activeAnalyzer) {
+    return <div className="p-3 text-sm text-muted-foreground">No analyzers available.</div>;
+  }
+
+  const sessionRows: Session[] = sessions.data ?? [];
+  const findingRows: Finding[] = findings.data ?? [];
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-2 p-3">
+      <div className="flex items-center gap-2">
+        <label htmlFor="analyzer-picker" className="text-sm font-medium">
+          Analyzer
+        </label>
+        <select
+          id="analyzer-picker"
+          className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+          value={activeAnalyzer}
+          onChange={(e) => setAnalyzerName(e.target.value)}
+        >
+          {(analyzers.data ?? []).map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </div>
+      {sessions.isLoading ? (
+        <div className="p-3 text-sm text-muted-foreground">Loading sessions...</div>
+      ) : sessionRows.length === 0 ? (
+        <div className="p-3 text-sm text-muted-foreground">No sessions found.</div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="sticky top-0 bg-muted">
+              <tr>
+                <th className="whitespace-nowrap px-2 py-1 font-medium">Source</th>
+                <th className="whitespace-nowrap px-2 py-1 font-medium">Destination</th>
+                <th className="whitespace-nowrap px-2 py-1 font-medium">Packets</th>
+                <th className="whitespace-nowrap px-2 py-1 font-medium">Duration</th>
+                <th className="whitespace-nowrap px-2 py-1 font-medium">Errors</th>
+                <th className="whitespace-nowrap px-2 py-1 font-medium">Warnings</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessionRows.map((s) => (
+                <tr key={s.streamIndex} className="border-t border-border/60">
+                  <td className="whitespace-nowrap px-2 py-1 font-mono">{s.srcNode}</td>
+                  <td className="whitespace-nowrap px-2 py-1 font-mono">{s.dstNode}</td>
+                  <td className="whitespace-nowrap px-2 py-1 font-mono">{s.packetCount}</td>
+                  <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.endUs - s.startUs)}</td>
+                  <td className="whitespace-nowrap px-2 py-1 font-mono">
+                    {countBySeverity(findingRows, s.streamIndex, "Error")}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-1 font-mono">
+                    {countBySeverity(findingRows, s.streamIndex, "Warning")}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+(`countBySeverity` matches by `streamIndex` alone, not `srcNode`/`dstNode` -
+fine within one analyzer run, since `stream_index` is already unique per
+connection there; would need `analyzerName` in the match too only once a
+second analyzer exists and both are shown at once, which Wave 4 doesn't do.)
+
+- [ ] **Step 2: Wire it into `WorkspaceLayout.tsx`** (Task 3 Step 3) and
+  commit both together:
+
+```bash
+git add app/ui/src/app/store.ts app/ui/src/widgets/WorkspaceLayout.tsx app/ui/src/widgets/ProtocolAnalyzerPanel.tsx
+git commit -m "feat(ui): add Protocol Analyzer topology tab (Wave 4)"
+```
+
+### Task 5: Manual verification (the wave gate)
+
+- [ ] **Step 1:** `npm run dev --prefix app/ui` or `cargo tauri dev
+  --manifest-path app/src-tauri/Cargo.toml`, open a trace with TCP traffic
+  (or the fixture).
+- [ ] **Step 2:** Click the new "Protocol Analyzer" tab.
+- [ ] **Step 3:** Confirm: the analyzer picker shows `tcp_connection_health`;
+  the table shows one row per TCP session with plausible Source/Destination/
+  Packets/Duration; the Errors/Warnings columns match what the same session
+  shows when queried directly in Explorer (`select * from findings`).
+
+**Do not start Wave 5 until you've done this and confirmed the table
+matches what Explorer shows for the same trace.**
+
+### Review Focus (Wave 4)
+
+- **Zero sessions on a trace with no TCP traffic** must render "No sessions
+  found," not an error or a blank screen - covered by the `sessionRows.length
+  === 0` branch above.
+- **Switching analyzers mid-session** (once a second one exists) must not
+  show stale findings from the previous analyzer while the new query is
+  in flight - `useListFindings`'s query key includes `analyzerName`, so
+  react-query treats it as a different query and clears/refetches rather
+  than showing cached data under the new key. Not independently tested
+  here since only one analyzer exists today; revisit when analyzer #2 lands.
+- **A session with zero findings** must show `0`/`0`, not blank cells -
+  `countBySeverity` returns `0` from `.filter().length` on an empty match,
+  covered by construction, not by a dedicated test.
+
+---
+
 ## Self-Review
 
 **Spec coverage:** Spec's "Ingest-time schema changes" section is fully
