@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useListAnalyzers, useListFindings, useListSessions } from "@/shared/api/hooks";
+import { useDefaultAnalyzerConfig, useListAnalyzers, useListFindings, useListSessions } from "@/shared/api/hooks";
 import type { Finding, Session } from "@/shared/api/trace-source";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
@@ -36,8 +36,26 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
     setSelectedStreamIndex(null);
   }, [activeAnalyzer]);
 
-  const sessions = useListSessions(blfPath, activeAnalyzer);
-  const findings = useListFindings(blfPath, activeAnalyzer);
+  const defaultConfig = useDefaultAnalyzerConfig(activeAnalyzer);
+  const [configDraft, setConfigDraft] = useState("");
+  const [appliedConfig, setAppliedConfig] = useState("");
+
+  useEffect(() => {
+    if (defaultConfig.data !== undefined) {
+      setConfigDraft(defaultConfig.data);
+      setAppliedConfig(defaultConfig.data);
+    }
+  }, [defaultConfig.data, activeAnalyzer]);
+
+  let configDraftError: string | null = null;
+  try {
+    if (configDraft.trim().length > 0) JSON.parse(configDraft);
+  } catch (e) {
+    configDraftError = e instanceof Error ? e.message : "invalid JSON";
+  }
+
+  const sessions = useListSessions(blfPath, activeAnalyzer, appliedConfig);
+  const findings = useListFindings(blfPath, activeAnalyzer, appliedConfig);
 
   if (analyzers.isLoading) {
     return <div className="p-3 text-sm text-muted-foreground">Loading analyzers...</div>;
@@ -69,6 +87,17 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
         </select>
         <Badge variant="secondary">{activeAnalyzer}</Badge>
       </div>
+      <div className="flex items-center gap-2">
+        <textarea
+          className="h-16 flex-1 rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
+          value={configDraft}
+          onChange={(e) => setConfigDraft(e.target.value)}
+        />
+        <Button size="sm" disabled={configDraftError !== null} onClick={() => setAppliedConfig(configDraft)}>
+          Apply
+        </Button>
+      </div>
+      {configDraftError !== null && <div className="text-xs text-destructive">{configDraftError}</div>}
       <div className="min-h-0 flex-1">
         <ResizablePanelGroup direction="vertical">
           <ResizablePanel defaultSize={60} minSize={25}>

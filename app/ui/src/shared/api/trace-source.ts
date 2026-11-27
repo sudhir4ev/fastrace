@@ -225,6 +225,18 @@ export interface Session {
   lastMsgId: number;
 }
 
+export interface Segment {
+  analyzerName: string;
+  streamIndex: number;
+  msgId: number;
+  timestampUs: number;
+  srcNode: string;
+  dstNode: string;
+  info: string;
+  segmentLen: number;
+  idleUs: number;
+}
+
 export interface TraceDataSource {
   getTraceSummary(blfPath: string, startUs: number, endUs: number): Promise<TraceSummary>;
   listMessageGroups(blfPath: string, startUs: number, endUs: number): Promise<MessageGroup[]>;
@@ -270,9 +282,11 @@ export interface TraceDataSource {
     targetSignalIds: number[]
   ): Promise<DetectorQueryResponse>;
   listAnalyzers(): Promise<string[]>;
+  getDefaultAnalyzerConfig(analyzerName: string): Promise<string>;
   listFindings(
     blfPath: string,
     analyzerName: string,
+    configJson: string,
     respectTrim: boolean,
     startUs: number,
     endUs: number
@@ -280,10 +294,12 @@ export interface TraceDataSource {
   listSessions(
     blfPath: string,
     analyzerName: string,
+    configJson: string,
     respectTrim: boolean,
     startUs: number,
     endUs: number
   ): Promise<Session[]>;
+  listSegments(blfPath: string, analyzerName: string, configJson: string, streamIndex: number): Promise<Segment[]>;
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange>;
   applyTrim(blfPath: string, startUs: number, endUs: number, activeSignalIds: number[]): Promise<DecodeResult>;
   recordActivity(blfPath: string, kind: string, elapsedMs: number, detail: string): Promise<void>;
@@ -448,24 +464,34 @@ export class TauriTraceDataSource implements TraceDataSource {
     return invoke<string[]>("list_analyzers");
   }
 
+  getDefaultAnalyzerConfig(analyzerName: string): Promise<string> {
+    return invoke<string>("get_default_analyzer_config", { analyzerName });
+  }
+
   listFindings(
     blfPath: string,
     analyzerName: string,
+    configJson: string,
     respectTrim: boolean,
     startUs: number,
     endUs: number
   ): Promise<Finding[]> {
-    return invoke<Finding[]>("list_findings", { blfPath, analyzerName, respectTrim, startUs, endUs });
+    return invoke<Finding[]>("list_findings", { blfPath, analyzerName, configJson, respectTrim, startUs, endUs });
   }
 
   listSessions(
     blfPath: string,
     analyzerName: string,
+    configJson: string,
     respectTrim: boolean,
     startUs: number,
     endUs: number
   ): Promise<Session[]> {
-    return invoke<Session[]>("list_sessions", { blfPath, analyzerName, respectTrim, startUs, endUs });
+    return invoke<Session[]>("list_sessions", { blfPath, analyzerName, configJson, respectTrim, startUs, endUs });
+  }
+
+  listSegments(blfPath: string, analyzerName: string, configJson: string, streamIndex: number): Promise<Segment[]> {
+    return invoke<Segment[]>("list_segments", { blfPath, analyzerName, configJson, streamIndex });
   }
 
   getTraceTimeRange(blfPath: string): Promise<TraceTimeRange> {

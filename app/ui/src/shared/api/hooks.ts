@@ -235,18 +235,26 @@ export function useListAnalyzers() {
   });
 }
 
-export function useListSessions(blfPath: string, analyzerName: string | null) {
+export function useDefaultAnalyzerConfig(analyzerName: string | null) {
   return useQuery({
-    queryKey: ["list-sessions", blfPath, analyzerName],
-    queryFn: () => getTraceDataSource().listSessions(blfPath, analyzerName!, false, 0, 0),
+    queryKey: ["default-analyzer-config", analyzerName],
+    queryFn: () => getTraceDataSource().getDefaultAnalyzerConfig(analyzerName!),
     enabled: analyzerName !== null,
   });
 }
 
-export function useListFindings(blfPath: string, analyzerName: string | null) {
+export function useListSessions(blfPath: string, analyzerName: string | null, configJson: string) {
   return useQuery({
-    queryKey: ["list-findings", blfPath, analyzerName],
-    queryFn: () => getTraceDataSource().listFindings(blfPath, analyzerName!, false, 0, 0),
+    queryKey: ["list-sessions", blfPath, analyzerName, configJson],
+    queryFn: () => getTraceDataSource().listSessions(blfPath, analyzerName!, configJson, false, 0, 0),
+    enabled: analyzerName !== null,
+  });
+}
+
+export function useListFindings(blfPath: string, analyzerName: string | null, configJson: string) {
+  return useQuery({
+    queryKey: ["list-findings", blfPath, analyzerName, configJson],
+    queryFn: () => getTraceDataSource().listFindings(blfPath, analyzerName!, configJson, false, 0, 0),
     enabled: analyzerName !== null,
   });
 }
