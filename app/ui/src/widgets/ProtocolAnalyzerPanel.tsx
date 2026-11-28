@@ -9,7 +9,7 @@ import {
 import type { Finding, Segment, Session } from "@/shared/api/trace-source";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
-import { cn } from "@/shared/ui/lib/utils";
+import { cn, formatIpPort } from "@/shared/ui/lib/utils";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/shared/ui/resizable";
 
 function formatUs(us: number): string {
@@ -173,8 +173,8 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
                           selectedSession !== null && sameSession(selectedSession, s) && "bg-accent"
                         )}
                       >
-                        <td className="whitespace-nowrap px-2 py-1 font-mono">{s.srcNode}</td>
-                        <td className="whitespace-nowrap px-2 py-1 font-mono">{s.dstNode}</td>
+                        <td className="whitespace-nowrap px-2 py-1 font-mono">{formatIpPort(s.srcNode)}</td>
+                        <td className="whitespace-nowrap px-2 py-1 font-mono">{formatIpPort(s.dstNode)}</td>
                         <td className="whitespace-nowrap px-2 py-1 font-mono">{s.packetCount}</td>
                         <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.endUs - s.startUs)}</td>
                         <td className="whitespace-nowrap px-2 py-1 font-mono">
@@ -303,8 +303,8 @@ export default function ProtocolAnalyzerPanel({ blfPath }: ProtocolAnalyzerPanel
                               )}
                             >
                               <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.timestampUs)}</td>
-                              <td className="whitespace-nowrap px-2 py-1 font-mono">{s.srcNode}</td>
-                              <td className="whitespace-nowrap px-2 py-1 font-mono">{s.dstNode}</td>
+                              <td className="whitespace-nowrap px-2 py-1 font-mono">{formatIpPort(s.srcNode)}</td>
+                              <td className="whitespace-nowrap px-2 py-1 font-mono">{formatIpPort(s.dstNode)}</td>
                               <td className="whitespace-nowrap px-2 py-1 font-mono">{s.info}</td>
                               <td className="whitespace-nowrap px-2 py-1 font-mono">{s.segmentLen}</td>
                               <td className="whitespace-nowrap px-2 py-1 font-mono">{formatUs(s.idleUs)}</td>
