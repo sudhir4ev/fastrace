@@ -59,7 +59,8 @@ bool loadArxml(Db& db, const ArDatabase& arDb, const std::string& path);
 /// always emits exactly one source index per message; if multi-frame TCP
 /// reassembly is added later, this needs to become a loop writing one row
 /// per source index.
-bool appendProto(const ProtocolMessage& pm, Appender& pdu, Appender& someip, Appender& sd, Appender& doip);
+bool appendProto(
+    const ProtocolMessage& pm, Appender& pdu, Appender& someip, Appender& sd, Appender& doip, Appender& tcp);
 
 /// True for all three BLF Ethernet object types (CAN_MESSAGE etc. excluded).
 bool isEthernet(uint32_t objectType);

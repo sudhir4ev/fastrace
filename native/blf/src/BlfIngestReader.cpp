@@ -42,9 +42,37 @@ std::string fmtIPv6(const uint8_t addr[16])
         addr[11], addr[12], addr[13], addr[14], addr[15]);
 }
 
-bool extractUdpInfo(const char* frame, size_t frameLen, std::string& dstIpOut, uint16_t& dstPortOut,
-    const char*& payloadOut, size_t& payloadLenOut)
+// Reads a TCP header at `offset` (caller already checked >= sizeof(TCPHeader)
+// remains). Clamps a malformed dataOffset (< 5 words) up to the 20-byte
+// minimum so the payload slice can't underflow. Shared by the IPv4/IPv6 paths.
+bool extractTcp(const char* frame, size_t frameLen, size_t offset, uint16_t& srcPortOut, uint16_t& dstPortOut,
+    bool& isTcpOut, uint8_t& tcpFlagsOut, const char*& payloadOut, size_t& payloadLenOut)
 {
+    const auto* tcp = reinterpret_cast<const TCPHeader*>(frame + offset);
+    size_t tcpHdrLen = static_cast<size_t>((tcp->dataOffset >> 4u) & 0x0Fu) * 4u;
+    if (tcpHdrLen < sizeof(TCPHeader)) {
+        tcpHdrLen = sizeof(TCPHeader);
+    }
+    if (frameLen < offset + tcpHdrLen) {
+        return false;
+    }
+    srcPortOut = beToHost16(tcp->srcPort);
+    dstPortOut = beToHost16(tcp->dstPort);
+    isTcpOut = true;
+    tcpFlagsOut = tcp->flags;
+    payloadOut = frame + offset + tcpHdrLen;
+    payloadLenOut = frameLen - offset - tcpHdrLen;
+    return true;
+}
+
+// Parses UDP or TCP out of an Ethernet frame, filling bidirectional IP/port.
+// For TCP, sets isTcpOut + tcpFlagsOut and points payload past the (variable)
+// TCP header; for UDP, isTcpOut stays false.
+bool extractTransportInfo(const char* frame, size_t frameLen, std::string& srcIpOut, uint16_t& srcPortOut,
+    std::string& dstIpOut, uint16_t& dstPortOut, bool& isTcpOut, uint8_t& tcpFlagsOut, const char*& payloadOut,
+    size_t& payloadLenOut)
+{
+    isTcpOut = false;
     if (frameLen < sizeof(EthernetWireHeader)) {
         return false;
     }
@@ -67,9 +95,11 @@ bool extractUdpInfo(const char* frame, size_t frameLen, std::string& dstIpOut, u
             return false;
         }
         offset += ihlBytes;
+        srcIpOut = std::format("{}.{}.{}.{}", ip->srcIP[0], ip->srcIP[1], ip->srcIP[2], ip->srcIP[3]);
+        dstIpOut = std::format("{}.{}.{}.{}", ip->dstIP[0], ip->dstIP[1], ip->dstIP[2], ip->dstIP[3]);
         if (ip->protocol == 17u && frameLen >= offset + sizeof(UDPHeader)) {
             const auto* udp = reinterpret_cast<const UDPHeader*>(frame + offset);
-            dstIpOut = std::format("{}.{}.{}.{}", ip->dstIP[0], ip->dstIP[1], ip->dstIP[2], ip->dstIP[3]);
+            srcPortOut = beToHost16(udp->srcPort);
             dstPortOut = beToHost16(udp->dstPort);
             payloadOut = frame + offset + sizeof(UDPHeader);
             uint16_t udpLen = beToHost16(udp->length);
@@ -79,11 +109,16 @@ bool extractUdpInfo(const char* frame, size_t frameLen, std::string& dstIpOut, u
             }
             return true;
         }
+        if (ip->protocol == 6u && frameLen >= offset + sizeof(TCPHeader)) {
+            return extractTcp(
+                frame, frameLen, offset, srcPortOut, dstPortOut, isTcpOut, tcpFlagsOut, payloadOut, payloadLenOut);
+        }
     } else if (etherType == 0x86DDu) {
         if (frameLen < offset + sizeof(IPv6Header)) {
             return false;
         }
         const auto* ip6 = reinterpret_cast<const IPv6Header*>(frame + offset);
+        srcIpOut = fmtIPv6(ip6->srcAddr);
         dstIpOut = fmtIPv6(ip6->dstAddr);
         offset += sizeof(IPv6Header);
         uint8_t nextHdr = ip6->nextHeader;
@@ -107,6 +142,7 @@ bool extractUdpInfo(const char* frame, size_t frameLen, std::string& dstIpOut, u
         }
         if (nextHdr == 17u && frameLen >= offset + sizeof(UDPHeader)) {
             const auto* udp = reinterpret_cast<const UDPHeader*>(frame + offset);
+            srcPortOut = beToHost16(udp->srcPort);
             dstPortOut = beToHost16(udp->dstPort);
             payloadOut = frame + offset + sizeof(UDPHeader);
             uint16_t udpLen = beToHost16(udp->length);
@@ -115,6 +151,10 @@ bool extractUdpInfo(const char* frame, size_t frameLen, std::string& dstIpOut, u
                 payloadLenOut = frameLen - offset - sizeof(UDPHeader);
             }
             return true;
+        }
+        if (nextHdr == 6u && frameLen >= offset + sizeof(TCPHeader)) {
+            return extractTcp(
+                frame, frameLen, offset, srcPortOut, dstPortOut, isTcpOut, tcpFlagsOut, payloadOut, payloadLenOut);
         }
     }
     return false;
@@ -289,15 +329,24 @@ void decodeBuffer(const char* data, size_t dataLen, std::vector<TraceMessage>& o
             tm.objectType = base.objectType;
             tm.channel = eth.channel;
             tm.dlc = 0;
-            std::string dstIp;
-            uint16_t dstPort = 0;
-            const char* udpPayload = nullptr;
-            size_t udpPayloadLen = 0;
-            if (extractUdpInfo(frameData, frameLen, dstIp, dstPort, udpPayload, udpPayloadLen)) {
+            std::string srcIp, dstIp;
+            uint16_t srcPort = 0, dstPort = 0;
+            bool isTcp = false;
+            uint8_t tcpFlags = 0;
+            const char* payload = nullptr;
+            size_t payloadLen = 0;
+            if (extractTransportInfo(
+                    frameData, frameLen, srcIp, srcPort, dstIp, dstPort, isTcp, tcpFlags, payload, payloadLen)) {
+                tm.srcIp = std::move(srcIp);
+                tm.srcPort = srcPort;
                 tm.dstIp = std::move(dstIp);
                 tm.dstPort = dstPort;
-                tm.data.assign(udpPayload, udpPayload + udpPayloadLen);
-                fillEthernetPdus(tm, udpPayload, udpPayloadLen);
+                tm.isTcp = isTcp;
+                tm.tcpFlags = tcpFlags;
+                tm.data.assign(payload, payload + payloadLen);
+                if (!isTcp) {
+                    fillEthernetPdus(tm, payload, payloadLen);
+                }
             } else {
                 tm.data.assign(frameData, frameData + frameLen);
             }
@@ -376,15 +425,24 @@ void decodeBuffer(const char* data, size_t dataLen, std::vector<TraceMessage>& o
             tm.objectType = base.objectType;
             tm.channel = eth.channel;
             tm.dlc = 0;
-            std::string dstIp;
-            uint16_t dstPort = 0;
-            const char* udpPayload = nullptr;
-            size_t udpPayloadLen = 0;
-            if (extractUdpInfo(frameData, frameLen, dstIp, dstPort, udpPayload, udpPayloadLen)) {
+            std::string srcIp, dstIp;
+            uint16_t srcPort = 0, dstPort = 0;
+            bool isTcp = false;
+            uint8_t tcpFlags = 0;
+            const char* payload = nullptr;
+            size_t payloadLen = 0;
+            if (extractTransportInfo(
+                    frameData, frameLen, srcIp, srcPort, dstIp, dstPort, isTcp, tcpFlags, payload, payloadLen)) {
+                tm.srcIp = std::move(srcIp);
+                tm.srcPort = srcPort;
                 tm.dstIp = std::move(dstIp);
                 tm.dstPort = dstPort;
-                tm.data.assign(udpPayload, udpPayload + udpPayloadLen);
-                fillEthernetPdus(tm, udpPayload, udpPayloadLen);
+                tm.isTcp = isTcp;
+                tm.tcpFlags = tcpFlags;
+                tm.data.assign(payload, payload + payloadLen);
+                if (!isTcp) {
+                    fillEthernetPdus(tm, payload, payloadLen);
+                }
             } else {
                 tm.data.assign(frameData, frameData + frameLen);
             }

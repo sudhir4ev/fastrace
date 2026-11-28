@@ -150,6 +150,55 @@ void appendEthernetFrame(
     b.insert(b.end(), payload.begin(), payload.end());
 }
 
+// Like appendEthernetFrame but with a TCP header (protocol 6, flags byte at
+// the position NetTypes.h's TCPHeader::flags expects) instead of UDP.
+void appendEthernetTcpFrame(Bytes& b, uint64_t timestampNs, uint16_t channel, uint16_t srcPort, uint16_t dstPort,
+    uint8_t flags, const Bytes& tcpPayload)
+{
+    Bytes frame;
+    bytes(frame, { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 }); // dst MAC
+    bytes(frame, { 0x02, 0x00, 0x00, 0x00, 0x00, 0x02 }); // src MAC
+    be16(frame, 0x0800); // etherType = IPv4
+
+    u8(frame, 0x45); // version 4, IHL 5 (20 bytes)
+    u8(frame, 0); // DSCP/ECN
+    be16(frame, static_cast<uint16_t>(20 + 20 + tcpPayload.size())); // total length
+    be16(frame, 0); // identification
+    be16(frame, 0); // flags/fragment
+    u8(frame, 64); // TTL
+    u8(frame, 6); // protocol = TCP
+    be16(frame, 0); // header checksum (unchecked by reader)
+    bytes(frame, { 192, 168, 1, 20 }); // src IP
+    bytes(frame, { 192, 168, 1, 10 }); // dst IP
+
+    be16(frame, srcPort);
+    be16(frame, dstPort);
+    be32(frame, 0); // seq
+    be32(frame, 0); // ack
+    u8(frame, 0x50); // dataOffset = 5 words (20-byte header) in the upper nibble
+    u8(frame, flags);
+    be16(frame, 0); // window
+    be16(frame, 0); // checksum (unchecked by reader)
+    be16(frame, 0); // urgent pointer
+    frame.insert(frame.end(), tcpPayload.begin(), tcpPayload.end());
+
+    Bytes payload;
+    le16(payload, 32); // EthernetFrameHeader.structLength (unused by reader)
+    le16(payload, 0); // flags
+    le16(payload, channel); // channel -- the only field BlfIngestReader reads
+    le16(payload, 0); // direction
+    le64(payload, 0); // reserved
+    le16(payload, 0); // ethType (unused)
+    le16(payload, 0); // tpid
+    le16(payload, 0); // tci
+    le16(payload, 0); // payloadLength (unused)
+    le64(payload, 0); // res2
+    payload.insert(payload.end(), frame.begin(), frame.end());
+
+    innerHeader(b, kEthernetFrameEx, static_cast<uint32_t>(payload.size()), timestampNs);
+    b.insert(b.end(), payload.begin(), payload.end());
+}
+
 Bytes buildInnerStream()
 {
     Bytes inner;
@@ -209,6 +258,14 @@ Bytes buildInnerStream()
         be16(udp, 0x0001); // targetAddress
         appendEthernetFrame(inner, 6000, 2, 13400, udp);
     }
+
+    // E5: a pure-SYN TCP control segment (zero payload) -> proves control
+    // segments with no data still peel into protocol_tcp.
+    appendEthernetTcpFrame(inner, 7000, 2, 51000, 30490, 0x02, {});
+
+    // E6: a PSH+ACK TCP data segment on the same stream -> proves segment_len
+    // tracks the actual payload size.
+    appendEthernetTcpFrame(inner, 7100, 2, 51000, 30490, 0x18, { 0xDE, 0xAD, 0xBE, 0xEF });
 
     return inner;
 }

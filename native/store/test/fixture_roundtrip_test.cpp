@@ -78,8 +78,10 @@ int main()
         msg.i32(0x100); // arb_id
         msg.b(false);
         msg.i32(8); // dlc
-        msg.str("");
-        msg.i32(0);
+        msg.str(""); // src_ip
+        msg.i32(0); // src_port
+        msg.str(""); // dst_ip
+        msg.i32(0); // dst_port
         msg.i32(8); // payload_len
         expect(msg.endRow(), "messages endRow");
         expect(msg.close(), "messages close");

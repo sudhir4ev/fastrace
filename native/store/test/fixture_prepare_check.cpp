@@ -65,11 +65,21 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    expectCount(con, "messages", 6); // 2 CAN + 4 Ethernet
+    expectCount(con, "messages", 8); // 2 CAN + 6 Ethernet
     expectCount(con, "protocol_pdu", 2); // E1's packed PDU + E4's incidental PDU-walk hit
     expectCount(con, "protocol_someip", 1); // E2
     expectCount(con, "protocol_someip_sd", 1); // E3
     expectCount(con, "protocol_doip", 1); // E4
+    expectCount(con, "protocol_tcp", 2); // E5 (SYN) + E6 (PSH+ACK)
+    // E5 is a pure SYN: flags 0x02, segment_len 0. E6 is PSH+ACK w/ 4-byte payload: 0x18, 4.
+    expectScalar(con, "protocol_tcp.E5.flags", "select flags from protocol_tcp order by msg_id limit 1", 0x02);
+    expectScalar(con, "protocol_tcp.E5.segment_len", "select segment_len from protocol_tcp order by msg_id limit 1", 0);
+    expectScalar(con, "protocol_tcp.E6.flags", "select flags from protocol_tcp order by msg_id desc limit 1", 0x18);
+    expectScalar(
+        con, "protocol_tcp.E6.segment_len", "select segment_len from protocol_tcp order by msg_id desc limit 1", 4);
+    // src_ip/src_port populated for every Ethernet message (UDP E1-E4 + TCP E5-E6).
+    expectScalar(con, "messages.src_populated",
+        "select cast(count(*) as double) from messages where src_ip <> '' and src_port > 0", 6);
     expectCount(con, "arxml_pdu", 1);
     expectCount(con, "arxml_can", 1);
     expectCount(con, "arxml_ecu", 1);

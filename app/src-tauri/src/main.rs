@@ -532,6 +532,78 @@ fn run_detector_query(
     })
 }
 
+/// Generic Analyzer Framework commands (docs/superpowers/plans/2026-11-27-tcp-analyzer-wave1-ingest.md,
+/// "Analyzer Framework Contract"). Zero protocol-specific knowledge - all
+/// four are parameterized by `analyzer_name`; adding a second analyzer adds
+/// no new commands.
+#[tauri::command]
+fn list_analyzers() -> Vec<String> {
+    query::list_analyzers().into_iter().map(str::to_string).collect()
+}
+
+#[tauri::command]
+fn get_default_analyzer_config(analyzer_name: String) -> Result<String, String> {
+    query::get_default_analyzer_config(&analyzer_name).map(str::to_string)
+}
+
+fn resolve_scope(
+    conn: &trace_store::Connection,
+    respect_trim: bool,
+    start_us: i64,
+    end_us: i64,
+) -> Result<(i64, i64), String> {
+    if respect_trim {
+        Ok((start_us, end_us))
+    } else {
+        let range = query::get_trace_time_range(conn)?;
+        Ok((range.min_timestamp_us, range.max_timestamp_us))
+    }
+}
+
+#[tauri::command]
+fn list_findings(
+    blf_path: String,
+    analyzer_name: String,
+    config_json: String,
+    respect_trim: bool,
+    start_us: i64,
+    end_us: i64,
+) -> Result<Vec<query::Finding>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    let (scope_start, scope_end) = resolve_scope(&conn, respect_trim, start_us, end_us)?;
+    query::list_findings(&conn, &analyzer_name, &config_json, scope_start, scope_end)
+}
+
+#[tauri::command]
+fn list_sessions(
+    blf_path: String,
+    analyzer_name: String,
+    config_json: String,
+    respect_trim: bool,
+    start_us: i64,
+    end_us: i64,
+) -> Result<Vec<query::Session>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    let (scope_start, scope_end) = resolve_scope(&conn, respect_trim, start_us, end_us)?;
+    query::list_sessions(&conn, &analyzer_name, &config_json, scope_start, scope_end)
+}
+
+#[tauri::command]
+fn list_segments(
+    blf_path: String,
+    analyzer_name: String,
+    config_json: String,
+    src_node: String,
+    dst_node: String,
+    stream_index: i64,
+) -> Result<Vec<query::Segment>, String> {
+    let duckdb_path = std::path::Path::new(&blf_path).with_extension("duckdb");
+    let conn = trace_store::open(&duckdb_path)?;
+    query::list_segments(&conn, &analyzer_name, &config_json, &src_node, &dst_node, stream_index)
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FileSizes {
@@ -992,6 +1064,11 @@ fn main() {
             run_explorer_table_page,
             run_explorer_chart_query,
             run_detector_query,
+            list_analyzers,
+            get_default_analyzer_config,
+            list_findings,
+            list_sessions,
+            list_segments,
             get_file_sizes,
             get_path_size,
             check_existing_store,

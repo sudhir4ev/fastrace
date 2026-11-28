@@ -228,6 +228,60 @@ export function useRunDetectorQuery(blfPath: string) {
   });
 }
 
+export function useListAnalyzers() {
+  return useQuery({
+    queryKey: ["list-analyzers"],
+    queryFn: () => getTraceDataSource().listAnalyzers(),
+  });
+}
+
+export function useDefaultAnalyzerConfig(analyzerName: string | null) {
+  return useQuery({
+    queryKey: ["default-analyzer-config", analyzerName],
+    queryFn: () => getTraceDataSource().getDefaultAnalyzerConfig(analyzerName!),
+    enabled: analyzerName !== null,
+  });
+}
+
+export function useListSessions(blfPath: string, analyzerName: string | null, configJson: string) {
+  return useQuery({
+    queryKey: ["list-sessions", blfPath, analyzerName, configJson],
+    queryFn: () => getTraceDataSource().listSessions(blfPath, analyzerName!, configJson, false, 0, 0),
+    enabled: analyzerName !== null,
+  });
+}
+
+export function useListFindings(blfPath: string, analyzerName: string | null, configJson: string) {
+  return useQuery({
+    queryKey: ["list-findings", blfPath, analyzerName, configJson],
+    queryFn: () => getTraceDataSource().listFindings(blfPath, analyzerName!, configJson, false, 0, 0),
+    enabled: analyzerName !== null,
+  });
+}
+
+export function useListSegments(
+  blfPath: string,
+  analyzerName: string | null,
+  configJson: string,
+  srcNode: string | null,
+  dstNode: string | null,
+  streamIndex: number | null
+) {
+  return useQuery({
+    queryKey: ["list-segments", blfPath, analyzerName, configJson, srcNode, dstNode, streamIndex],
+    queryFn: () =>
+      getTraceDataSource().listSegments(
+        blfPath,
+        analyzerName!,
+        configJson,
+        srcNode as string,
+        dstNode as string,
+        streamIndex as number
+      ),
+    enabled: analyzerName !== null && srcNode !== null && dstNode !== null && streamIndex !== null,
+  });
+}
+
 // Shared x-axis domain for every Timeline chart (SignalChart, MatchLane) -
 // without this, each chart auto-scales to its own series' extent, and
 // CHART_GROUP's percentage-based zoom sync maps the same percentage to

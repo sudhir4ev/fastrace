@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Activity, List, Terminal } from "lucide-react";
+import { Activity, List, Network, Terminal } from "lucide-react";
 import { useWorkspaceStore, type TrimRange, type WorkspaceTab } from "@/app/store";
 import { useApplyTrim, useProject, useSignalCatalog } from "@/shared/api/hooks";
 import { getTraceDataSource } from "@/shared/api/trace-source";
@@ -15,6 +15,7 @@ import ExplorerPanel from "./ExplorerPanel";
 import MessageDetails from "./MessageDetails";
 import MessageGroupSelect from "./MessageGroupSelect";
 import MessageList from "./MessageList";
+import ProtocolAnalyzerPanel from "./ProtocolAnalyzerPanel";
 import TimelinePanel from "./TimelinePanel";
 import Toaster from "./Toaster";
 import TopBar from "./TopBar";
@@ -24,6 +25,7 @@ const NAV_ITEMS: { id: WorkspaceTab; label: string; icon: typeof Activity }[] = 
   { id: "signals", label: "Signals", icon: Activity },
   { id: "messages", label: "Messages", icon: List },
   { id: "explorer", label: "Explorer", icon: Terminal },
+  { id: "protocol", label: "Protocol Analyzer", icon: Network },
 ];
 
 interface WorkspaceLayoutProps {
@@ -223,6 +225,9 @@ export default function WorkspaceLayout({ blfPath, preparing, tick, prepareTotal
           </div>
           <div className={cn("absolute inset-0", workspaceTab !== "explorer" && "hidden")} aria-hidden={workspaceTab !== "explorer"}>
             <ExplorerPanel blfPath={blfPath} />
+          </div>
+          <div className={cn("absolute inset-0", workspaceTab !== "protocol" && "hidden")} aria-hidden={workspaceTab !== "protocol"}>
+            <ProtocolAnalyzerPanel blfPath={blfPath} />
           </div>
         </main>
       </div>
